@@ -1,6 +1,6 @@
 {
   "name": "autojournal",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Durable agent memory for the Pi coding agent: every completed turn becomes an owner-controlled Markdown episode, with exact, ranked, bounded recall.",
   "type": "module",
   "license": "MIT",

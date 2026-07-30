@@ -22,7 +22,7 @@ pub const aliases = @import("aliases.zig");
 pub const search = @import("search.zig");
 pub const ops = @import("ops.zig");
 
-pub const package_version = "0.1.0";
+pub const package_version = "0.1.1";
 
 test {
     _ = contracts;
