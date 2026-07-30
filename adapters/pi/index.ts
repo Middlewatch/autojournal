@@ -229,6 +229,19 @@ export function sanitizeToken(raw: string, fallback: string): string {
   return cleaned === "" ? fallback : cleaned;
 }
 
+// The store places an episode at a date path derived from event_time_ms and
+// detects duplicates by that path, so every delivery of a turn must derive
+// the same event time. The leaf entry's timestamp is that stable source:
+// live capture reads it from the session branch at settle, and history
+// import reads the same value from the session log.
+export function eventTimeFromEntries(entries: unknown[]): number | null {
+  const last = entries[entries.length - 1] as { timestamp?: unknown } | undefined;
+  if (typeof last?.timestamp === "number" && last.timestamp > 0) return last.timestamp;
+  if (typeof last?.timestamp !== "string") return null;
+  const parsed = Date.parse(last.timestamp);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 export function stableTurnId(
   sessionId: string,
   leafId: string | null,
@@ -266,6 +279,7 @@ export function buildPayload(input: {
   turnId: string;
   eventTimeMs: number;
   selection: SessionSelection;
+  adapterVersion?: string;
 }): Record<string, unknown> {
   return {
     schema_version: 1,
@@ -273,7 +287,7 @@ export function buildPayload(input: {
     scope: input.selection.scope,
     lane: "conversation",
     harness: HARNESS,
-    adapter_version: ADAPTER_VERSION,
+    adapter_version: input.adapterVersion ?? ADAPTER_VERSION,
     session_id: sanitizeToken(input.sessionId, "unknown-session"),
     turn_id: sanitizeToken(input.turnId, "unknown-turn"),
     event_time_ms: input.eventTimeMs,
@@ -283,6 +297,274 @@ export function buildPayload(input: {
     assistant_result: truncateContent(input.summary.assistantText),
     tools: input.summary.toolNames.map((name) => ({ name: sanitizeToken(name, "tool") })),
   };
+}
+
+// --- Pi session history import (backfill) ---
+//
+// A user's Pi sessions predating this extension live as JSONL logs under
+// <agent-dir>/sessions/<cwd-slug>/*.jsonl. Import replays each completed
+// user→assistant turn through `capture` with the same identity fields live
+// capture would have used — session id from the file basename, turn id from
+// the turn's final assistant entry id (the leaf at settle time), and the
+// same capture policy — so a turn that was already captured live resolves
+// as duplicate or conflict instead of storing twice, and re-running the
+// import is idempotent. Provenance is stamped in adapter_version (excluded
+// from the identity digest by design). Subagent-spawned session files
+// (header carries parentSession) are synthetic work products and are
+// skipped, matching live capture's interactive-mode gate; headless --print
+// sessions are indistinguishable from interactive ones in the log and are
+// imported.
+
+export const IMPORT_ADAPTER_VERSION = `${ADAPTER_VERSION}+import`;
+
+export function piSessionsRoot(env: NodeJS.ProcessEnv = process.env): string {
+  const agentDir =
+    env.PI_CODING_AGENT_DIR && env.PI_CODING_AGENT_DIR !== ""
+      ? env.PI_CODING_AGENT_DIR
+      : path.join(os.homedir(), ".pi", "agent");
+  return path.join(agentDir, "sessions");
+}
+
+export function sessionIdFromFile(file: string): string {
+  return sanitizeToken(path.basename(file).replace(/\.[^.]+$/, ""), "unknown-session");
+}
+
+export function listPiSessionFiles(root: string): string[] {
+  let dirs: fs.Dirent[];
+  try {
+    dirs = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const files: string[] = [];
+  for (const dir of dirs) {
+    if (!dir.isDirectory()) continue;
+    let names: string[];
+    try {
+      names = fs.readdirSync(path.join(root, dir.name));
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (name.endsWith(".jsonl")) files.push(path.join(root, dir.name, name));
+    }
+  }
+  return files.sort();
+}
+
+// Cheap importability probe for menu counts and the first-run notice: reads
+// only the header line, never the body.
+export function importableSessionHeader(firstLine: string | null): boolean {
+  if (firstLine === null) return false;
+  try {
+    const header = JSON.parse(firstLine) as { type?: string; parentSession?: unknown };
+    return header.type === "session" && header.parentSession === undefined;
+  } catch {
+    return false;
+  }
+}
+
+export function readFirstLine(file: string): string | null {
+  let fd: number;
+  try {
+    fd = fs.openSync(file, "r");
+  } catch {
+    return null;
+  }
+  try {
+    const buf = Buffer.alloc(8192);
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    const text = buf.subarray(0, n).toString("utf8");
+    const nl = text.indexOf("\n");
+    return nl === -1 ? text : text.slice(0, nl);
+  } catch {
+    return null;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+export interface ImportTurn {
+  turnId: string;
+  eventTimeMs: number;
+  summary: RunSummary;
+}
+
+export interface ParsedPiSession {
+  turns: ImportTurn[];
+  skippedTurns: number;
+  /// Whole-file skip reason; when set, turns is empty.
+  skip?: string;
+}
+
+interface SessionEntry {
+  type?: string;
+  id?: string;
+  timestamp?: string;
+  parentSession?: unknown;
+  customType?: string;
+  data?: { capture?: unknown };
+  message?: { role?: string; content?: unknown; timestamp?: unknown };
+}
+
+export function parsePiSession(text: string): ParsedPiSession {
+  const lines = text.split("\n");
+  let headerSeen = false;
+  const turns: ImportTurn[] = [];
+  let skippedTurns = 0;
+
+  // Session policy in file order: entries appended before a turn govern it.
+  let captureOn = true;
+
+  // The pending turn. A turn's identity and completion state are pinned at
+  // its final assistant entry — the leaf live capture would have seen at
+  // settle — so policy toggles appended after that entry do not retroact.
+  let pending: unknown[] = [];
+  let pendingHasAssistant = false;
+  let leafId: string | null = null;
+  let leafTimeMs = 0;
+  let captureAtLeaf = true;
+
+  const finalize = () => {
+    const messages = pending;
+    pending = [];
+    pendingHasAssistant = false;
+    const id = leafId;
+    const timeMs = leafTimeMs;
+    const enabled = captureAtLeaf;
+    leafId = null;
+    leafTimeMs = 0;
+    if (messages.length === 0) return;
+    const summary = summarizeRun(messages);
+    if (!enabled || id === null || timeMs <= 0 || summary.userText === "" || summary.assistantText === "") {
+      skippedTurns += 1;
+      return;
+    }
+    turns.push({ turnId: id, eventTimeMs: timeMs, summary });
+  };
+
+  for (const line of lines) {
+    if (line.trim() === "") continue;
+    let entry: SessionEntry;
+    try {
+      entry = JSON.parse(line) as SessionEntry;
+    } catch {
+      if (!headerSeen) return { turns: [], skippedTurns: 0, skip: "missing session header" };
+      continue;
+    }
+    if (!headerSeen) {
+      if (entry.type !== "session") return { turns: [], skippedTurns: 0, skip: "missing session header" };
+      if (entry.parentSession !== undefined) return { turns: [], skippedTurns: 0, skip: "subagent session" };
+      headerSeen = true;
+      continue;
+    }
+    if (entry.type === "custom" && entry.customType === SESSION_POLICY_ENTRY) {
+      const capture = entry.data?.capture;
+      if (capture === "on") captureOn = true;
+      else if (capture === "off") captureOn = false;
+      continue;
+    }
+    if (entry.type !== "message") continue;
+    const msg = entry.message;
+    if (msg === undefined || (msg.role !== "user" && msg.role !== "assistant")) continue;
+    if (msg.role === "user" && pendingHasAssistant) finalize();
+    pending.push(msg);
+    if (msg.role === "assistant") {
+      pendingHasAssistant = true;
+      captureAtLeaf = captureOn;
+      if (typeof entry.id === "string" && entry.id !== "") leafId = entry.id;
+      const parsed = Date.parse(entry.timestamp ?? "");
+      leafTimeMs = Number.isFinite(parsed)
+        ? parsed
+        : typeof msg.timestamp === "number"
+          ? msg.timestamp
+          : 0;
+    }
+  }
+  finalize();
+  if (!headerSeen) return { turns: [], skippedTurns: 0, skip: "empty file" };
+  return { turns, skippedTurns };
+}
+
+export interface ImportCounts {
+  files: number;
+  skippedFiles: number;
+  published: number;
+  existing: number;
+  skippedTurns: number;
+  failed: number;
+  firstFailure: string | null;
+}
+
+export async function importPiHistory(options: {
+  binary: string;
+  selection: SessionSelection;
+  files: string[];
+}): Promise<ImportCounts> {
+  const counts: ImportCounts = {
+    files: 0,
+    skippedFiles: 0,
+    published: 0,
+    existing: 0,
+    skippedTurns: 0,
+    failed: 0,
+    firstFailure: null,
+  };
+  for (const file of options.files) {
+    let text: string;
+    try {
+      text = fs.readFileSync(file, "utf8");
+    } catch {
+      counts.skippedFiles += 1;
+      continue;
+    }
+    const parsed = parsePiSession(text);
+    if (parsed.skip !== undefined) {
+      counts.skippedFiles += 1;
+      continue;
+    }
+    counts.files += 1;
+    counts.skippedTurns += parsed.skippedTurns;
+    const sessionId = sessionIdFromFile(file);
+    for (const turn of parsed.turns) {
+      const payload = buildPayload({
+        summary: turn.summary,
+        sessionId,
+        turnId: turn.turnId,
+        eventTimeMs: turn.eventTimeMs,
+        selection: options.selection,
+        adapterVersion: IMPORT_ADAPTER_VERSION,
+      });
+      const run = await runBinary(options.binary, ["capture"], {
+        stdin: JSON.stringify(payload),
+        timeoutMs: CAPTURE_TIMEOUT_MS,
+      });
+      const report = parseJsonOutput(run);
+      const outcome = typeof report?.outcome === "string" ? report.outcome : "unreadable-report";
+      if (outcome === "published") counts.published += 1;
+      else if (outcome === "duplicate" || outcome === "conflict") counts.existing += 1;
+      else {
+        counts.failed += 1;
+        if (counts.firstFailure === null) {
+          counts.firstFailure = run.timedOut ? "timeout" : outcome;
+        }
+      }
+    }
+  }
+  return counts;
+}
+
+export function formatImportSummary(counts: ImportCounts): string {
+  const parts = [
+    `${counts.published} turn(s) published`,
+    `${counts.existing} already present`,
+    `${counts.skippedTurns} skipped`,
+  ];
+  if (counts.failed > 0) parts.push(`${counts.failed} failed (first: ${counts.firstFailure})`);
+  const files =
+    `${counts.files} session file(s)` +
+    (counts.skippedFiles > 0 ? `, ${counts.skippedFiles} file(s) not importable` : "");
+  return `autojournal import: ${parts.join(", ")} from ${files}`;
 }
 
 // --- Recall rendering ---
@@ -419,6 +701,7 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
   const counters = { published: 0, duplicate: 0, skipped: 0, failed: 0 };
   let degradationNotified = false;
   let legacyNotified = false;
+  let importNoticeShown = false;
 
   function noteFailure(ctx: { ui: { notify(msg: string, type?: "info" | "warning" | "error"): void } }, detail: string) {
     counters.failed += 1;
@@ -475,11 +758,12 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
         "warning",
       );
     }
-    if (binary !== null && !legacyNotified) {
-      const legacy = legacyPiJournalRoot();
-      if (fs.existsSync(legacy)) {
-        const run = await runBinary(binary, ["status", "--json"]);
-        const status = parseJsonOutput(run) as StatusJson | null;
+    const legacy = legacyPiJournalRoot();
+    const wantLegacyCheck = !legacyNotified && fs.existsSync(legacy);
+    if (binary !== null && (wantLegacyCheck || !importNoticeShown)) {
+      const run = await runBinary(binary, ["status", "--json"]);
+      const status = parseJsonOutput(run) as StatusJson | null;
+      if (wantLegacyCheck) {
         if (status?.root_source === "autojournal_default") {
           legacyNotified = true;
           ctx.ui.notify(
@@ -488,6 +772,25 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
               `{"journal_root": "${legacy}"} to ~/.config/autojournal/config.json. Then run /autojournal sync.`,
             "warning",
           );
+        }
+      }
+      // A fresh journal next to existing Pi history is the backfill moment:
+      // say so once, but leave the import itself a deliberate menu action.
+      if (!importNoticeShown) {
+        importNoticeShown = true;
+        if (status?.episodes === 0) {
+          const history = listPiSessionFiles(piSessionsRoot()).filter(
+            (file) =>
+              sessionIdFromFile(file) !== sessionId &&
+              importableSessionHeader(readFirstLine(file)),
+          );
+          if (history.length > 0) {
+            ctx.ui.notify(
+              `autojournal: found ${history.length} past Pi session file(s) not yet in memory. ` +
+                "Import them via /autojournal → Import Pi session history.",
+              "info",
+            );
+          }
         }
       }
     }
@@ -526,16 +829,12 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
       counters.skipped += 1;
       return;
     }
+    const branch = ctx.sessionManager.getBranch();
     const payload = buildPayload({
       summary,
       sessionId,
-      turnId: stableTurnId(
-        sessionId,
-        ctx.sessionManager.getLeafId(),
-        ctx.sessionManager.getBranch().length,
-        summary,
-      ),
-      eventTimeMs: Date.now(),
+      turnId: stableTurnId(sessionId, ctx.sessionManager.getLeafId(), branch.length, summary),
+      eventTimeMs: eventTimeFromEntries(branch) ?? Date.now(),
       selection: activeSelection,
     });
     const run_ = await runBinary(binary, ["capture"], {
@@ -662,6 +961,7 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
           `Capture: ${captureEnabled ? "on" : "off"} (this session)`,
           "Save as default for new sessions",
           "Sync index",
+          "Import Pi session history",
           "Show diagnostics",
           "Close",
         ]);
@@ -697,6 +997,43 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
           const run = await runBinary(binary, ["sync"]);
           const body = run.stdout.trim() || run.stderr.trim() || "(sync produced no output)";
           ctx.ui.notify(body, run.code === 0 ? "info" : "warning");
+          continue;
+        }
+        if (choice === "Import Pi session history") {
+          const root = piSessionsRoot();
+          // The live session is excluded: its turns are captured as they
+          // settle, and its file on disk may be mid-write.
+          const candidates = listPiSessionFiles(root).filter(
+            (file) =>
+              sessionIdFromFile(file) !== sessionId &&
+              importableSessionHeader(readFirstLine(file)),
+          );
+          if (candidates.length === 0) {
+            ctx.ui.notify(`autojournal: no importable Pi session logs under ${root}`, "info");
+            continue;
+          }
+          const pairs = [activeSelection, ...(await catalog())].filter(
+            (pair, i, all) =>
+              all.findIndex((p) => p.world === pair.world && p.scope === pair.scope) === i,
+          );
+          const target = await ctx.ui.select(
+            `Import ${candidates.length} Pi session file(s) into which world / scope?`,
+            [...pairs.map((p) => `${p.world} / ${p.scope}`), "Back"],
+          );
+          if (target === undefined || target === "Back") continue;
+          const selection = pairs.find((p) => `${p.world} / ${p.scope}` === target);
+          if (selection === undefined) continue;
+          ctx.ui.notify(
+            `autojournal: importing ${candidates.length} session file(s) — this may take a moment`,
+            "info",
+          );
+          const imported = await importPiHistory({ binary, selection, files: candidates });
+          if (imported.published > 0) await runBinary(binary, ["sync"]);
+          ctx.ui.notify(
+            formatImportSummary(imported) +
+              (imported.published > 0 ? "\nindex synced" : ""),
+            imported.failed > 0 ? "warning" : "info",
+          );
           continue;
         }
 

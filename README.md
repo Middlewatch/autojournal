@@ -35,7 +35,9 @@ The menu shows:
   AutoJournal default or owner configuration;
 - the active world and scope for this conversation;
 - episode count and index health;
-- index synchronization and diagnostics.
+- index synchronization and diagnostics;
+- an importer that backfills memory from Pi sessions that predate
+  AutoJournal (see the package README for details).
 
 Capture occurs after Pi's **agent_settled** event, so the response currently
 being generated appears only after the whole turn has finished.

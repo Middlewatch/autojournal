@@ -34,7 +34,8 @@ The menu shows:
 - the active world and scope for this conversation;
 - a capture on/off toggle for this conversation;
 - episode count and index health;
-- index synchronization and diagnostics.
+- index synchronization and diagnostics;
+- an importer for Pi sessions that predate AutoJournal.
 
 Capture occurs after Pi's **agent_settled** event, so the response currently
 being generated appears only after the whole turn has finished.
@@ -45,6 +46,30 @@ Direct maintenance shortcuts remain available:
 /autojournal status
 /autojournal sync
 ~~~
+
+## Importing existing Pi sessions
+
+Pi keeps every past session as a log file under its own data directory, so
+conversations from before AutoJournal was installed can still become
+memory. Choose **Import Pi session history** in the **/autojournal** menu:
+it scans those logs, asks which world and scope to import into, and
+publishes each completed user→assistant turn as an ordinary episode. No
+separate CLI install is needed — the importer runs through the same bundled
+binary as live capture.
+
+When the extension starts with an empty journal and finds existing session
+logs, it mentions this option once; the import itself only ever runs when
+chosen from the menu.
+
+The import is safe to re-run and safe to combine with live capture: each
+turn keeps a stable identity derived from its session log, so a turn that
+is already in the journal — from an earlier import or from live capture —
+is reported as already present rather than stored twice. Episodes keep the
+original conversation's timestamps, and their provenance is visible in the
+episode frontmatter (`adapter_version: <version>+import`). Session logs
+written by subagent runs are recognized and skipped, matching live
+capture's rule that only the owner's own conversation enters memory; the
+source logs are never modified.
 
 ## Default journal directory
 
