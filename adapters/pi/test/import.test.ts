@@ -267,6 +267,23 @@ test(
       assert.equal(again.published, 0, "re-import publishes nothing");
       assert.equal(again.existing, 2);
       assert.equal(again.failed, 0);
+
+      // Cross-date redelivery: same identity with an event time on another
+      // day shards to a different path, so only the core's corpus-wide
+      // identity check stands between this and a silent second copy.
+      const crossDate = buildPayload({
+        summary: { userText: "live question", assistantText: "live answer", toolNames: [] },
+        sessionId: sessionIdFromFile(sessionFile),
+        turnId: "a2",
+        eventTimeMs: Date.parse("2026-07-02T10:02:10.000Z"),
+        selection,
+      });
+      const crossRun = await runBinary(binary, ["capture"], { stdin: JSON.stringify(crossDate) });
+      assert.equal(
+        (JSON.parse(crossRun.stdout) as { outcome: string }).outcome,
+        "conflict",
+        "cross-date redelivery of an existing identity must not publish",
+      );
     } finally {
       if (previous.bin === undefined) delete process.env.AUTOJOURNAL_BIN;
       else process.env.AUTOJOURNAL_BIN = previous.bin;

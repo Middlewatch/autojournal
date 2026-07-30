@@ -799,6 +799,35 @@ fn captureCommand(gpa: std.mem.Allocator, io: Io, cfg: aj.config.Config, root_pa
     };
     defer root.close(io);
 
+    // Identity is corpus-wide, but the store's duplicate detection is
+    // path-local; consult the index first so a redelivery whose event time
+    // shards to another date is still recognized. Best-effort: an absent or
+    // unhelpful index falls through to publication as before.
+    if (openIndex(gpa, io, index_path, root_path)) |idx_const| {
+        var idx = idx_const;
+        defer idx.close();
+        if (try aj.ops.checkRedelivery(gpa, io, root, &idx, payload)) |existing| {
+            defer existing.deinit(gpa);
+            const episode_id = aj.identity.episodeId(payload);
+            const digest_hex = aj.identity.payloadDigestHex(payload);
+            var pre_digest_buf: [aj.identity.digest_prefix.len + aj.identity.digest_hex_len]u8 = undefined;
+            return reportCapture(
+                gpa,
+                io,
+                if (existing.outcome == .duplicate) .ok else .conflict,
+                .{
+                    .outcome = @tagName(existing.outcome),
+                    .episode_id = &episode_id,
+                    .payload_digest = std.fmt.bufPrint(&pre_digest_buf, "{s}{s}", .{
+                        aj.identity.digest_prefix, &digest_hex,
+                    }) catch unreachable,
+                    .path = existing.rel_path,
+                    .index = if (existing.outcome == .duplicate) "fresh" else "stale",
+                },
+            );
+        }
+    } else |_| {}
+
     const capture_time_ms = nowMs(io);
     const published = aj.store.publish(root, io, gpa, payload, capture_time_ms) catch |err| {
         const outcome: aj.contracts.CaptureOutcome = switch (err) {

@@ -34,6 +34,7 @@ reimplementing storage, ranking, identity, or freshness rules.
 | `aliases.zig` | Owner-edited thesaurus (flat JSON, read fresh per search, digest-identified) and the opt-in weak-query miss log. |
 | `search.zig` | `memory_search`/`memory_get` orchestration: discovery scan, word-start crediting, ranking, snippets, revision-verified evidence opening. |
 | `config.zig` | The owner config file (XDG `config.json`): journal root, retrieval knobs, capture world/scope defaults. Every key is optional; the `default` command rewrites capture defaults atomically, preserving the rest. |
+| `ops.zig` | Owner maintenance (`status`, `sync`) accounting and the capture-time corpus-wide redelivery check: the index answers whether an episode ID exists on any date shard, the named file's own frontmatter decides duplicate/conflict, and any index miss or mismatch falls through to normal publication. |
 | `main.zig` | CLI wiring only: argument parsing, config resolution, JSON/text rendering. No product rules. |
 
 Test files (`*_test.zig`) sit beside the modules and are collected through

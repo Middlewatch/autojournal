@@ -12,8 +12,11 @@
 const std = @import("std");
 
 const contracts = @import("contracts.zig");
+const frontmatter = @import("frontmatter.zig");
+const identity = @import("identity.zig");
 const index_mod = @import("index.zig");
 const paths = @import("paths.zig");
+const search = @import("search.zig");
 const store = @import("store.zig");
 
 const Io = std.Io;
@@ -80,6 +83,52 @@ pub fn status(
         // malformed) count as accounted for, or they read as staleness
         // that no sync can ever clear.
         .freshness = if (indexed + idx.excludedCount() == episodes) .fresh else .stale,
+    };
+}
+
+pub const Redelivery = struct {
+    outcome: enum { duplicate, conflict },
+    /// Owned by the caller's allocator: where the existing episode lives.
+    rel_path: []u8,
+
+    pub fn deinit(self: *const Redelivery, gpa: std.mem.Allocator) void {
+        gpa.free(self.rel_path);
+    }
+};
+
+/// Corpus-wide redelivery check for capture. The store detects a redelivered
+/// identity only when it lands on the same event-date path; an identity
+/// redelivered with a different event time would shard to another date and
+/// silently store twice. The index knows every shard, so it answers "does
+/// this episode id exist anywhere" — but the file it names stays the
+/// authority: the outcome is classified from that file's own frontmatter,
+/// and any index miss, stale row, unreadable file, or identity mismatch
+/// returns null so the caller proceeds to publish (the store's own
+/// same-path check still applies).
+pub fn checkRedelivery(
+    gpa: std.mem.Allocator,
+    io: Io,
+    root: Io.Dir,
+    idx: *index_mod.Index,
+    payload: contracts.Payload,
+) error{OutOfMemory}!?Redelivery {
+    const episode_id = identity.episodeId(payload);
+    const digest_hex = identity.payloadDigestHex(payload);
+    const row = (idx.lookupEpisode(gpa, &episode_id) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    }) orelse return null;
+    defer row.deinit(gpa);
+    const bytes = search.readContained(gpa, io, root, row.rel_path) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.Unavailable => return null,
+    };
+    defer gpa.free(bytes);
+    const ep = frontmatter.parse(bytes) orelse return null;
+    if (!std.mem.eql(u8, ep.episode_id, &episode_id)) return null;
+    return .{
+        .outcome = if (std.mem.eql(u8, ep.digest_hex, &digest_hex)) .duplicate else .conflict,
+        .rel_path = try gpa.dupe(u8, row.rel_path),
     };
 }
 

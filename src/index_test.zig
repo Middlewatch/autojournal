@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const contracts = @import("contracts.zig");
+const ops = @import("ops.zig");
 const store = @import("store.zig");
 const index = @import("index.zig");
 
@@ -137,6 +138,57 @@ test "sync keeps one copy of a duplicated episode id and skips dot-directories" 
     const row = (try idx.lookupEpisode(gpa, &published.episode_id)) orelse
         return error.TestUnexpectedResult;
     defer row.deinit(gpa);
+}
+
+test "checkRedelivery recognizes an identity redelivered onto another event date" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const parsed = try contracts.parsePayload(gpa, contracts.test_payload_json);
+    defer parsed.deinit();
+    const payload = try contracts.validate(parsed.value);
+    const published = try store.publish(tmp.dir, io, gpa, payload, capture_time_ms);
+    defer published.deinit(gpa);
+
+    var idx = try index.Index.open(gpa, ":memory:", null);
+    defer idx.close();
+    try idx.indexEpisode(published.rel_path, published.content);
+
+    // Exact redelivery: same identity, same digest.
+    {
+        const hit = (try ops.checkRedelivery(gpa, io, tmp.dir, &idx, payload)) orelse
+            return error.TestUnexpectedResult;
+        defer hit.deinit(gpa);
+        try std.testing.expectEqual(.duplicate, hit.outcome);
+        try std.testing.expectEqualStrings(published.rel_path, hit.rel_path);
+    }
+
+    // Same identity, event time on another day: the store alone would shard
+    // this to a new path and publish a second copy; the check must classify
+    // it as a conflict against the existing file.
+    {
+        var shifted = payload;
+        shifted.event_time_ms = payload.event_time_ms + std.time.ms_per_day;
+        const hit = (try ops.checkRedelivery(gpa, io, tmp.dir, &idx, shifted)) orelse
+            return error.TestUnexpectedResult;
+        defer hit.deinit(gpa);
+        try std.testing.expectEqual(.conflict, hit.outcome);
+        try std.testing.expectEqualStrings(published.rel_path, hit.rel_path);
+    }
+
+    // A different turn is a different identity: unknown, proceed to publish.
+    {
+        var other = payload;
+        other.turn_id = "turn-unseen";
+        try std.testing.expectEqual(null, try ops.checkRedelivery(gpa, io, tmp.dir, &idx, other));
+    }
+
+    // Stale index row (file deleted, sync not yet run): unknown, proceed to
+    // publish rather than reporting a duplicate that stores nothing.
+    try tmp.dir.deleteFile(io, published.rel_path);
+    try std.testing.expectEqual(null, try ops.checkRedelivery(gpa, io, tmp.dir, &idx, payload));
 }
 
 fn dfOf(idx: *index.Index, world: []const u8, term: []const u8) !?i64 {

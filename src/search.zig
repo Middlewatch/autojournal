@@ -553,12 +553,12 @@ fn capAtCodepoint(line: []const u8, max: usize) []const u8 {
     return line[0..cut];
 }
 
-const ReadContainedError = error{ OutOfMemory, Unavailable };
+pub const ReadContainedError = error{ OutOfMemory, Unavailable };
 
 /// Reads one episode file under the journal root with containment: relative
 /// validated components only, no symlink following, resolution stays
 /// beneath the root.
-fn readContained(
+pub fn readContained(
     gpa: std.mem.Allocator,
     io: Io,
     root: Io.Dir,

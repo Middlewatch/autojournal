@@ -242,15 +242,20 @@ For each accepted completed turn, AutoJournal performs:
 
 1. validate the closed payload and explicit policy;
 2. derive episode ID, target path, and canonical digest;
-3. create the sharded owner-only directory through contained paths;
-4. write the complete episode to an owner-only temporary file in the target
+3. ask the index whether this episode ID already exists anywhere in the
+   corpus, and when it does, classify the redelivery against that file's
+   own frontmatter — duplicate or conflict — without writing anything (the
+   file is the authority; a missing, stale, or contradicted index answer
+   falls through to normal publication);
+4. create the sharded owner-only directory through contained paths;
+5. write the complete episode to an owner-only temporary file in the target
    directory;
-5. sync the temporary file;
-6. publish with atomic no-replace semantics;
-7. sync the parent directory;
-8. update the SQLite projection in one transaction; and
-9. report success only after source publication, with index freshness
-   reported independently.
+6. sync the temporary file;
+7. publish with atomic no-replace semantics;
+8. sync the parent directory;
+9. update the SQLite projection in one transaction; and
+10. report success only after source publication, with index freshness
+    reported independently.
 
 If publication finds an existing target, AutoJournal validates its identity
 and digest. An exact duplicate is success; any mismatch is a typed conflict.
