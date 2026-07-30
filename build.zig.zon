@@ -1,0 +1,19 @@
+.{
+    .name = .autojournal,
+    .version = "0.1.0",
+    .fingerprint = 0x12f2ae357b88af9d,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{},
+    .paths = .{
+        "AGENTS.md",
+        "LICENSE",
+        "README.md",
+        "build.zig",
+        "build.zig.zon",
+        "docs",
+        "scripts",
+        "src",
+        "thesaurus.example.json",
+        "vendor",
+    },
+}

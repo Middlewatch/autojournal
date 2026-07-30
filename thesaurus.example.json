@@ -1,0 +1,371 @@
+{
+  "auth": [
+    "login",
+    "credentials"
+  ],
+  "login": [
+    "auth",
+    "credentials"
+  ],
+  "password": [
+    "credentials",
+    "secrets",
+    "auth"
+  ],
+  "secrets": [
+    "credentials"
+  ],
+  "creds": [
+    "credentials"
+  ],
+  "cert": [
+    "tls",
+    "https"
+  ],
+  "tls": [
+    "certificate",
+    "https"
+  ],
+  "configuration": [
+    "config"
+  ],
+  "settings": [
+    "config",
+    "configuration",
+    "preferences",
+    "options"
+  ],
+  "environment": [
+    "env"
+  ],
+  "repository": [
+    "repo"
+  ],
+  "docs": [
+    "documentation",
+    "readme"
+  ],
+  "documentation": [
+    "docs",
+    "readme"
+  ],
+  "folder": [
+    "directory"
+  ],
+  "cmd": [
+    "command"
+  ],
+  "msg": [
+    "message"
+  ],
+  "ctx": [
+    "context"
+  ],
+  "idx": [
+    "index"
+  ],
+  "pkg": [
+    "package"
+  ],
+  "deps": [
+    "dependencies",
+    "dependency"
+  ],
+  "dependencies": [
+    "deps"
+  ],
+  "regex": [
+    "pattern",
+    "expression"
+  ],
+  "search": [
+    "grep",
+    "query"
+  ],
+  "logs": [
+    "stderr",
+    "stdout",
+    "journalctl",
+    "trace"
+  ],
+  "crash": [
+    "panic",
+    "segfault",
+    "exception",
+    "traceback"
+  ],
+  "crashed": [
+    "crash",
+    "panic",
+    "segfault",
+    "exception"
+  ],
+  "segfault": [
+    "sigsegv",
+    "segmentation"
+  ],
+  "hang": [
+    "timeout",
+    "deadlock",
+    "stuck"
+  ],
+  "stuck": [
+    "hang",
+    "timeout",
+    "deadlock"
+  ],
+  "freeze": [
+    "hang",
+    "deadlock",
+    "timeout",
+    "unresponsive"
+  ],
+  "frozen": [
+    "hang",
+    "deadlock",
+    "timeout",
+    "unresponsive"
+  ],
+  "broken": [
+    "failing",
+    "failure",
+    "regression",
+    "bug"
+  ],
+  "slow": [
+    "latency",
+    "performance",
+    "bottleneck"
+  ],
+  "speed": [
+    "latency",
+    "throughput",
+    "performance"
+  ],
+  "perf": [
+    "latency",
+    "throughput"
+  ],
+  "race": [
+    "concurrency",
+    "deadlock"
+  ],
+  "lock": [
+    "mutex"
+  ],
+  "space": [
+    "disk",
+    "storage"
+  ],
+  "oom": [
+    "out of memory",
+    "oom-killer"
+  ],
+  "database": [
+    "sqlite",
+    "postgres",
+    "sql"
+  ],
+  "container": [
+    "docker",
+    "podman"
+  ],
+  "k8s": [
+    "kubernetes"
+  ],
+  "service": [
+    "systemd",
+    "daemon"
+  ],
+  "daemon": [
+    "systemd",
+    "service"
+  ],
+  "cron": [
+    "timer",
+    "schedule",
+    "systemd"
+  ],
+  "startup": [
+    "boot",
+    "init",
+    "launch"
+  ],
+  "terminal": [
+    "shell",
+    "tty"
+  ],
+  "console": [
+    "terminal",
+    "stdout"
+  ],
+  "machine": [
+    "host"
+  ],
+  "permission": [
+    "chmod",
+    "sudo"
+  ],
+  "permissions": [
+    "chmod",
+    "sudo"
+  ],
+  "frontend": [
+    "client",
+    "browser"
+  ],
+  "backend": [
+    "server"
+  ],
+  "deploy": [
+    "release",
+    "publish"
+  ],
+  "rollback": [
+    "revert",
+    "reset",
+    "restore"
+  ],
+  "undo": [
+    "revert",
+    "rollback",
+    "reset"
+  ],
+  "delete": [
+    "remove"
+  ],
+  "copy": [
+    "clone",
+    "duplicate"
+  ],
+  "backup": [
+    "snapshot",
+    "restore",
+    "archive"
+  ],
+  "upgrade": [
+    "update",
+    "migration"
+  ],
+  "bump": [
+    "upgrade",
+    "update",
+    "version"
+  ],
+  "install": [
+    "setup"
+  ],
+  "setup": [
+    "install"
+  ],
+  "benchmark": [
+    "performance",
+    "profiling",
+    "eval",
+    "evaluation"
+  ],
+  "eval": [
+    "benchmark"
+  ],
+  "refactor": [
+    "cleanup",
+    "rewrite",
+    "restructure"
+  ],
+  "cleanup": [
+    "refactor"
+  ],
+  "style": [
+    "formatting",
+    "lint",
+    "fmt"
+  ],
+  "hallucination": [
+    "confabulation",
+    "fabrication",
+    "incorrect"
+  ],
+  "hallucinate": [
+    "confabulation",
+    "fabrication",
+    "incorrect"
+  ],
+  "jailbreak": [
+    "injection",
+    "bypass"
+  ],
+  "injection": [
+    "jailbreak"
+  ],
+  "prompt": [
+    "instructions"
+  ],
+  "finetune": [
+    "fine-tuning",
+    "training"
+  ],
+  "finetuning": [
+    "fine-tuning",
+    "training"
+  ],
+  "rag": [
+    "retrieval",
+    "embedding",
+    "vector"
+  ],
+  "retrieval": [
+    "rag",
+    "recall",
+    "search"
+  ],
+  "embedding": [
+    "vector",
+    "semantic"
+  ],
+  "semantic": [
+    "embedding",
+    "vector"
+  ],
+  "llm": [
+    "model"
+  ],
+  "weights": [
+    "model",
+    "checkpoint",
+    "gguf",
+    "safetensors"
+  ],
+  "guardrails": [
+    "safety",
+    "moderation"
+  ],
+  "bot": [
+    "assistant"
+  ],
+  "chat": [
+    "conversation"
+  ],
+  "hallucinated": [
+    "confabulation",
+    "fabrication",
+    "incorrect"
+  ],
+  "hung": [
+    "hang",
+    "timeout",
+    "deadlock",
+    "stuck"
+  ],
+  "froze": [
+    "hang",
+    "deadlock",
+    "timeout",
+    "unresponsive"
+  ],
+  "broke": [
+    "broken",
+    "failure",
+    "regression",
+    "bug"
+  ]
+}

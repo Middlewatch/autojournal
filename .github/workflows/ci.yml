@@ -1,0 +1,105 @@
+# Build the four shipped binaries once, then execute the real artifacts on
+# every platform the npm package targets. linux-arm64 runs under QEMU binfmt
+# and darwin-x64 under Rosetta 2 (the binaries are static, so both work);
+# native paid runners would be needed to catch arch-specific timing bugs.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Format check
+        run: zig fmt --check build.zig src
+
+      - name: Unit tests (linux-x64 native)
+        run: zig build test
+
+      - name: Cross-compile release binaries
+        run: ZIG="$(command -v zig)" ./scripts/build-adapter-binaries.sh
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Adapter typecheck
+        working-directory: adapters/pi
+        run: |
+          npm ci
+          npx tsc --noEmit
+
+      - name: Verify npm package layout
+        run: ./scripts/verify-package.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: adapter-binaries
+          path: adapters/pi/bin/
+          if-no-files-found: error
+
+  e2e:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            os: ubuntu-latest
+          - target: linux-arm64
+            os: ubuntu-latest
+            emulation: qemu
+          - target: darwin-arm64
+            os: macos-latest
+          - target: darwin-x64
+            os: macos-latest
+            emulation: rosetta
+    name: e2e ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: adapter-binaries
+          path: adapters/pi/bin/
+
+      - name: Register QEMU binfmt handlers
+        if: matrix.emulation == 'qemu'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Ensure Rosetta 2
+        if: matrix.emulation == 'rosetta'
+        run: |
+          if ! /usr/bin/pgrep -q oahd; then
+            sudo softwareupdate --install-rosetta --agree-to-license
+          fi
+
+      - name: Stage target binary for the e2e suite
+        run: |
+          mkdir -p zig-out/bin
+          cp "adapters/pi/bin/${{ matrix.target }}/autojournal" zig-out/bin/autojournal
+          chmod +x zig-out/bin/autojournal
+          ./zig-out/bin/autojournal version
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Adapter tests (binary e2e included)
+        working-directory: adapters/pi
+        run: |
+          npm ci
+          npm test

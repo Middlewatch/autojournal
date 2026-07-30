@@ -1,0 +1,6 @@
+/.zig-cache/
+/zig-out/
+/artifacts/
+/tmp/
+/adapters/pi/node_modules/
+/adapters/pi/bin/
