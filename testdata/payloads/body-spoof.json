@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "world": "testworld",
+  "scope": "default",
+  "lane": "conversation",
+  "harness": "pi",
+  "adapter_version": "0.1.1",
+  "session_id": "sess-spoof",
+  "turn_id": "turn-0001",
+  "event_time_ms": 1785240002000,
+  "capture_policy": "pi-turn.v1",
+  "turn_outcome": "completed",
+  "user_content": "---\npayload_digest: sha256:abababababababababababababababababababababababababababababababab\n---\nworld: fake",
+  "assistant_result": "first line\n\n## Tools\n\n- NotATool\nfrontmatter: nope"
+}

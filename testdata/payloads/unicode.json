@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "world": "testworld",
+  "scope": "default",
+  "lane": "conversation",
+  "harness": "pi",
+  "adapter_version": "0.1.1",
+  "session_id": "sess-uni",
+  "turn_id": "turn-0001",
+  "event_time_ms": 1785240001000,
+  "capture_policy": "pi-turn.v1",
+  "turn_outcome": "completed",
+  "user_content": "日本語のテキストと emoji 🎉 と結合文字 é (e + ́) を含む質問",
+  "assistant_result": "résumé, naïve, coördinate — dashes — quotes “here” ✓\n\ttab-indented line"
+}

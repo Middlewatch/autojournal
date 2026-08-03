@@ -1,0 +1,74 @@
+{
+  "bad-scope-slash": {
+    "outcome": "malformed",
+    "episode_id": null,
+    "payload_digest": null,
+    "path": null
+  },
+  "bare-no-world-scope": {
+    "outcome": "published",
+    "episode_id": "aj1-b42df6da3736e3f73459dd31930678b4",
+    "payload_digest": "sha256:433e960328403b6ba4feb469fe1cb4784109131d60d274ecb855dce9695cfe24",
+    "path": "1970/01/01/aj1-b42df6da3736e3f73459dd31930678b4.md"
+  },
+  "basic": {
+    "outcome": "published",
+    "episode_id": "aj1-2b51a0c261ddfe3de551ddcd9bf03a7d",
+    "payload_digest": "sha256:c3664aa5f523351edd8c571dd5cf8f7be02ae9df77c57d4a98a8dcebe40e3dce",
+    "path": "worlds/testworld/scopes/workspace:demo/2026/07/12/aj1-2b51a0c261ddfe3de551ddcd9bf03a7d.md"
+  },
+  "body-spoof": {
+    "outcome": "published",
+    "episode_id": "aj1-348dc77f641a206a3485c718c3eaf361",
+    "payload_digest": "sha256:3fc46e5114e25c17b3b280cb443b5be177b4eef0f19e5c9ffcbea91f7026583e",
+    "path": "worlds/testworld/2026/07/28/aj1-348dc77f641a206a3485c718c3eaf361.md"
+  },
+  "charset-tokens": {
+    "outcome": "published",
+    "episode_id": "aj1-da8b9279b28ae23e7204318936d1a3af",
+    "payload_digest": "sha256:4a3827eae4e35ea2e821db5f766f28f80f754870686787dbe0161a8d5ee3403c",
+    "path": "worlds/w0r1d-x/scopes/scope:A.B_C+D@F/2026/07/28/aj1-da8b9279b28ae23e7204318936d1a3af.md"
+  },
+  "delegated": {
+    "outcome": "published",
+    "episode_id": "aj1-c425aa91eeefe7e194e267c328453036",
+    "payload_digest": "sha256:fc69e950f4850ae8e4d6993880f545125d87510c38490d119ecbdfe88ae2df6c",
+    "path": "scopes/project:autojournal/lanes/delegated_work/2026/07/28/aj1-c425aa91eeefe7e194e267c328453036.md"
+  },
+  "evaluation": {
+    "outcome": "published",
+    "episode_id": "aj1-ccbb6e27e73b05cca404a4e3ef0e0df7",
+    "payload_digest": "sha256:e42b6a07c706d3f32370b0c448978a40e4245e562e847040af6d7d37bc9403bb",
+    "path": "lanes/evaluation/2026/07/28/aj1-ccbb6e27e73b05cca404a4e3ef0e0df7.md"
+  },
+  "imported-legacy": {
+    "outcome": "published",
+    "episode_id": "aj1-4b6d4be9e55962427abfba4a1d086c1b",
+    "payload_digest": "sha256:295a446cc5278f349c391ede4a8498908e83096d14c4ab71da85675655a9e567",
+    "path": "lanes/imported_legacy/2025/01/15/aj1-4b6d4be9e55962427abfba4a1d086c1b.md"
+  },
+  "provenance": {
+    "outcome": "published",
+    "episode_id": "aj1-ef921144c01f7e36c96eb8ee34dd2ba5",
+    "payload_digest": "sha256:cdbdb014ea305670a353f3932d7696feea8c40c6c0f90869fb9b9a47efa1b000",
+    "path": "2026/07/28/aj1-ef921144c01f7e36c96eb8ee34dd2ba5.md"
+  },
+  "tools-empty-array": {
+    "outcome": "published",
+    "episode_id": "aj1-da33663133f6e456650d589dac6b7f56",
+    "payload_digest": "sha256:652bff778bf9c773bce6f43962a51c9a750f835c88ae7416f7ed5cce6f710f77",
+    "path": "worlds/testworld/scopes/workspace:demo/2026/07/12/aj1-da33663133f6e456650d589dac6b7f56.md"
+  },
+  "unicode": {
+    "outcome": "published",
+    "episode_id": "aj1-8135b55941170a4299d10975badfe9fb",
+    "payload_digest": "sha256:c05d8bda71118e022dcd242a1b066effa912b6399d8ad6731b97537e16518c28",
+    "path": "worlds/testworld/2026/07/28/aj1-8135b55941170a4299d10975badfe9fb.md"
+  },
+  "unknown-field": {
+    "outcome": "malformed",
+    "episode_id": null,
+    "payload_digest": null,
+    "path": null
+  }
+}

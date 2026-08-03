@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "world": "w0r1d-x",
+  "scope": "scope:A.B_C+D@F",
+  "lane": "conversation",
+  "harness": "Harn.ess_1-2:3+4/5@6",
+  "adapter_version": "A.B_C-D:E+F/G@H",
+  "session_id": "Sess.1_2-3:4+5/6@7",
+  "turn_id": "Turn.1_2-3:4+5/6@7",
+  "event_time_ms": 1785240005000,
+  "capture_policy": "Pol.1_2-3:4+5/6@7",
+  "turn_outcome": "Out.come_1-2:3+4/5@6",
+  "user_content": "charset maximal payload",
+  "assistant_result": "charset maximal result"
+}

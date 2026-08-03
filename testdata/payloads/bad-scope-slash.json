@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "world": "testworld",
+  "scope": "scope:has/slash",
+  "lane": "conversation",
+  "harness": "pi",
+  "adapter_version": "1",
+  "session_id": "s",
+  "turn_id": "t",
+  "event_time_ms": 1,
+  "capture_policy": "p",
+  "turn_outcome": "completed",
+  "user_content": "u",
+  "assistant_result": "a"
+}

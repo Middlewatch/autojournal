@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "world": "main",
+  "scope": "default",
+  "lane": "conversation",
+  "harness": "pi",
+  "adapter_version": "1.2.3",
+  "session_id": "sess-prov",
+  "turn_id": "turn-0001",
+  "event_time_ms": 1785240000000,
+  "capture_policy": "pi-turn.v1",
+  "turn_outcome": "completed",
+  "user_content": "Where does the session live?",
+  "assistant_result": "Under the workspace root.",
+  "workspace_root": "/home/user/projects/my repo",
+  "branch_of": "/home/user/.evoker/sessions/parent-a1b2.jsonl",
+  "host": "buildbox-01"
+}

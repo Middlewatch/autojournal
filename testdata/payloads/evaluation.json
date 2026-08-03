@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "world": "main",
+  "scope": "default",
+  "lane": "evaluation",
+  "harness": "evalharness",
+  "adapter_version": "0.0.1",
+  "session_id": "sess-eval",
+  "turn_id": "turn-0001",
+  "event_time_ms": 1785240004000,
+  "capture_policy": "eval.v1",
+  "turn_outcome": "completed",
+  "user_content": "Evaluate recall on the lock query family.",
+  "assistant_result": "Precision at 10: acceptable."
+}

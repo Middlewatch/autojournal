@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "world": "main",
+  "scope": "project:autojournal",
+  "lane": "delegated_work",
+  "harness": "pi",
+  "adapter_version": "0.1.1",
+  "session_id": "sess-deleg",
+  "turn_id": "child-run-42",
+  "event_time_ms": 1785240003000,
+  "capture_policy": "pi-delegate.v1",
+  "turn_outcome": "completed",
+  "user_content": "Task: survey the retrieval module and report scoring risks.",
+  "assistant_result": "Survey complete: two risks recorded.",
+  "tools": [{"name": "Read"}, {"name": "Read"}, {"name": "Bash"}]
+}

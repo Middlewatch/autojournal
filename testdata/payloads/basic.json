@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "world": "testworld",
+  "scope": "workspace:demo",
+  "lane": "conversation",
+  "harness": "claude-code",
+  "adapter_version": "0.1.0",
+  "session_id": "sess-01",
+  "turn_id": "turn-0007",
+  "event_time_ms": 1783862400123,
+  "capture_policy": "default-v1",
+  "turn_outcome": "completed",
+  "user_content": "How do the naïve tests behave? — ✓",
+  "assistant_result": "They pass.\n\n```zig\nconst x = 1;\n```",
+  "tools": [{"name": "Bash"}, {"name": "Read"}]
+}

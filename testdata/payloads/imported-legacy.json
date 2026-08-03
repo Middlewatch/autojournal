@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "world": "main",
+  "scope": "default",
+  "lane": "imported_legacy",
+  "harness": "importer",
+  "adapter_version": "import-1.0",
+  "session_id": "legacy-corpus",
+  "turn_id": "entry-2025-01-15-003",
+  "event_time_ms": 1736899200000,
+  "capture_policy": "legacy-import.v1",
+  "turn_outcome": "completed",
+  "user_content": "Old journal entry about firmware flashing with fwupd and polkit.",
+  "assistant_result": "The update path went through fwupd; polkit prompted twice."
+}
