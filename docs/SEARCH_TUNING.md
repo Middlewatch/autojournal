@@ -107,6 +107,49 @@ Hand-editing the file is fine too; a corrupt file degrades to an empty map
   queries failed. A speculative synonym pack was tried and removed as
   net-negative; small and targeted wins.
 
+## Reviewing and ruling on candidates
+
+This is the workflow when the owner asks to "review and rule on potential
+thesaurus entries" (or similar). It is written so an agent can run it end
+to end; every verdict stays with the owner.
+
+1. **Gather.** `autojournal alias candidates` prints distinct weak queries,
+   most frequent first. Without the CLI, read the miss log directly: it is
+   JSONL at `$XDG_STATE_HOME/autojournal/thesaurus-candidates.jsonl`
+   (default `~/.local/state/autojournal/thesaurus-candidates.jsonl`, or
+   `$AUTOJOURNAL_MISS_LOG`), one record per weak-scoring search:
+   `{"ts", "query", "terms", "best", "top"}`. Aggregate by query, count
+   repeats. A query is only logged when `"miss_log": true` is set in
+   `config.json` and its best score fell below the confidence floor.
+2. **Triage.** Drop candidates that are one-off noise: session-specific
+   identifiers, typos, test strings, queries about topics the journal
+   genuinely does not cover. Repeated misses and recognizable vocabulary
+   mismatches (the owner says "vpn", the journal says "tailscale") are the
+   real candidates.
+3. **Find the canonical term.** For each surviving candidate, search the
+   journal for what it *actually* says about the topic
+   (`autojournal search <likely canonical words>`; without the CLI, `rg -li`
+   over the journal root). The alias value must be a word the journal
+   uses, not another guess.
+4. **Check breadth before proposing.** A near-universal target flattens the
+   query into "match everything". Run `autojournal search <value> --json`
+   and compare `total` against the corpus size from `autojournal status`;
+   if the value matches a large share of all episodes (as a rule of thumb,
+   half or more), prefer a rarer word or a phrase value. The curation
+   rules above (no prefix expansions, phrases for precision, no short
+   fragments) all apply to the proposed value.
+5. **Present verdicts to the owner.** For each candidate: the failed
+   query, how often it missed, the proposed
+   `autojournal alias add <key> <value>` (or "dismiss" with the reason),
+   and what the value's breadth check showed. Apply only what the owner
+   approves — the engine never invents aliases, and neither does the
+   reviewing agent.
+6. **Reset the log.** After the ruling session, truncate the miss log so
+   the next review starts from fresh signal:
+   `: > ~/.local/state/autojournal/thesaurus-candidates.jsonl`. The log is
+   bounded (1 MiB default) and best-effort, so stale entries otherwise
+   linger and crowd `alias candidates`.
+
 ## Credit modes reference
 
 `--credit-mode` on `autojournal search` selects the boundary rule, mainly
