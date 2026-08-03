@@ -12,7 +12,7 @@
 // the import path github.com/Middlewatch/autojournal/src to this package.
 //
 // Port discipline: the archived Zig implementation (git tag zig-final,
-// ~/archive/autojournal-zig) is the behavioral spec. On-disk formats
+// ~/projects/zig-reference/autojournal) is the behavioral spec. On-disk formats
 // (episode Markdown, frontmatter, index schema) and identity/digest
 // derivation are frozen — a Go-rendered episode is byte-identical to the
 // Zig-rendered one, verified against testdata/golden.

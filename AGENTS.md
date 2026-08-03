@@ -32,9 +32,9 @@ not observe a behavior change.
 ## Port discipline
 
 - The archived Zig implementation is the behavioral spec: git tag
-  `zig-final`, tree + static binary at `~/archive/autojournal-zig/`. The
-  binary is the parity oracle and the live capture stopgap
-  (`~/.local/bin/autojournal` points there until cutover).
+  `zig-final`, tree + static binary at `~/projects/zig-reference/autojournal/`.
+  The live binary cut over to the Go build 2026-08-03
+  (`~/.local/bin/autojournal` → this repo's `artifacts/autojournal`).
 - `testdata/payloads` + `testdata/golden` pin the oracle's capture
   behavior (episode bytes, identity/digest vectors, publish paths,
   config rewrites, ops samples). Extend
