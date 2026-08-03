@@ -12,10 +12,13 @@ Pi can later search those episodes with bounded, provenance-carrying tools.
 pi install npm:autojournal
 ~~~
 
-This package includes prebuilt binaries because the core was built in zig. this was an intentional choice because im building it for a different side project and I wanted the system to be portable across different harnesses.
+This package includes prebuilt binaries because the core is a single static
+Go executable. That was an intentional choice: the same core serves other
+harnesses and an embedding host, so the system stays portable with no
+runtime dependencies.
 
 Start a new Pi process, or run **/reload** in an already-running Pi session.
-The package includes prebuilt AutoJournal binaries; users do not need Zig, SQLite, a compiler, or an **autojournal**
+The package includes prebuilt AutoJournal binaries; users do not need Go, SQLite, a compiler, or an **autojournal**
 command on PATH.
 
 Supported package targets are Linux x64/ARM64 and macOS Intel/Apple Silicon.
@@ -233,9 +236,10 @@ automation never pollutes the journal. Their recall tools still work.
 
 ## Contributors and non-Pi integration
 
-The repository builds one Zig implementation as both an importable module and
-a standalone executable. The npm package is a thin Pi lifecycle and TUI
-adapter plus prebuilt platform binaries.
+The repository builds one Go implementation as both an importable module
+(`github.com/Middlewatch/autojournal/src`) and a standalone static
+executable. The npm package is a thin Pi lifecycle and TUI adapter plus
+prebuilt platform binaries.
 
 ~~~text
 src/                 shared contracts, publication, index, and retrieval
@@ -244,7 +248,7 @@ docs/                design, architecture, and search tuning
 scripts/             verification and release gates
 ~~~
 
-Use the pinned Zig 0.16.0 wrapper and the complete gate:
+Use a Go 1.26+ toolchain and the complete gate:
 
 ~~~sh
 ./scripts/verify.sh

@@ -1,10 +1,13 @@
 # AutoJournal design basis
 
-Status: as built, 2026-07-29. This document records the design decisions
-behind AutoJournal as shipped (the Zig core, the standalone binary, and the
-Pi adapter published as the 0.1.0 npm package) and the reasoning a future
-maintainer needs to extend it. The codebase map for contributors is
-[`ARCHITECTURE.md`](ARCHITECTURE.md).
+Status: as built, 2026-08-03. This document records the design decisions
+behind AutoJournal as shipped (the Go core, the standalone static binary,
+and the Pi adapter published as the npm package) and the reasoning a future
+maintainer needs to extend it. The core was originally built in Zig and
+ported to Go in August 2026 with every on-disk format, identity rule, and
+CLI contract frozen; where this document reasons about the implementation
+language, the reasoning carried over unchanged. The codebase map for
+contributors is [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 AutoJournal has two jobs:
 
@@ -31,11 +34,11 @@ Three earlier implementations shaped every major decision:
   compatibility with its wire or disk formats.
 - A **split design** — a scripted policy layer above a compiled substrate, so
   one implementation could run inside a host engine's extension VM — was
-  drafted and retired. Once an embedded host could link the Zig package
+  drafted and retired. Once an embedded host could link the core package
   natively, the second runtime bought nothing but a versioned cross-language
   contract to maintain in two hosts.
 
-The result is the all-Zig single-package design described below: one
+The result is the single-package design described below: one
 implementation of storage, identity, ranking, and freshness, consumed either
 as an imported module or as a standalone static binary. Product-rule changes
 require recompilation — an accepted cost for a product whose scoring policy
@@ -47,7 +50,7 @@ AutoJournal is an independent product and repository, not a session subsystem
 of any harness and not policy for one machine.
 
 - An embedding host engine (Evoker is the intended first) ships an
-  opinionated built-in integration by importing the AutoJournal Zig package
+  opinionated built-in integration by importing the AutoJournal Go package
   directly in its build, disableable by owner configuration. Dependency
   direction is host → AutoJournal; AutoJournal never depends on a host.
 - Every other harness uses the standalone AutoJournal binary: one static
@@ -93,8 +96,9 @@ authoritative source memory.
 
 ## Implementation shape
 
-The implementation language is Zig throughout. One Zig package owns all
-product rules and durability:
+The implementation language is Go throughout (ported from the original
+Zig build with frozen contracts). One package owns all product rules and
+durability:
 
 - versioned capture and query contracts;
 - episode validation and rendering;
@@ -110,10 +114,10 @@ product rules and durability:
   cross-process locking goes through SQLite itself, with no separate
   advisory-lock layer);
 - SHA-256 digests; and
-- a statically linked SQLite binding with transactions, WAL, busy handling,
-  and corruption diagnostics.
+- a statically linked SQLite driver (`modernc.org/sqlite`, pure Go) with
+  transactions, WAL, busy handling, and corruption diagnostics.
 
-The package builds two ways from one source tree: a Zig module an embedding
+The package builds two ways from one source tree: a Go module an embedding
 host imports in its build, and a standalone static binary that is the
 helper, the owner CLI, and the hook target in one executable. The current
 adapter transport is the CLI's `--json` surface; a framed-stdio protocol for

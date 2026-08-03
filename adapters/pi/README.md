@@ -13,7 +13,7 @@ pi install npm:autojournal
 
 Start a new Pi process, or run **/reload** in an already-running Pi session.
 That is the complete normal setup. The package includes prebuilt AutoJournal
-binaries; users do not need Zig, SQLite, a compiler, or an **autojournal**
+binaries; users do not need Go, SQLite, a compiler, or an **autojournal**
 command on PATH.
 
 Supported package targets are Linux x64/ARM64 and macOS Intel/Apple Silicon.

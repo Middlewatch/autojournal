@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	aj "github.com/Middlewatch/autojournal/src"
 )
 
 const (
@@ -159,8 +161,16 @@ func TestGoldenVersionLine(t *testing.T) {
 	if code != 0 {
 		t.Errorf("version exit = %d", code)
 	}
-	if stdout != readGolden(t, "version.txt") {
-		t.Errorf("version:\n got %q\nwant %q", stdout, readGolden(t, "version.txt"))
+	// The package version moves past the oracle's; every schema identity
+	// in the parenthesis stays pinned to it.
+	golden := readGolden(t, "version.txt")
+	fields := strings.SplitN(golden, " ", 3)
+	if len(fields) != 3 {
+		t.Fatalf("unparseable golden version line: %q", golden)
+	}
+	want := fields[0] + " " + aj.PackageVersion + " " + fields[2]
+	if stdout != want {
+		t.Errorf("version:\n got %q\nwant %q", stdout, want)
 	}
 }
 

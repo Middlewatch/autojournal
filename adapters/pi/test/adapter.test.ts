@@ -25,7 +25,13 @@ import {
 } from "../index.ts";
 
 const e2eBinary = resolveBinary({
-  AUTOJOURNAL_BIN: path.join(import.meta.dirname, "..", "..", "..", "zig-out", "bin", "autojournal"),
+  AUTOJOURNAL_BIN: path.join(
+    import.meta.dirname,
+    "..",
+    "bin",
+    `${process.platform}-${process.arch}`,
+    "autojournal",
+  ),
   PATH: process.env.PATH,
 });
 

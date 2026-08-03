@@ -4,9 +4,29 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
 
-./scripts/zig.sh fmt --check build.zig src
-./scripts/zig.sh build test
-./scripts/zig.sh build
+UNFORMATTED=$(gofmt -l src)
+if [[ -n "$UNFORMATTED" ]]; then
+  printf 'gofmt needed:\n%s\n' "$UNFORMATTED" >&2
+  exit 1
+fi
+go vet ./...
+go test -race ./...
+
+# Host binary for the smoke and adapter tests, in the same layout the npm
+# package ships (adapters/pi/bin/<platform>-<arch>/).
+case "$(uname -s)-$(uname -m)" in
+  Linux-x86_64) HOST_DIR=linux-x64 ;;
+  Linux-aarch64 | Linux-arm64) HOST_DIR=linux-arm64 ;;
+  Darwin-x86_64) HOST_DIR=darwin-x64 ;;
+  Darwin-arm64) HOST_DIR=darwin-arm64 ;;
+  *)
+    printf 'unsupported verification host: %s-%s\n' "$(uname -s)" "$(uname -m)" >&2
+    exit 1
+    ;;
+esac
+AJ="adapters/pi/bin/$HOST_DIR/autojournal"
+mkdir -p "$(dirname "$AJ")"
+CGO_ENABLED=0 go build -trimpath -o "$AJ" ./src/cmd/autojournal
 
 # Pi adapter gate: typecheck + tests (the e2e case runs against the binary
 # installed by the build above).
@@ -33,7 +53,6 @@ done
 # End-to-end retrieval smoke against the installed binary: capture two
 # episodes, search (exact and alias-rescued), open evidence, then prove
 # stale_revision and typed no_match. Isolated root/index/thesaurus.
-AJ=zig-out/bin/autojournal
 SMOKE=$(mktemp -d)
 trap 'rm -rf "$SMOKE"' EXIT
 export AUTOJOURNAL_THESAURUS="$SMOKE/thesaurus.json"
