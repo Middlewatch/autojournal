@@ -1,10 +1,16 @@
 {
   "name": "autojournal",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Durable agent memory for the Pi coding agent: every completed turn becomes an owner-controlled Markdown episode, with exact, ranked, bounded recall.",
   "type": "module",
   "license": "MIT",
-  "keywords": ["pi-package", "pi", "pi-coding-agent", "agent-memory", "extension"],
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "agent-memory",
+    "extension"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/Middlewatch/autojournal.git"

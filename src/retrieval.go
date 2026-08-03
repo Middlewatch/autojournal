@@ -25,15 +25,32 @@ import (
 
 // Version identities. TokenizerVersion gates the index: postings from
 // another tokenizer version are disposed. ScorerVersion is stamped on
-// every search result; callers may pin it. ConfidencePolicyVersion is
-// reported separately from score; numeric calibration is deferred, the
-// policy identity is not.
+// every search result; callers may pin it.
+//
+// aj-scorer.v2 (ratified 2026-08-03, measured against the judged eval
+// set in ~/memory/eval/autojournal-retrieval on the origin host) is v1
+// ordering plus: additive singular folding of plural query terms, and a
+// per-episode cap of MaxPerEpisodeDefault result regions so one long
+// episode cannot crowd a page. aj-conf.v2 bands confidence on the
+// coverage-adjusted score (score × coverage^ConfidenceCoverageAlpha)
+// while ordering stays pure rarity×recency — coverage measurably
+// separates spurious partial matches from real hits but does not improve
+// ordering itself.
 const (
 	TokenizerVersion               = "aj-tok.v1"
-	ScorerVersion                  = "aj-scorer.v1"
-	ConfidencePolicyVersion        = "aj-conf.v1"
+	ScorerVersion                  = "aj-scorer.v2"
+	ConfidencePolicyVersion        = "aj-conf.v2"
 	msPerDay                uint64 = 24 * 60 * 60 * 1000
 )
+
+// MaxPerEpisodeDefault is the v2 per-episode page cap.
+const MaxPerEpisodeDefault = 2
+
+// ConfidenceCoverageAlpha is the exponent on term coverage in aj-conf.v2
+// confidence banding. 1.0 (linear discount) is what the calibration runs
+// measured: at this corpus's score magnitudes a gentler exponent leaves
+// nearly every spurious partial match banded high.
+const ConfidenceCoverageAlpha = 1.0
 
 // --- Tokenizer ---
 
@@ -213,24 +230,15 @@ type EpisodeInfo struct {
 	EventTimeMs uint64
 }
 
-// RankParams carries the scoring knobs. The Experimental block is the
-// aj-scorer.v2 candidate set: zero values keep exact aj-scorer.v1
-// behavior; anything else is opt-in measurement territory (the CLI gates
-// it behind AUTOJOURNAL_XP) until a ruling promotes it into a versioned
-// scorer with a new parity baseline.
+// RankParams carries the scoring knobs.
 type RankParams struct {
 	NowMs         uint64
 	RecencyBoost  float64
-	MinScore      float64 // 0 disables the relevance floor (v1 parity default)
+	MinScore      float64 // 0 disables the relevance floor
 	ContextWindow uint32
-
-	// CoverageAlpha multiplies each line's score by
-	// (matched terms / query terms)^alpha, so lines covering more of the
-	// query outrank equally-rare partial matches. 0 disables.
-	CoverageAlpha float64
 	// MaxPerEpisode caps how many result regions one episode contributes
 	// to the ordering, so a single long episode cannot crowd a page.
-	// 0 disables.
+	// 0 disables (pre-v2 behavior); Search passes MaxPerEpisodeDefault.
 	MaxPerEpisode uint32
 }
 
@@ -250,22 +258,16 @@ func Rank(candidates []Candidate, episodes []EpisodeInfo, idf []float64, params 
 	scores := make([]float64, len(candidates))
 	for i, c := range candidates {
 		var rarity float64
-		matched := 0
 		mask := c.MatchedMask
 		for mask != 0 {
 			bit := uint(bits.TrailingZeros64(mask))
 			mask &= mask - 1
 			if bit < uint(len(idf)) {
 				rarity += idf[bit]
-				matched++
 			}
 		}
 		ep := episodes[c.EpisodeOrd]
 		scores[i] = rarity * RecencyMultiplier(ep.EventTimeMs, params.NowMs, params.RecencyBoost)
-		if params.CoverageAlpha > 0 && len(idf) > 0 {
-			coverage := float64(matched) / float64(len(idf))
-			scores[i] *= math.Pow(coverage, params.CoverageAlpha)
-		}
 	}
 
 	order := make([]uint32, len(candidates))
@@ -321,6 +323,17 @@ const (
 	ConfidenceMedium Confidence = "medium"
 	ConfidenceHigh   Confidence = "high"
 )
+
+// ConfidenceWithCoverage is aj-conf.v2 banding: the score is discounted
+// by coverage^ConfidenceCoverageAlpha before banding, so a hit matching
+// only a fraction of the query's terms needs a proportionally stronger
+// score to earn the same band. Ordering never uses this — it is display
+// trust only. Coverage is the matched fraction of query term positions,
+// clamped to [0, 1].
+func ConfidenceWithCoverage(score, coverage, floor float64) Confidence {
+	coverage = min(max(coverage, 0), 1)
+	return ConfidenceOf(score*math.Pow(coverage, ConfidenceCoverageAlpha), floor)
+}
 
 // ConfidenceOf bands a score off the floor; the floor is the legacy
 // weak-query bar. Reported separately from score; a whole-response

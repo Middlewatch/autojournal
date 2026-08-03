@@ -6,12 +6,13 @@
 // disk. Failures are typed outcomes, never Go errors — recall degrading
 // is a normal result the caller renders, not an exception.
 //
-// Discovery pipeline: query terms → additive alias expansion →
-// vocabulary substring scan → postings fetch under world/scope/lane
-// filters → per-line crediting against the source text (word-start
-// boundary by default, so "hang" credits "hanging" but not "changed";
-// CreditSubstring preserves v1 parity's infix recall) → the pure scorer
-// in retrieval.go → span dedup, floor, page.
+// Discovery pipeline: query terms → additive alias expansion → additive
+// singular folding of plural terms → vocabulary substring scan →
+// postings fetch under world/scope/lane filters → per-line crediting
+// against the source text (word-start boundary by default, so "hang"
+// credits "hanging" but not "changed"; CreditSubstring preserves v1
+// parity's infix recall) → the pure scorer in retrieval.go → span dedup,
+// per-episode cap, floor, page.
 
 package autojournal
 
@@ -90,22 +91,14 @@ type SearchRequest struct {
 	NowMs      uint64 // injectable clock (epoch ms) for deterministic recency
 	Knobs      Knobs
 	CreditMode CreditMode
-
-	// Experimental aj-scorer.v2 candidates; zero values keep exact
-	// aj-scorer.v1 behavior. See RankParams for CoverageAlpha and
-	// MaxPerEpisode. FoldPlurals additively expands query terms with
-	// singular variants ("quotas" also searches "quota"), closing the
-	// word-form gap that word-start crediting cannot: a plural query term
-	// never occurs inside its singular's text.
-	FoldPlurals   bool
-	CoverageAlpha float64
-	MaxPerEpisode uint32
 }
 
 // singularVariants returns additive singular candidates for one query
 // term: "quotas"→"quota", "boxes"→"box"/"boxe", "policies"→"policy".
-// Purely additive recall — variants join the term union like alias
-// values, and a variant that never credits merely contributes df 0.
+// Part of aj-scorer.v2: purely additive recall closing the word-form gap
+// word-start crediting cannot (a plural query term never occurs inside
+// its singular's text). Variants join the term union like alias values,
+// and a variant that never credits merely contributes df 0.
 func singularVariants(term string) []string {
 	var out []string
 	add := func(v string) {
@@ -273,15 +266,13 @@ func searchInner(root *os.Root, idx *Index, aliasMap *AliasMap, req SearchReques
 		}
 	}
 	folded := false
-	if req.FoldPlurals {
-		for _, t := range base.Items {
-			for _, v := range singularVariants(t) {
-				if have.has(v) {
-					continue
-				}
-				have.add(v)
-				folded = true
+	for _, t := range base.Items {
+		for _, v := range singularVariants(t) {
+			if have.has(v) {
+				continue
 			}
+			have.add(v)
+			folded = true
 		}
 	}
 
@@ -503,8 +494,7 @@ scan:
 		RecencyBoost:  req.Knobs.RecencyBoost,
 		MinScore:      req.Knobs.MinScore,
 		ContextWindow: req.Knobs.ContextWindow,
-		CoverageAlpha: req.CoverageAlpha,
-		MaxPerEpisode: req.MaxPerEpisode,
+		MaxPerEpisode: MaxPerEpisodeDefault,
 	})
 	out.Total = uint64(len(ranked.Order))
 	if len(ranked.Order) > 0 {
@@ -556,12 +546,14 @@ scan:
 		ep := episodes[cand.EpisodeOrd]
 
 		var matched []string
+		matchedPositions := 0
 		mask := cand.MatchedMask
 		for mask != 0 {
 			bit := trailingZeros(&mask)
 			if bit >= len(finalTerms) {
 				continue
 			}
+			matchedPositions++
 			term := finalTerms[bit]
 			dup := false
 			for _, m := range matched {
@@ -574,6 +566,7 @@ scan:
 				matched = append(matched, term)
 			}
 		}
+		coverage := float64(matchedPositions) / float64(len(finalTerms))
 
 		snippet := renderSnippet(root, ep.digestHex, ep.meta.RelPath, snippetSpec{
 			line:          cand.LineNo,
@@ -594,7 +587,8 @@ scan:
 			Snippet:       snippet.text,
 			MatchedTerms:  matched,
 			Score:         ranked.Scores[candIdx],
-			Confidence:    ConfidenceOf(ranked.Scores[candIdx], req.Knobs.ConfidenceFloor),
+			Confidence: ConfidenceWithCoverage(ranked.Scores[candIdx],
+				coverage, req.Knobs.ConfidenceFloor),
 		}
 	}
 	out.Hits = hits

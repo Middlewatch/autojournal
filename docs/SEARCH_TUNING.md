@@ -14,6 +14,10 @@ A search runs through five stages:
 2. **Alias expansion.** Each term is looked up in the thesaurus by exact
    match, and its canonical values join the term list. Expansion is additive:
    aliases can only widen a search, never narrow it.
+   Plural terms also fold: `quotas` additionally searches `quota`,
+   `policies` searches `policy` — the one word-form direction the boundary
+   rule below cannot cover, since a plural query term never occurs inside
+   its singular's text.
 3. **Discovery.** The index vocabulary is scanned for tokens containing any
    term as a substring, and the matching tokens' postings become the
    candidate lines. Needles shorter than 3 bytes are skipped when longer
@@ -29,6 +33,11 @@ A search runs through five stages:
      family you actually want.
 5. **Scoring.** Credited lines are ranked by term rarity (a word appearing
    in few episodes outweighs a ubiquitous one) with a mild recency boost.
+   One episode contributes at most two result regions per page, so a long
+   episode cannot crowd out the rest of the corpus. Each hit's
+   `confidence` band discounts partial matches: a hit crediting only some
+   of your query words needs a proportionally stronger score to report
+   `high` — ordering is unaffected, the band is display trust only.
 
 ## When an expected result is missing
 

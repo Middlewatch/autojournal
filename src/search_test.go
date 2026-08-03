@@ -555,3 +555,79 @@ func TestCreditLineBoundaryRulesPerMode(t *testing.T) {
 		}
 	}
 }
+
+func TestPluralQueryFoldsToSingularAdditively(t *testing.T) {
+	fx := setupSearchCorpus(t)
+	// The corpus says "quokka"; a plural query still finds it because
+	// aj-scorer.v2 adds the singular variant to the term union.
+	out := Search(fx.root, fx.idx, fx.emptyMap, fx.request("quokkas"))
+	if out.Outcome != OutcomeMatch {
+		t.Fatalf("plural query outcome = %s, want match", out.Outcome)
+	}
+	found := false
+	for _, hit := range out.Hits {
+		for _, term := range hit.MatchedTerms {
+			if term == "quokka" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Errorf("no hit credited the folded singular; hits = %+v", out.Hits)
+	}
+}
+
+func TestPerEpisodePageCapLimitsOneEpisodesRegions(t *testing.T) {
+	rootPath, root := testCorpus(t)
+	_ = rootPath
+	base := mustValidate(t, testPayloadJSON)
+	// One episode with many well-separated matching regions, one episode
+	// with a single match: the long episode must not crowd the page past
+	// MaxPerEpisodeDefault regions.
+	long := base
+	long.TurnID = "turn-3001"
+	long.UserContent = strings.Repeat("zorilla sighting\nfiller one\nfiller two\nfiller three\nfiller four\nfiller five\nfiller six\n", 6)
+	mustPublish(t, root, long)
+	short := base
+	short.TurnID = "turn-3002"
+	short.UserContent = "a single zorilla note"
+	shortPub := mustPublish(t, root, short)
+
+	idx := openMemoryIndex(t)
+	if _, err := idx.SyncFromCorpus(root); err != nil {
+		t.Fatalf("SyncFromCorpus: %v", err)
+	}
+	out := Search(root, idx, LoadAliasMapFromBytes([]byte("{}")),
+		SearchRequest{Query: "zorilla", World: "testworld", NowMs: searchTestNowMs})
+	if out.Outcome != OutcomeMatch {
+		t.Fatalf("outcome = %s", out.Outcome)
+	}
+	perEpisode := map[string]int{}
+	for _, hit := range out.Hits {
+		perEpisode[hit.EpisodeID]++
+	}
+	for id, n := range perEpisode {
+		if n > MaxPerEpisodeDefault {
+			t.Errorf("episode %s holds %d page regions, cap is %d", id, n, MaxPerEpisodeDefault)
+		}
+	}
+	if perEpisode[shortPub.EpisodeID] != 1 {
+		t.Errorf("single-match episode missing from page: %+v", perEpisode)
+	}
+}
+
+func TestConfidenceDiscountsPartialCoverage(t *testing.T) {
+	// Full coverage keeps the plain banding; half coverage of the same
+	// score must never band higher and drops out of "high" near the
+	// 2*floor boundary.
+	floor := 3.0
+	if got := ConfidenceWithCoverage(6.0, 1.0, floor); got != ConfidenceHigh {
+		t.Errorf("full coverage at 2*floor = %s, want high", got)
+	}
+	if got := ConfidenceWithCoverage(6.0, 0.5, floor); got == ConfidenceHigh {
+		t.Errorf("half coverage at 2*floor still bands high")
+	}
+	if got := ConfidenceWithCoverage(6.0, 0.0, floor); got != ConfidenceLow {
+		t.Errorf("zero coverage = %s, want low", got)
+	}
+}
