@@ -17,3 +17,7 @@
 // derivation are frozen — a Go-rendered episode is byte-identical to the
 // Zig-rendered one, verified against testdata/golden.
 package autojournal
+
+// PackageVersion is the released package identity the CLI prints; the
+// reference took it from build.zig.zon.
+const PackageVersion = "0.1.1"
