@@ -213,12 +213,25 @@ type EpisodeInfo struct {
 	EventTimeMs uint64
 }
 
-// RankParams carries the scoring knobs.
+// RankParams carries the scoring knobs. The Experimental block is the
+// aj-scorer.v2 candidate set: zero values keep exact aj-scorer.v1
+// behavior; anything else is opt-in measurement territory (the CLI gates
+// it behind AUTOJOURNAL_XP) until a ruling promotes it into a versioned
+// scorer with a new parity baseline.
 type RankParams struct {
 	NowMs         uint64
 	RecencyBoost  float64
 	MinScore      float64 // 0 disables the relevance floor (v1 parity default)
 	ContextWindow uint32
+
+	// CoverageAlpha multiplies each line's score by
+	// (matched terms / query terms)^alpha, so lines covering more of the
+	// query outrank equally-rare partial matches. 0 disables.
+	CoverageAlpha float64
+	// MaxPerEpisode caps how many result regions one episode contributes
+	// to the ordering, so a single long episode cannot crowd a page.
+	// 0 disables.
+	MaxPerEpisode uint32
 }
 
 // Ranked is the scorer's output: Order holds candidate indices, ranked,
@@ -237,16 +250,22 @@ func Rank(candidates []Candidate, episodes []EpisodeInfo, idf []float64, params 
 	scores := make([]float64, len(candidates))
 	for i, c := range candidates {
 		var rarity float64
+		matched := 0
 		mask := c.MatchedMask
 		for mask != 0 {
 			bit := uint(bits.TrailingZeros64(mask))
 			mask &= mask - 1
 			if bit < uint(len(idf)) {
 				rarity += idf[bit]
+				matched++
 			}
 		}
 		ep := episodes[c.EpisodeOrd]
 		scores[i] = rarity * RecencyMultiplier(ep.EventTimeMs, params.NowMs, params.RecencyBoost)
+		if params.CoverageAlpha > 0 && len(idf) > 0 {
+			coverage := float64(matched) / float64(len(idf))
+			scores[i] *= math.Pow(coverage, params.CoverageAlpha)
+		}
 	}
 
 	order := make([]uint32, len(candidates))
@@ -271,6 +290,7 @@ func Rank(candidates []Candidate, episodes []EpisodeInfo, idf []float64, params 
 	// matches collapse to one result region (v1 semantics).
 	bucketSpan := uint32(max(uint64(params.ContextWindow)*2, 1))
 	seen := make(map[uint64]struct{})
+	perEpisode := make(map[uint32]uint32)
 	var kept []uint32
 	for _, idx := range order {
 		c := candidates[idx]
@@ -281,7 +301,11 @@ func Rank(candidates []Candidate, episodes []EpisodeInfo, idf []float64, params 
 		if _, dup := seen[key]; dup {
 			continue
 		}
+		if params.MaxPerEpisode > 0 && perEpisode[c.EpisodeOrd] >= params.MaxPerEpisode {
+			continue
+		}
 		seen[key] = struct{}{}
+		perEpisode[c.EpisodeOrd]++
 		kept = append(kept, idx)
 	}
 	return Ranked{Order: kept, Scores: scores}

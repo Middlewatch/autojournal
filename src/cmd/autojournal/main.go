@@ -437,7 +437,7 @@ func (c *cli) searchCommand(cfg aj.Config, rootPath, indexPath string, o *opts) 
 	}
 
 	nowMs := c.nowMs()
-	out := aj.Search(root, idx, aliasMap, aj.SearchRequest{
+	req := aj.SearchRequest{
 		Query:      query,
 		World:      world,
 		Scope:      o.scope,
@@ -452,7 +452,28 @@ func (c *cli) searchCommand(cfg aj.Config, rootPath, indexPath string, o *opts) 
 			MinScore:        cfg.MinScore,
 			ConfidenceFloor: cfg.ConfidenceFloor,
 		},
-	})
+	}
+	// Unadvertised experiment gate for scorer-v2 measurement runs:
+	// AUTOJOURNAL_XP=fold,coverage=0.5,diversity=2. Absent or empty keeps
+	// exact aj-scorer.v1 behavior; nothing here is a stable interface.
+	if xp, ok := c.env("AUTOJOURNAL_XP"); ok && xp != "" {
+		for _, tok := range strings.Split(xp, ",") {
+			key, val, _ := strings.Cut(strings.TrimSpace(tok), "=")
+			switch key {
+			case "fold":
+				req.FoldPlurals = true
+			case "coverage":
+				if f, err := strconv.ParseFloat(val, 64); err == nil && f > 0 {
+					req.CoverageAlpha = f
+				}
+			case "diversity":
+				if n, err := strconv.ParseUint(val, 10, 32); err == nil && n > 0 {
+					req.MaxPerEpisode = uint32(n)
+				}
+			}
+		}
+	}
+	out := aj.Search(root, idx, aliasMap, req)
 
 	// Weak-query miss logging: opt-in, bounded, best-effort, and only for
 	// real (non-error) recall outcomes.

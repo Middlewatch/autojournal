@@ -90,6 +90,39 @@ type SearchRequest struct {
 	NowMs      uint64 // injectable clock (epoch ms) for deterministic recency
 	Knobs      Knobs
 	CreditMode CreditMode
+
+	// Experimental aj-scorer.v2 candidates; zero values keep exact
+	// aj-scorer.v1 behavior. See RankParams for CoverageAlpha and
+	// MaxPerEpisode. FoldPlurals additively expands query terms with
+	// singular variants ("quotas" also searches "quota"), closing the
+	// word-form gap that word-start crediting cannot: a plural query term
+	// never occurs inside its singular's text.
+	FoldPlurals   bool
+	CoverageAlpha float64
+	MaxPerEpisode uint32
+}
+
+// singularVariants returns additive singular candidates for one query
+// term: "quotas"→"quota", "boxes"→"box"/"boxe", "policies"→"policy".
+// Purely additive recall — variants join the term union like alias
+// values, and a variant that never credits merely contributes df 0.
+func singularVariants(term string) []string {
+	var out []string
+	add := func(v string) {
+		if len(v) > 2 && !IsStopWord(v) {
+			out = append(out, v)
+		}
+	}
+	switch {
+	case strings.HasSuffix(term, "ies") && len(term) > 4:
+		add(term[:len(term)-3] + "y")
+	case strings.HasSuffix(term, "es") && len(term) > 4:
+		add(term[:len(term)-1])
+		add(term[:len(term)-2])
+	case strings.HasSuffix(term, "s") && !strings.HasSuffix(term, "ss") && len(term) > 3:
+		add(term[:len(term)-1])
+	}
+	return out
 }
 
 // Hit is one ranked evidence reference.
@@ -239,12 +272,25 @@ func searchInner(root *os.Root, idx *Index, aliasMap *AliasMap, req SearchReques
 			out.AliasTerms = append(out.AliasTerms, v)
 		}
 	}
+	folded := false
+	if req.FoldPlurals {
+		for _, t := range base.Items {
+			for _, v := range singularVariants(t) {
+				if have.has(v) {
+					continue
+				}
+				have.add(v)
+				folded = true
+			}
+		}
+	}
 
 	// v1 parity quirk, preserved deliberately: without aliases the raw
 	// duplicate-preserving list scores (duplicate query words weigh
-	// twice); once aliases fire, the deduplicated union is used instead.
+	// twice); once aliases (or folded variants) fire, the deduplicated
+	// union is used instead.
 	finalTerms := base.Items
-	if len(out.AliasTerms) > 0 {
+	if len(out.AliasTerms) > 0 || folded {
 		finalTerms = have.items
 	}
 	if len(finalTerms) > MaxQueryTerms {
@@ -457,6 +503,8 @@ scan:
 		RecencyBoost:  req.Knobs.RecencyBoost,
 		MinScore:      req.Knobs.MinScore,
 		ContextWindow: req.Knobs.ContextWindow,
+		CoverageAlpha: req.CoverageAlpha,
+		MaxPerEpisode: req.MaxPerEpisode,
 	})
 	out.Total = uint64(len(ranked.Order))
 	if len(ranked.Order) > 0 {

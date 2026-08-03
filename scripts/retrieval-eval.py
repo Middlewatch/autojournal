@@ -21,6 +21,12 @@ import statistics
 import subprocess
 import sys
 
+# A record {"meta": true, "frozen_at": "<ISO>"} freezes the eval corpus:
+# hits from episodes at or after that event time are ignored entirely.
+# This keeps the set stable as capture continues — and keeps sessions that
+# *work on* the eval (whose own turns get captured, quoting the queries)
+# from contaminating results.
+
 
 def run_query(binary, query, credit_mode, extra_args):
     cmd = [binary, "search"] + query.split() + ["--json", "--limit", "100"]
@@ -43,13 +49,22 @@ def main():
     ap.add_argument("rest", nargs="*", help="extra args after --, passed to search")
     args = ap.parse_args()
 
-    queries = [json.loads(line) for line in open(args.queries)
+    records = [json.loads(line) for line in open(args.queries)
                if line.strip()]
+    frozen_at = None
+    queries = []
+    for rec in records:
+        if rec.get("meta"):
+            frozen_at = rec.get("frozen_at")
+        else:
+            queries.append(rec)
 
     per_query, negatives = [], []
     for q in queries:
         out = run_query(args.binary, q["query"], args.credit_mode, args.rest)
         hits = out.get("results") or []
+        if frozen_at:
+            hits = [h for h in hits if h.get("event_time", "") < frozen_at]
         if q["type"] == "negative":
             top = hits[0] if hits else None
             negatives.append({
