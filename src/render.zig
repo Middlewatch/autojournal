@@ -1,9 +1,11 @@
 //! Episode file rendering: closed frontmatter plus Markdown body.
 //!
 //! The rendered file is the authoritative artifact. Frontmatter values are
-//! restricted to validated token charsets, so no quoting or escaping layer is
-//! needed; body content is arbitrary validated UTF-8 and is never inspected
-//! by the frontmatter parser, which stops at the closing delimiter.
+//! restricted to validated charsets — identity fields to token charsets,
+//! provenance paths to control-free single-line text — so no quoting or
+//! escaping layer is needed; body content is arbitrary validated UTF-8 and
+//! is never inspected by the frontmatter parser, which stops at the closing
+//! delimiter.
 
 const std = @import("std");
 const contracts = @import("contracts.zig");
@@ -39,16 +41,6 @@ pub fn render(gpa: std.mem.Allocator, in: RenderInput) std.mem.Allocator.Error![
         \\capture_time_ms: {d}
         \\capture_policy: {s}
         \\turn_outcome: {s}
-        \\payload_digest: {s}{s}
-        \\---
-        \\
-        \\## User
-        \\
-        \\{s}
-        \\
-        \\## Assistant
-        \\
-        \\{s}
         \\
     , .{
         contracts.episode_schema,
@@ -66,6 +58,26 @@ pub fn render(gpa: std.mem.Allocator, in: RenderInput) std.mem.Allocator.Error![
         in.capture_time_ms,
         p.capture_policy,
         p.turn_outcome,
+    });
+    // Optional provenance keys render only when the payload carried them,
+    // so episodes from adapters that do not know them stay byte-identical
+    // to the pre-provenance rendering.
+    if (p.workspace_root) |root| try out.print(gpa, "workspace_root: {s}\n", .{root});
+    if (p.branch_of) |branch| try out.print(gpa, "branch_of: {s}\n", .{branch});
+    if (p.host) |host| try out.print(gpa, "host: {s}\n", .{host});
+    try out.print(gpa,
+        \\payload_digest: {s}{s}
+        \\---
+        \\
+        \\## User
+        \\
+        \\{s}
+        \\
+        \\## Assistant
+        \\
+        \\{s}
+        \\
+    , .{
         identity.digest_prefix,
         in.digest_hex,
         p.user_content,
@@ -164,4 +176,37 @@ test "digest recovery rejects bodies that mimic the digest line" {
     const recovered = frontmatterDigestHex(content) orelse return error.TestUnexpectedResult;
     // The frontmatter digest, not the body imitation, must win.
     try std.testing.expectEqualStrings(&digest, recovered);
+}
+
+test "provenance fields render as frontmatter keys and stay out of the digest" {
+    const gpa = std.testing.allocator;
+    const parsed = try contracts.parsePayload(gpa, contracts.test_payload_json);
+    defer parsed.deinit();
+    const bare = try contracts.validate(parsed.value);
+    var raw = parsed.value;
+    raw.workspace_root = "/home/user/projects/demo";
+    raw.branch_of = "/home/user/sessions/parent.jsonl";
+    raw.host = "buildbox-01";
+    const p = try contracts.validate(raw);
+    const id = identity.episodeId(p);
+    const digest = identity.payloadDigestHex(p);
+    // Same identity and digest as the provenance-free payload: provenance
+    // is capture-source metadata, so a faithful re-delivery still dedupes.
+    try std.testing.expectEqualStrings(&identity.episodeId(bare), &id);
+    try std.testing.expectEqualStrings(&identity.payloadDigestHex(bare), &digest);
+    const content = try render(gpa, .{
+        .payload = p,
+        .episode_id = &id,
+        .digest_hex = &digest,
+        .capture_time_ms = 1785240000000,
+    });
+    defer gpa.free(content);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\nworkspace_root: /home/user/projects/demo\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\nbranch_of: /home/user/sessions/parent.jsonl\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\nhost: buildbox-01\n") != null);
+    const recovered = frontmatterDigestHex(content) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings(&digest, recovered);
+    // The frontmatter reader tolerates the new keys (older-reader posture).
+    const ep = @import("frontmatter.zig").parse(content) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings(&id, ep.episode_id);
 }

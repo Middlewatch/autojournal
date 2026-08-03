@@ -21,6 +21,8 @@ pub const corpus_walk_depth: u8 = 10;
 pub const max_world_len: usize = 64;
 pub const max_token_len: usize = 128;
 pub const max_tools: usize = 256;
+/// Bound for the optional provenance paths (workspace root, branch-of).
+pub const max_path_len: usize = 512;
 
 pub const Lane = enum {
     conversation,
@@ -97,6 +99,15 @@ pub const RawPayload = struct {
     user_content: []const u8,
     assistant_result: []const u8,
     tools: ?[]const Tool = null,
+    /// Optional session provenance: where the turn happened. The workspace
+    /// root the session was bound to, the session this one branched from
+    /// (in the harness's own naming — a log path or a session id), and the
+    /// capturing machine's host name. Omitted when the adapter does not
+    /// know them, and excluded from the payload digest like other
+    /// capture-source metadata, so a faithful re-delivery still dedupes.
+    workspace_root: ?[]const u8 = null,
+    branch_of: ?[]const u8 = null,
+    host: ?[]const u8 = null,
 
     pub const Tool = struct {
         name: []const u8,
@@ -119,6 +130,9 @@ pub const Payload = struct {
     user_content: []const u8,
     assistant_result: []const u8,
     tools: []const RawPayload.Tool,
+    workspace_root: ?[]const u8,
+    branch_of: ?[]const u8,
+    host: ?[]const u8,
 };
 
 pub const ValidateError = error{
@@ -138,6 +152,9 @@ pub const ValidateError = error{
     InvalidUtf8,
     TooManyTools,
     InvalidToolName,
+    InvalidWorkspaceRoot,
+    InvalidBranchOf,
+    InvalidHost,
 };
 
 pub const ParseError = ValidateError || error{ Malformed, OutOfMemory };
@@ -162,6 +179,18 @@ pub fn validToken(s: []const u8) bool {
         'a'...'z', 'A'...'Z', '0'...'9', '.', '_', '-', ':', '+', '/', '@' => {},
         else => return false,
     };
+    return true;
+}
+
+/// Provenance paths are frontmatter line values only — never directory
+/// components or digest input — so the rule is line safety, not a charset:
+/// bounded, valid UTF-8, and free of control bytes (which is what keeps the
+/// line-oriented frontmatter grammar unbreakable). Spaces and non-ASCII are
+/// legitimate in real filesystem paths and are allowed.
+pub fn validPath(s: []const u8) bool {
+    if (s.len == 0 or s.len > max_path_len) return false;
+    if (!std.unicode.utf8ValidateSlice(s)) return false;
+    for (s) |c| if (c < 0x20 or c == 0x7f) return false;
     return true;
 }
 
@@ -196,6 +225,9 @@ pub fn validate(raw: RawPayload) ValidateError!Payload {
     const tools = raw.tools orelse &[_]RawPayload.Tool{};
     if (tools.len > max_tools) return error.TooManyTools;
     for (tools) |t| if (!validToken(t.name)) return error.InvalidToolName;
+    if (raw.workspace_root) |root| if (!validPath(root)) return error.InvalidWorkspaceRoot;
+    if (raw.branch_of) |branch| if (!validPath(branch)) return error.InvalidBranchOf;
+    if (raw.host) |host| if (!validToken(host)) return error.InvalidHost;
     return .{
         .world = world,
         .scope = scope,
@@ -210,6 +242,9 @@ pub fn validate(raw: RawPayload) ValidateError!Payload {
         .user_content = raw.user_content,
         .assistant_result = raw.assistant_result,
         .tools = tools,
+        .workspace_root = raw.workspace_root,
+        .branch_of = raw.branch_of,
+        .host = raw.host,
     };
 }
 
@@ -322,4 +357,45 @@ test "omitted world and scope parse as null and fail validation unfilled" {
     const p = try validate(filled);
     try std.testing.expectEqualStrings("main", p.world);
     try std.testing.expectEqualStrings("default", p.scope);
+}
+
+test "optional provenance fields validate and pass through" {
+    const parsed = try parsePayload(std.testing.allocator, test_payload_json);
+    defer parsed.deinit();
+    var raw = parsed.value;
+    // Omitted everywhere today: parses null, validates null.
+    var p = try validate(raw);
+    try std.testing.expect(p.workspace_root == null);
+    try std.testing.expect(p.branch_of == null);
+    try std.testing.expect(p.host == null);
+
+    raw.workspace_root = "/home/user/projects/my repo";
+    raw.branch_of = "/home/user/.evoker/sessions/parent-a1b2.jsonl";
+    raw.host = "buildbox-01";
+    p = try validate(raw);
+    try std.testing.expectEqualStrings("/home/user/projects/my repo", p.workspace_root.?);
+    try std.testing.expectEqualStrings("/home/user/.evoker/sessions/parent-a1b2.jsonl", p.branch_of.?);
+    try std.testing.expectEqualStrings("buildbox-01", p.host.?);
+
+    raw = parsed.value;
+    raw.workspace_root = "/has\nnewline";
+    try std.testing.expectError(error.InvalidWorkspaceRoot, validate(raw));
+    raw = parsed.value;
+    raw.branch_of = "";
+    try std.testing.expectError(error.InvalidBranchOf, validate(raw));
+    raw = parsed.value;
+    raw.host = "two words";
+    try std.testing.expectError(error.InvalidHost, validate(raw));
+}
+
+test "oversized provenance path is rejected" {
+    const gpa = std.testing.allocator;
+    const parsed = try parsePayload(gpa, test_payload_json);
+    defer parsed.deinit();
+    var raw = parsed.value;
+    const long = try gpa.alloc(u8, max_path_len + 1);
+    defer gpa.free(long);
+    @memset(long, 'a');
+    raw.workspace_root = long;
+    try std.testing.expectError(error.InvalidWorkspaceRoot, validate(raw));
 }
