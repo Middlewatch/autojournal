@@ -195,6 +195,12 @@ func (c *cli) run(args []string) int {
 	}
 	explicitConfigPath := ""
 	if o.config != nil {
+		// An explicitly named empty path can never load (the reference
+		// opens "" and fails); refuse it rather than letting the empty
+		// string read as "no explicit path" and fall back silently.
+		if *o.config == "" {
+			return c.fail(exitFailure, "explicit AutoJournal config was not found\n")
+		}
 		explicitConfigPath = *o.config
 	}
 	cfg := aj.DefaultConfig()
@@ -572,7 +578,7 @@ func (c *cli) renderSearchText(query string, out *aj.SearchOutput) {
 	switch out.Outcome {
 	case aj.OutcomeMatch: // fall through to results
 	case aj.OutcomeNoMatch:
-		fmt.Fprintf(&buf, "no match for %q (index %s, %d indexed)\n", query, out.Freshness, out.Indexed)
+		fmt.Fprintf(&buf, "no match for \"%s\" (index %s, %d indexed)\n", query, out.Freshness, out.Indexed)
 		if out.EditedExcluded > 0 {
 			fmt.Fprintf(&buf, "note: %d candidate(s) excluded as edited since indexing; run sync\n", out.EditedExcluded)
 		}
@@ -588,7 +594,7 @@ func (c *cli) renderSearchText(query string, out *aj.SearchOutput) {
 		return
 	}
 
-	fmt.Fprintf(&buf, "%d of %d result(s) for %q — index %s\n", len(out.Hits), out.Total, query, out.Freshness)
+	fmt.Fprintf(&buf, "%d of %d result(s) for \"%s\" — index %s\n", len(out.Hits), out.Total, query, out.Freshness)
 	if len(out.AliasTerms) > 0 {
 		buf.WriteString("aliases applied:")
 		for _, t := range out.AliasTerms {
