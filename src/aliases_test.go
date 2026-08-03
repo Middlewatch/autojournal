@@ -80,6 +80,43 @@ func TestCorruptOrMissingThesaurusIsEmptyMapNeverError(t *testing.T) {
 	}
 }
 
+// Tolerance profile pinned to the reference parser: a duplicate key
+// fails the whole document (empty map), a null value drops its key, and
+// a non-string array item — even an overflowing number — is skipped item
+// by item with the key kept.
+func TestAliasLoadToleranceMatchesReferenceParser(t *testing.T) {
+	empty := LoadAliasMapFromBytes([]byte("{}"))
+
+	dup := LoadAliasMapFromBytes([]byte(`{"a": ["x"], "a": ["y"]}`))
+	if len(dup.Entries()) != 0 {
+		t.Errorf("duplicate-key map has entries: %v", dup.Entries())
+	}
+	if dup.DigestHex() != empty.DigestHex() {
+		t.Error("duplicate-key digest differs from empty")
+	}
+
+	nullValue := LoadAliasMapFromBytes([]byte(`{"firmware": null, "portal": ["pi-web-access"]}`))
+	if got := len(nullValue.Entries()); got != 1 {
+		t.Fatalf("entries = %d, want the null key dropped", got)
+	}
+	if nullValue.Entries()[0].Key != "portal" {
+		t.Errorf("kept key = %q", nullValue.Entries()[0].Key)
+	}
+	if nullValue.Get("firmware") != nil {
+		t.Error("null-valued key resolves")
+	}
+
+	overflow := LoadAliasMapFromBytes([]byte(`{"nums": [1e999, "kept"]}`))
+	if got := overflow.Get("nums"); len(got) != 1 || got[0] != "kept" {
+		t.Errorf("overflow-number entry = %v", got)
+	}
+
+	trailing := LoadAliasMapFromBytes([]byte(`{"a": ["x"]} extra`))
+	if len(trailing.Entries()) != 0 {
+		t.Error("trailing garbage still produced entries")
+	}
+}
+
 func TestAliasEditsRewriteAtomicallyAndPreserveForeignEntries(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "thesaurus.json")
 	// Foreign key shapes survive edits untouched.
@@ -147,6 +184,22 @@ func TestAliasEditingRefusesToClobberNonObjectFile(t *testing.T) {
 	}
 	if string(raw) != "[1, 2, 3]" {
 		t.Errorf("file clobbered: %q", raw)
+	}
+}
+
+// A mistyped terms field never discards the counted query: the
+// reference reads query first and consumes terms only when it is an
+// array, skipping non-string items individually.
+func TestAggregateMissesToleratesMistypedTerms(t *testing.T) {
+	log := []byte(`{"query":"vpn","terms":"vpn"}` + "\n" +
+		`{"query":"vpn","terms":["tail",7]}` + "\n" +
+		`{"query":"vpn"}` + "\n")
+	agg := AggregateMisses(log)
+	if len(agg) != 1 || agg[0].Query != "vpn" || agg[0].Count != 3 {
+		t.Fatalf("agg = %+v", agg)
+	}
+	if len(agg[0].Terms) != 1 || agg[0].Terms[0] != "tail" {
+		t.Errorf("terms = %v", agg[0].Terms)
 	}
 }
 

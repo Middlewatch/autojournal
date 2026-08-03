@@ -12,12 +12,12 @@
 // The miss log is the raw material for growing the map from real recall
 // misses; it is opt-in, owner-private, bounded, and best-effort.
 //
-// One documented divergence from the reference, in a corrupt-file path
-// only: a hand-edit that introduces a duplicate JSON key is rejected as
-// ErrAliasMalformed on edit and reads as an empty map on load, where the
-// reference's parser kept the last value silently. Refusing to interpret
-// the ambiguous file protects it from being clobbered — the same intent
-// as the reference's non-object Malformed guardrail.
+// Corrupt-file tolerance note: a hand-edit that introduces a duplicate
+// JSON key is rejected as ErrAliasMalformed on edit and reads as an
+// empty map on load — matching the reference parser, which fails the
+// whole document on a duplicate key. Refusing to interpret the ambiguous
+// file protects it from being clobbered, the same intent as the
+// non-object Malformed guardrail.
 
 package autojournal
 
@@ -28,6 +28,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -78,38 +79,80 @@ func lowerASCII(s string) string {
 
 // LoadAliasMapFromBytes is the tolerant load, v1 parity: only object
 // entries whose value is an array become aliases (array items that are
-// not strings are skipped); keys and values are lowercased. Anything
-// unreadable or unparseable is a valid empty configuration — recall never
-// fails because the thesaurus does.
+// not strings are skipped item by item); keys and values are lowercased.
+// Anything unreadable or unparseable — including a duplicate key, which
+// the reference's parser rejects wholesale — is a valid empty
+// configuration: recall never fails because the thesaurus does.
 func LoadAliasMapFromBytes(data []byte) *AliasMap {
 	var entries []AliasEntry
 	// encoding/json silently replaces invalid UTF-8 with U+FFFD; the
 	// reference's scanner validates it, and a corrupt document is an
 	// empty map there — so it is here too.
 	if utf8.Valid(data) {
-		// map decoding keeps the last of a duplicate key, the reference
-		// parser's own resolution; only the load path is this tolerant.
-		var doc map[string]json.RawMessage
-		if err := json.Unmarshal(data, &doc); err == nil && doc != nil {
-			for key, raw := range doc {
-				var items []any
-				if err := json.Unmarshal(raw, &items); err != nil {
-					continue // non-array values never become aliases
-				}
-				entry := AliasEntry{Key: lowerASCII(key), Values: []string{}}
-				for _, item := range items {
-					text, ok := item.(string)
-					if !ok || len(text) == 0 || len(text) > MaxTokenLen {
-						continue
-					}
-					entry.Values = append(entry.Values, lowerASCII(text))
-				}
-				entries = append(entries, entry)
-			}
+		if parsed, ok := parseAliasEntries(data); ok {
+			entries = parsed
 		}
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Key < entries[j].Key })
 	return &AliasMap{entries: entries, digestHex: aliasDigest(entries)}
+}
+
+// parseAliasEntries walks the top-level object token by token so a
+// duplicate key is seen and rejected — the reference parser fails the
+// whole document there, and an ambiguous hand-edit must not silently
+// resolve to either value. Map decoding cannot detect this.
+func parseAliasEntries(data []byte) ([]AliasEntry, bool) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return nil, false
+	}
+	seen := map[string]struct{}{}
+	var entries []AliasEntry
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return nil, false
+		}
+		key, _ := keyTok.(string) // inside an object, keys are strings
+		if _, dup := seen[key]; dup {
+			return nil, false
+		}
+		seen[key] = struct{}{}
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return nil, false
+		}
+		// Only arrays become aliases; null, scalars, and objects are
+		// skipped whole, like the reference's non-array branch.
+		if len(raw) == 0 || raw[0] != '[' {
+			continue
+		}
+		var items []json.RawMessage
+		if err := json.Unmarshal(raw, &items); err != nil {
+			return nil, false
+		}
+		entry := AliasEntry{Key: lowerASCII(key), Values: []string{}}
+		for _, item := range items {
+			// Non-string items — numbers (even overflowing ones), bools,
+			// nested containers — are skipped item by item; the key stays.
+			var text string
+			if err := json.Unmarshal(item, &text); err != nil {
+				continue
+			}
+			if len(text) == 0 || len(text) > MaxTokenLen {
+				continue
+			}
+			entry.Values = append(entry.Values, lowerASCII(text))
+		}
+		entries = append(entries, entry)
+	}
+	if _, err := dec.Token(); err != nil { // the closing brace
+		return nil, false
+	}
+	if _, err := dec.Token(); err != io.EOF { // no trailing garbage
+		return nil, false
+	}
+	return entries, true
 }
 
 // LoadAliasMapFile loads the map from disk; a missing or unreadable map
@@ -380,18 +423,21 @@ func AggregateMisses(data []byte) []MissCandidate {
 	byQuery := map[string]*agg{}
 	var order []string // first-seen order; sort decides presentation
 	for _, line := range bytes.Split(data, []byte{'\n'}) {
-		trimmed := bytes.TrimSpace(line)
+		// The reference trims exactly space/tab/CR — not the wider
+		// Unicode space set — so a query differing only in NBSP stays
+		// distinct on both sides.
+		trimmed := bytes.Trim(line, " \t\r")
 		if len(trimmed) == 0 {
 			continue
 		}
 		var record struct {
-			Query *string  `json:"query"`
-			Terms []string `json:"terms"`
+			Query *string         `json:"query"`
+			Terms json.RawMessage `json:"terms"`
 		}
 		if err := json.Unmarshal(trimmed, &record); err != nil || record.Query == nil {
 			continue
 		}
-		query := lowerASCII(strings.TrimSpace(*record.Query))
+		query := lowerASCII(strings.Trim(*record.Query, " \t"))
 		slot, ok := byQuery[query]
 		if !ok {
 			slot = &agg{terms: map[string]struct{}{}}
@@ -399,8 +445,17 @@ func AggregateMisses(data []byte) []MissCandidate {
 			order = append(order, query)
 		}
 		slot.count++
-		for _, term := range record.Terms {
-			slot.terms[term] = struct{}{}
+		// terms is optional and tolerated field by field: a mistyped or
+		// missing terms value never discards the counted query, and
+		// non-string items are skipped individually.
+		var rawTerms []json.RawMessage
+		if record.Terms != nil && json.Unmarshal(record.Terms, &rawTerms) == nil {
+			for _, item := range rawTerms {
+				var term string
+				if json.Unmarshal(item, &term) == nil {
+					slot.terms[term] = struct{}{}
+				}
+			}
 		}
 	}
 
