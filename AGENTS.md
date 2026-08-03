@@ -18,9 +18,9 @@ All Go. One implementation of every product rule, consumed three ways:
 - a Go module (`github.com/Middlewatch/autojournal`, package `autojournal`
   in `src/`) that Evoker imports natively for its bundled, toggleable
   memory extension;
-- a standalone static CLI (`src/cmd/autojournal/`, not yet built) that is
-  the owner CLI and the hook target for every other harness, cross-compiled
-  for the npm package's four targets (linux x64/arm64, macOS x64/arm64);
+- a standalone static CLI (`src/cmd/autojournal/`) that is the owner CLI
+  and the hook target for every other harness, cross-compiled for the npm
+  package's four targets (linux x64/arm64, macOS x64/arm64);
 - the thin TypeScript Pi adapter (`adapters/pi/`, the npm package), which
   supervises the CLI and invents no memory policy.
 
@@ -40,12 +40,11 @@ not observe a behavior change.
   config rewrites, ops samples). Extend
   the matrix when porting a module that has CLI-observable behavior; never
   weaken it.
-- Port order follows the dependency direction: contracts, identity,
-  render, frontmatter, paths, config, store (done, golden-verified) →
-  db, index, retrieval, aliases, search, ops → CLI. `modernc.org/sqlite`
-  (pure Go, no cgo) is the approved SQLite dependency when db lands — it
-  is the only dependency; everything else is stdlib. Add it with
-  `go get` when db work starts, not before.
+- The port is complete and golden-verified end to end: contracts,
+  identity, render, frontmatter, paths, config, store, db, index,
+  retrieval, aliases, search, ops, and the CLI, whose `--json` output is
+  byte-compared against the oracle's ops samples. `modernc.org/sqlite`
+  (pure Go, no cgo) is the only dependency; everything else is stdlib.
 - Layout constraint (owner): no new top-level subtrees, no `go/` dir. Go
   code lives in `src/` (package `autojournal`) and `src/cmd/autojournal/`;
   only `go.mod`/`go.sum` sit at the repo root.
