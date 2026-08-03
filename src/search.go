@@ -310,36 +310,50 @@ scan:
 	var episodes []episodeAccum
 	seenLines := map[uint64]struct{}{}
 
-	for _, token := range vocabMatches {
-		rows, err := idx.PostingsForTerm(token, req.World, req.Scope, lanes)
-		if err != nil {
-			return err
+	// Episode metadata once, postings coordinates lean, join in memory:
+	// the SQL-side join cost one B-tree probe per posting row and
+	// dominated broad searches. Pairs outside the world/scope/lane filter
+	// simply miss the metadata map.
+	eligible, err := idx.SearchEpisodes(req.World, req.Scope, lanes)
+	if err != nil {
+		return err
+	}
+	metaByID := make(map[string]*PostingRow, len(eligible))
+	for i := range eligible {
+		metaByID[eligible[i].EpisodeID] = &eligible[i]
+	}
+	pairs, err := idx.PostingPairs(vocabMatches)
+	if err != nil {
+		return err
+	}
+	for _, pair := range pairs {
+		row, eligibleEpisode := metaByID[pair.EpisodeID]
+		if !eligibleEpisode {
+			continue
 		}
-		for _, row := range rows {
-			ord, ok := episodeOrds[row.EpisodeID]
-			if !ok {
-				ord = uint32(len(episodes))
-				episodes = append(episodes, episodeAccum{
-					meta: EpisodeInfo{
-						EpisodeID:   row.EpisodeID,
-						RelPath:     row.RelPath,
-						EventTimeMs: row.EventTimeMs,
-					},
-					digestHex:     row.DigestHex,
-					scope:         row.Scope,
-					lane:          row.Lane,
-					capturePolicy: row.CapturePolicy,
-					bodyLine:      row.BodyLine,
-				})
-				episodeOrds[row.EpisodeID] = ord
-			}
-			key := uint64(ord)<<32 | uint64(row.LineNo)
-			if _, dup := seenLines[key]; dup {
-				continue
-			}
-			seenLines[key] = struct{}{}
-			episodes[ord].lines = append(episodes[ord].lines, row.LineNo)
+		ord, ok := episodeOrds[pair.EpisodeID]
+		if !ok {
+			ord = uint32(len(episodes))
+			episodes = append(episodes, episodeAccum{
+				meta: EpisodeInfo{
+					EpisodeID:   row.EpisodeID,
+					RelPath:     row.RelPath,
+					EventTimeMs: row.EventTimeMs,
+				},
+				digestHex:     row.DigestHex,
+				scope:         row.Scope,
+				lane:          row.Lane,
+				capturePolicy: row.CapturePolicy,
+				bodyLine:      row.BodyLine,
+			})
+			episodeOrds[pair.EpisodeID] = ord
 		}
+		key := uint64(ord)<<32 | uint64(pair.LineNo)
+		if _, dup := seenLines[key]; dup {
+			continue
+		}
+		seenLines[key] = struct{}{}
+		episodes[ord].lines = append(episodes[ord].lines, pair.LineNo)
 	}
 
 	if len(episodes) == 0 {

@@ -515,6 +515,125 @@ type PostingRow struct {
 	LineNo        uint32
 }
 
+// postingsTermChunk caps the terms bound into one IN clause, well under
+// SQLite's bound-parameter limit while keeping a MaxVocabMatches-sized
+// discovery to at most a handful of queries.
+const postingsTermChunk = 500
+
+// PostingPair is one (episode, line) coordinate from the postings table,
+// without episode metadata.
+type PostingPair struct {
+	EpisodeID string
+	LineNo    uint32
+}
+
+// PostingPairs returns the (episode, line) coordinates for a set of
+// vocabulary tokens, in chunked IN-clause queries against the postings
+// primary key alone. No episode join: profiling showed the per-row B-tree
+// probe into episodes dominating broad searches, so Search loads episode
+// metadata once via SearchEpisodes and joins in memory. The same
+// (episode, line) pair recurs once per matching term; callers dedup.
+func (idx *Index) PostingPairs(terms []string) ([]PostingPair, error) {
+	var out []PostingPair
+	for start := 0; start < len(terms); start += postingsTermChunk {
+		chunk := terms[start:min(start+postingsTermChunk, len(terms))]
+		if err := idx.postingPairsChunk(chunk, &out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func (idx *Index) postingPairsChunk(terms []string, out *[]PostingPair) error {
+	var sqlText strings.Builder
+	sqlText.WriteString("SELECT episode_id, line_no FROM postings WHERE term IN (")
+	args := make([]any, 0, len(terms))
+	for i, term := range terms {
+		if i > 0 {
+			sqlText.WriteByte(',')
+		}
+		sqlText.WriteByte('?')
+		args = append(args, term)
+	}
+	sqlText.WriteString(");")
+	rows, err := idx.db.Query(sqlText.String(), args...)
+	if err != nil {
+		return mapDBError(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			pair   PostingPair
+			lineNo int64
+		)
+		if err := rows.Scan(&pair.EpisodeID, &lineNo); err != nil {
+			return mapDBError(err)
+		}
+		if lineNo < 0 || lineNo > math.MaxUint32 {
+			return fmt.Errorf("posting line out of range: %w", ErrSQLiteCorrupt)
+		}
+		pair.LineNo = uint32(lineNo)
+		*out = append(*out, pair)
+	}
+	return mapDBError(rows.Err())
+}
+
+// SearchEpisodes returns the metadata Search needs for every episode in
+// the world under the scope/lane filters — the in-memory side of the
+// join PostingPairs avoids. Lane tags come from the closed enum, so
+// baking them into the SQL text is injection-safe.
+func (idx *Index) SearchEpisodes(world string, scope *string, lanes []Lane) ([]PostingRow, error) {
+	var sqlText strings.Builder
+	sqlText.WriteString(
+		`SELECT episode_id, digest_hex, rel_path, scope, lane, capture_policy,
+		       event_time_ms, body_line
+		FROM episodes WHERE world = ?`)
+	args := []any{world}
+	if scope != nil {
+		sqlText.WriteString(" AND scope = ?")
+		args = append(args, *scope)
+	}
+	sqlText.WriteString(" AND lane IN (")
+	for i, lane := range lanes {
+		if i > 0 {
+			sqlText.WriteByte(',')
+		}
+		fmt.Fprintf(&sqlText, "'%s'", string(lane))
+	}
+	sqlText.WriteString(");")
+	rows, err := idx.db.Query(sqlText.String(), args...)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	defer rows.Close()
+	var out []PostingRow
+	for rows.Next() {
+		var (
+			row      PostingRow
+			bodyLine int64
+			lane     string
+			eventMs  int64
+		)
+		if err := rows.Scan(&row.EpisodeID, &row.DigestHex, &row.RelPath,
+			&row.Scope, &lane, &row.CapturePolicy, &eventMs, &bodyLine); err != nil {
+			return nil, mapDBError(err)
+		}
+		if bodyLine < 0 || bodyLine > math.MaxUint32 {
+			return nil, fmt.Errorf("body line out of range: %w", ErrSQLiteCorrupt)
+		}
+		row.BodyLine = uint32(bodyLine)
+		row.Lane = Lane(lane)
+		switch row.Lane {
+		case LaneConversation, LaneDelegatedWork, LaneEvaluation, LaneImportedLegacy:
+		default:
+			return nil, fmt.Errorf("episode lane %q: %w", lane, ErrSQLiteCorrupt)
+		}
+		row.EventTimeMs = nonNeg(eventMs)
+		out = append(out, row)
+	}
+	return out, mapDBError(rows.Err())
+}
+
 // PostingsForTerm returns all postings for one vocabulary token, filtered
 // by world, optional scope, and an explicit lane set. Lane tags come from
 // the closed enum, so baking them into the SQL text is injection-safe.

@@ -3,6 +3,7 @@ package autojournal
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -277,6 +278,52 @@ func TestPostingsAndDfTrackSyncLaneExclusionAndRemoval(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].Lane != LaneEvaluation {
 		t.Errorf("eval-lane zebra postings = %+v", rows)
+	}
+
+	// The lean discovery path (PostingPairs + SearchEpisodes membership)
+	// must agree with the joined per-term query it replaced in Search.
+	pairs, err := idx.PostingPairs([]string{"zebra", "quokka"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eligible, err := idx.SearchEpisodes("testworld", nil,
+		[]Lane{LaneConversation, LaneDelegatedWork, LaneImportedLegacy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	metaByID := map[string]PostingRow{}
+	for _, ep := range eligible {
+		metaByID[ep.EpisodeID] = ep
+	}
+	joined := map[string]int{}
+	for _, term := range []string{"zebra", "quokka"} {
+		termRows, err := idx.PostingsForTerm(term, "testworld", nil,
+			[]Lane{LaneConversation, LaneDelegatedWork, LaneImportedLegacy})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range termRows {
+			joined[fmt.Sprintf("%s:%d", row.EpisodeID, row.LineNo)]++
+		}
+	}
+	lean := map[string]int{}
+	for _, pair := range pairs {
+		meta, ok := metaByID[pair.EpisodeID]
+		if !ok {
+			continue // evaluation-lane posting, filtered by membership
+		}
+		if meta.EpisodeID != pair.EpisodeID {
+			t.Fatalf("metadata identity mismatch for %s", pair.EpisodeID)
+		}
+		lean[fmt.Sprintf("%s:%d", pair.EpisodeID, pair.LineNo)]++
+	}
+	if len(lean) != len(joined) {
+		t.Errorf("lean path found %d coordinates, joined path %d", len(lean), len(joined))
+	}
+	for key := range joined {
+		if lean[key] == 0 {
+			t.Errorf("joined coordinate %s missing from lean path", key)
+		}
 	}
 
 	// Removing an episode file decrements its terms and drops emptied ones.
