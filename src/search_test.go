@@ -479,6 +479,30 @@ func TestLineBoundsClampToBodyAndHonorExplicitSpans(t *testing.T) {
 	}
 }
 
+// Regression: a single-component path descends zero directories, so the
+// handle being read through is still the caller's root — it must survive
+// the call, whether the entry is a directory (refused) or a regular file
+// (served). Before the fix, the deferred close poisoned the root and every
+// later read failed.
+func TestReadContainedSingleComponentPathLeavesRootOpen(t *testing.T) {
+	fx := setupSearchCorpus(t)
+
+	if _, err := ReadContained(fx.root, "worlds"); err == nil {
+		t.Error("reading a directory did not fail")
+	}
+	if _, err := ReadContained(fx.root, fx.published[0].RelPath); err != nil {
+		t.Fatalf("root unusable after single-component directory read: %v", err)
+	}
+
+	writeCorpusFile(t, fx.rootPath, "loose.md", "stray but readable")
+	if content, err := ReadContained(fx.root, "loose.md"); err != nil || content != "stray but readable" {
+		t.Errorf("single-component file read = %q, %v", content, err)
+	}
+	if _, err := ReadContained(fx.root, fx.published[0].RelPath); err != nil {
+		t.Fatalf("root unusable after single-component file read: %v", err)
+	}
+}
+
 func TestCreditLineBoundaryRulesPerMode(t *testing.T) {
 	cases := []struct {
 		line, term string

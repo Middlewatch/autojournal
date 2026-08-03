@@ -790,7 +790,11 @@ func ReadContained(root *os.Root, relPath string) (string, error) {
 			ownsCurrent = true
 			continue
 		}
-		defer current.Close()
+		// Close only descent-owned handles: for a single-component path
+		// current is still the caller's root and must stay open.
+		if ownsCurrent {
+			defer current.Close()
+		}
 		if !info.Mode().IsRegular() {
 			return fail(errors.New("not a regular file"))
 		}

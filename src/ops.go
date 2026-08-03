@@ -141,7 +141,9 @@ func Sync(rootPath, indexPath string) (SyncReport, error) {
 		return SyncReport{}, ErrRootMissing
 	}
 	defer root.Close()
-	if err := os.Chmod(rootPath, 0o700); err != nil {
+	// Harden through the handle (fchmod), not the path: a path re-resolve
+	// after open could be swapped to another directory.
+	if err := root.Chmod(".", 0o700); err != nil {
 		return SyncReport{}, ErrIndexUnavailable
 	}
 
