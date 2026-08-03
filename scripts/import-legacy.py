@@ -166,7 +166,7 @@ def capture(binary: Path, payload: dict, root: str | None, index: str | None) ->
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--source", default="~/memory/journal", help="legacy journal directory")
-    ap.add_argument("--binary", default=str(Path(__file__).resolve().parent.parent / "zig-out/bin/autojournal"))
+    ap.add_argument("--binary", default=str(Path(__file__).resolve().parent.parent / "artifacts/autojournal"))
     ap.add_argument("--tz", default="America/Anchorage", help="timezone the legacy writers stamped local times in")
     ap.add_argument("--root", default=None, help="journal root override (rehearsal); omit to use owner config")
     ap.add_argument("--index", default=None, help="index override (rehearsal)")

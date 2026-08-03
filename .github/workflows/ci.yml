@@ -1,7 +1,8 @@
 # Build the four shipped binaries once, then execute the real artifacts on
 # every platform the npm package targets. linux-arm64 runs under QEMU binfmt
-# and darwin-x64 under Rosetta 2 (the binaries are static, so both work);
-# native paid runners would be needed to catch arch-specific timing bugs.
+# and darwin-x64 under Rosetta 2 (CGO is off, so every binary is a
+# self-contained static file and both work); native paid runners would be
+# needed to catch arch-specific timing bugs.
 name: CI
 
 on:
@@ -16,18 +17,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: mlugg/setup-zig@v2
+      - uses: actions/setup-go@v5
         with:
-          version: 0.16.0
+          go-version-file: go.mod
 
       - name: Format check
-        run: zig fmt --check build.zig src
+        run: |
+          UNFORMATTED=$(gofmt -l src)
+          if [ -n "$UNFORMATTED" ]; then
+            printf 'gofmt needed:\n%s\n' "$UNFORMATTED" >&2
+            exit 1
+          fi
 
-      - name: Unit tests (linux-x64 native)
-        run: zig build test
+      - name: Vet
+        run: go vet ./...
+
+      - name: Unit tests (linux-x64 native, race)
+        run: go test -race ./...
 
       - name: Cross-compile release binaries
-        run: ZIG="$(command -v zig)" ./scripts/build-adapter-binaries.sh
+        run: ./scripts/build-adapter-binaries.sh
 
       - uses: actions/setup-node@v4
         with:
@@ -87,12 +96,13 @@ jobs:
             sudo softwareupdate --install-rosetta --agree-to-license
           fi
 
-      - name: Stage target binary for the e2e suite
+      # The adapter e2e suite resolves its binary from
+      # adapters/pi/bin/<platform>-<arch>/, exactly where the artifact
+      # landed; artifact download drops the execute bit, so restore it.
+      - name: Smoke the target binary
         run: |
-          mkdir -p zig-out/bin
-          cp "adapters/pi/bin/${{ matrix.target }}/autojournal" zig-out/bin/autojournal
-          chmod +x zig-out/bin/autojournal
-          ./zig-out/bin/autojournal version
+          chmod +x "adapters/pi/bin/${{ matrix.target }}/autojournal"
+          "./adapters/pi/bin/${{ matrix.target }}/autojournal" version
 
       - uses: actions/setup-node@v4
         with:

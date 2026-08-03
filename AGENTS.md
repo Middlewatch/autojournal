@@ -53,20 +53,22 @@ not observe a behavior change.
   every commit; walkable code with package/owner doc comments (Jake is
   learning Go through these builds).
 
-## Gates and cutover
+## Gates
 
-- Interim gate (until the CLI exists): `gofmt -l .`, `go vet ./...`,
-  `go test -race ./...`. `scripts/verify.sh`, `scripts/release-check.sh`,
-  and `.github/workflows/` still reference the Zig toolchain — rewrite
-  them when the Go CLI lands; they are known-stale, not the gate.
-- Cutover (one ordered change, after the CLI passes parity): repoint
-  `~/.local/bin/autojournal` at the Go build, verify all three live
-  harnesses (Pi extension + Claude Code hook + Codex hook), run
-  `/autojournal sync`, then revise user docs (`README.md`s, `docs/`) to
-  as-built Go reality and update `DEPLOY_MANIFEST.toml`.
+- Repository gate: `scripts/verify.sh` (gofmt, `go vet ./...`,
+  `go test -race ./...`, host binary build, adapter typecheck + tests,
+  design-contract grep, end-to-end retrieval smoke). CI runs the same
+  pipeline plus cross-compilation and the four-target e2e matrix.
+- Release gate: `scripts/release-check.sh` (verify + cross-compile +
+  npm package layout).
+- The live deployment (`~/.local/bin/autojournal` →
+  `artifacts/autojournal`) rebuilds via the command recorded in
+  `~/projects/system-services/DEPLOY_MANIFEST.toml`; after changing the
+  CLI, rebuild the artifact and run `autojournal sync` so the live
+  harness hooks pick it up.
 - Pushing and publication timing are Jake's decision. One writer at a time
   in this repository.
 
-Before handoff, run the interim gate and `git diff --check`, and report
-the exact Git status. Do not claim capture or retrieval behavior that a
-test or oracle comparison has not demonstrated.
+Before handoff, run the gate and `git diff --check`, and report the exact
+Git status. Do not claim capture or retrieval behavior that a test or
+oracle comparison has not demonstrated.
