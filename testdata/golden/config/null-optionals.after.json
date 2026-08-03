@@ -1,0 +1,8 @@
+{
+  "journal_root": null,
+  "default_world": null,
+  "capture": {
+    "world": "main",
+    "scope": "next"
+  }
+}

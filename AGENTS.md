@@ -36,11 +36,12 @@ not observe a behavior change.
   binary is the parity oracle and the live capture stopgap
   (`~/.local/bin/autojournal` points there until cutover).
 - `testdata/payloads` + `testdata/golden` pin the oracle's capture
-  behavior (episode bytes, identity/digest vectors, ops samples). Extend
+  behavior (episode bytes, identity/digest vectors, publish paths,
+  config rewrites, ops samples). Extend
   the matrix when porting a module that has CLI-observable behavior; never
   weaken it.
 - Port order follows the dependency direction: contracts, identity,
-  render, frontmatter (done, golden-verified) → paths, config, store →
+  render, frontmatter, paths, config, store (done, golden-verified) →
   db, index, retrieval, aliases, search, ops → CLI. `modernc.org/sqlite`
   (pure Go, no cgo) is the approved SQLite dependency when db lands — it
   is the only dependency; everything else is stdlib. Add it with

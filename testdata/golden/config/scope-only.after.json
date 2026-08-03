@@ -1,0 +1,7 @@
+{
+  "default_world": "willow",
+  "capture": {
+    "world": "main",
+    "scope": "work"
+  }
+}

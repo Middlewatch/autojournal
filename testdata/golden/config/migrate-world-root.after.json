@@ -1,0 +1,9 @@
+{
+  "default_world": "willow",
+  "miss_log": true,
+  "journal_root": "/j",
+  "capture": {
+    "world": "willow",
+    "scope": "global"
+  }
+}

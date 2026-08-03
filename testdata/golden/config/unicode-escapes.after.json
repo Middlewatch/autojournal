@@ -1,0 +1,8 @@
+{
+  "journal_root": "/ja\u0001b",
+  "thesaurus_path": "/home/x/thésaurus <tag> .json",
+  "capture": {
+    "world": "main",
+    "scope": "next"
+  }
+}
