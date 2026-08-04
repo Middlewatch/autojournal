@@ -96,13 +96,26 @@ jobs:
             sudo softwareupdate --install-rosetta --agree-to-license
           fi
 
-      # The adapter e2e suite resolves its binary from
-      # adapters/pi/bin/<platform>-<arch>/, exactly where the artifact
-      # landed; artifact download drops the execute bit, so restore it.
-      - name: Smoke the target binary
+      # The adapter e2e suite resolves its binary from the *runner's*
+      # platform-arch dir under adapters/pi/bin/. Stage the matrix
+      # target's binary at that path so the emulated jobs actually
+      # execute the foreign artifact (QEMU/Rosetta), and restore the
+      # execute bit the artifact download drops.
+      - name: Stage target binary at the host-arch path
         run: |
-          chmod +x "adapters/pi/bin/${{ matrix.target }}/autojournal"
-          "./adapters/pi/bin/${{ matrix.target }}/autojournal" version
+          case "$(uname -s)-$(uname -m)" in
+            Linux-x86_64) HOST_DIR=linux-x64 ;;
+            Linux-aarch64) HOST_DIR=linux-arm64 ;;
+            Darwin-arm64) HOST_DIR=darwin-arm64 ;;
+            Darwin-x86_64) HOST_DIR=darwin-x64 ;;
+            *) echo "unsupported runner: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
+          esac
+          if [ "$HOST_DIR" != "${{ matrix.target }}" ]; then
+            cp -f "adapters/pi/bin/${{ matrix.target }}/autojournal" \
+              "adapters/pi/bin/$HOST_DIR/autojournal"
+          fi
+          chmod +x "adapters/pi/bin/$HOST_DIR/autojournal"
+          "./adapters/pi/bin/$HOST_DIR/autojournal" version
 
       - uses: actions/setup-node@v4
         with:
