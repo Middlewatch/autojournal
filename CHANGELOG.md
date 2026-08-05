@@ -10,7 +10,15 @@ version.
 excluded from the payload digest, so upgrading never re-identifies or
 re-publishes existing episodes.
 
-## 1.0.2 — unreleased
+## 1.0.3 — unreleased
+
+Republishes 1.0.2 unchanged apart from this file. The copy of the changelog
+inside the published 1.0.2 package still described 1.0.2 as unreleased, and
+npm versions are immutable, so correcting a shipped file takes a new version.
+No code, format, or CLI change; 1.0.2 is functionally identical and remains
+safe to use.
+
+## 1.0.2 — 2026-08-05
 
 No format change. Episode bytes, identity, index schema, config, and the
 CLI `--json` surface are untouched.
@@ -59,7 +67,7 @@ CLI `--json` surface are untouched.
   tuning to date used a private judged query set, so no ranking-quality claim
   in this repository is reproducible by a reader.
 
-## 1.0.1 — 2026-08-03
+## 1.0.1 — 2026-08-04
 
 - Default scorer moves to `aj-scorer.v2`: singular folding of plural query
   terms, and a per-episode cap on result regions so one long episode cannot
@@ -89,6 +97,13 @@ it.
 - Fixed a bug where opening evidence with a single-component path closed the
   caller's journal root, which could fail every subsequent read in a
   long-lived process. Found in pre-release review; never shipped.
+
+## 0.1.1 — 2026-07-30
+
+- Menu-driven import of Pi session history predating AutoJournal.
+- Capture runs a corpus-wide episode-id check, so a redelivered turn is
+  recognized wherever it already lives rather than only on the date shard it
+  would land on.
 
 ## 0.1.0 — 2026-07-30
 
