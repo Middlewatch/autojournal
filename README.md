@@ -3,8 +3,11 @@ Note: I will be cleaning up my documentation over time but as of right now it is
 
 AutoJournal is automatic session derived memory for the
 [Pi coding agent](https://github.com/earendil-works/pi-coding-agent). Every
-successfully completed turn becomes a Markdown file that trims out unnecessary JSON metadata and retains the relevant user and model output turns (trims out all tool calls and other junk)
-Pi can later search those episodes with bounded, provenance-carrying tools.
+completed interactive turn becomes a Markdown file that trims out unnecessary
+JSON metadata and retains the relevant user and model output turns (tool calls
+and other junk are dropped). Pi can later search those episodes with bounded,
+provenance-carrying tools. Headless and sub-agent runs are deliberately not
+captured; see **Update, remove, and recover** below.
 
 ## Install
 
@@ -77,23 +80,29 @@ shards and Markdown:
             └── aj1-<episode-id>.md
 ~~~
 
-Journal data is deliberately outside the /.pi install directory so extension
+Journal data is deliberately outside the ~/.pi install directory so extension
 updates and removal do not delete memory.
 
-The SQLite search index under $XDG_STATE_HOME/autojournal (normally ~/.local/state/autojournal) is a
-disposable projection that **/autojournal sync** can rebuild. I am on the fence about how necessary this database is, as of right now it is future proofing for a memory system that may contain up to 100,000 session logs to search
-rg still technically is fast enough to search over a document corpus this size, but I don't have a real dataset large enough to test against yet.
+The SQLite search index under $XDG_STATE_HOME/autojournal (normally
+~/.local/state/autojournal) is a disposable projection that
+**/autojournal sync** can rebuild. It is future-proofing for a corpus growing
+toward six figures of session logs. A plain `rg` scan is probably fast enough
+well past current corpus sizes; that crossover has not been measured against a
+real dataset of that scale.
 
 Hand-editing is safe for search integrity: an episode whose content changed
 serves stale_revision rather than silently different evidence, a manual copy
 sharing an episode identity is deduplicated (the first copy found stays
-searchable), and dot-directories such as are never read as
+searchable), and dot-directories such as .git or .obsidian are never read as
 episodes. After copying, moving, or deleting files yourself, run
 **/autojournal sync** to rebaseline the index.
 
 ## Worlds and scopes
-Note: This terminology was vibe slopped underneath my nose and is subject to change. The schema is in place for users who wish to customize access and restrictions between different journal repos, by default though I recommend you just send
-every session to the same "world".
+
+This terminology is provisional and may change. The schema is in place for
+users who want to separate access and retention boundaries between different
+journal corpora; by default I recommend sending every session to the same
+world.
 
 Use the **/autojournal** menu to edit the following:
 
@@ -140,7 +149,7 @@ AutoJournal registers:
 
 ## Recall helpers
 
-Thesaurus (alias map): The thesaurus is a single hand-editable JSON file mapping a casual query word to the canonical terms that actually appear in the journal - for example {"firmware": ["fwupd", "polkit"] (this is a unique example that lives in my own thesaurus, but is stripped from the default package by intention)}. When a search runs, each query term is looked up in the map and any aliases are added to the term set (additive expansion). The file is loaded fresh on every search, so an edit takes effect immediately; only a SHA-256 digest of the map's canonical form is stamped on results, so you can tell which thesaurus version produced a given answer. Curation is deliberately manual and an opt-in miss log records queries that came back weak, giving you raw material for growing the map from real recall failures. A broken or missing thesaurus file is treated as empty.
+Thesaurus (alias map): The thesaurus is a single hand-editable JSON file mapping a casual query word to the canonical terms that actually appear in the journal - for example {"firmware": ["fwupd", "polkit"]}. (That example lives in my own thesaurus and is intentionally stripped from the default package.) When a search runs, each query term is looked up in the map and any aliases are added to the term set (additive expansion). The file is loaded fresh on every search, so an edit takes effect immediately; only a SHA-256 digest of the map's canonical form is stamped on results, so you can tell which thesaurus version produced a given answer. Curation is deliberately manual and an opt-in miss log records queries that came back weak, giving you raw material for growing the map from real recall failures. A broken or missing thesaurus file is treated as empty.
 
 Recency-based recall: Every matched line gets a score of rarity × recency. Rarity is a classic IDF sum — each matched query term contributes log(N / df), so a term that appears in only one episode out of many dominates, while a term present everywhere contributes nearly nothing. That rarity score is then multiplied by a recency factor of 1 + boost / (days_old + 1): with the default boost of 1.0, something written today scores ×2, yesterday ×1.5, a week ago about ×1.13, decaying toward ×1 for old entries. The age is floored to whole days, so the same query gives stable results all day rather than drifting hour by hour. The key design point is that recency is a nudge rather than a hard override.
 
@@ -178,7 +187,7 @@ journal directory and source are correct.
 2. Move the complete journal without rearranging its contents:
 
    ~~~sh
-   mv $XDG_CONFIG_HOME/autojournal/journals /absolute/new/location
+   mv $XDG_DATA_HOME/autojournal/journals /absolute/new/location
    ~~~
 
 3. Create or update ~/.config/autojournal/config.json:
@@ -193,15 +202,17 @@ journal directory and source are correct.
 5. Run **/autojournal sync**.
 6. Open **/autojournal** and verify the new path, episode count, and fresh
    index.
-7. Test via prompt using aknown historical phrase and see the agent succesfully returns a memory_search and memory_get.
+7. Test with a prompt containing a known historical phrase, and confirm the
+   agent successfully returns a memory_search and memory_get.
 
 The index filename is keyed to the configured journal path, so relocation
 creates a new projection. Do not move or edit SQLite manually.
 
-(If you really want to)Putting the journal on a local directory used by Obsidian is supported.
-Network and cloud-synchronized filesystems should preserve atomic rename (I have not tested this) and
-normal filesystem permissions; if they do not, keep the authoritative journal
-on a local filesystem and synchronize backups separately. If it doesn't work its likely pretty easy to fix.
+Putting the journal in a local directory that Obsidian also indexes is
+supported. Network and cloud-synchronized filesystems must preserve atomic
+rename and normal filesystem permissions; this has not been tested against any
+such filesystem. If they do not, keep the authoritative journal on a local
+filesystem and synchronize backups separately.
 
 A journal root placed under a shared directory — one whose nearest existing
 parent is group- or world-writable, such as /tmp — is refused for capture
@@ -211,10 +222,12 @@ often cleared on reboot. Choose a private, persistent directory (or
 
 ## Other harnesses
 
-AutoJournal's default directory is host-neutral. Claude Code, Codex, Hermes, 
+AutoJournal's default directory is host-neutral. Claude Code, Codex, Hermes,
 or another adapter that invokes the same completed-turn capture protocol will
 share the corpus when it resolves the same journal root, world, and scope.
-Pi will provide richer first-class controls due to the typescript adapter. But its simple enough to vibe up a hook for any other coding agent to use and share the memory system with. 
+Pi gets the richest first-class controls because of its TypeScript adapter,
+but a hook that shells out to the standalone binary is straightforward to
+write for any other coding agent and shares the same memory system.
 
 ## Update, remove, and recover
 
