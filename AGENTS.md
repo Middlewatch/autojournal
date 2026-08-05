@@ -77,12 +77,18 @@ in three places and cross-checked by `adapters/pi/scripts/check-package.mjs`:
 `package.json`, `ADAPTER_VERSION` in `adapters/pi/index.ts`, and
 `PackageVersion` in `src/doc.go`.
 
-Cutting a release means dating its `CHANGELOG.md` entry in the same commit
-that bumps the version — not after publishing. The changelog ships inside the
-package and npm versions are immutable, so an entry published as "unreleased"
-can only be corrected by burning another version number. The packaging
-self-check refuses to pack when the entry for the version being packed is
-missing or still undated.
+Between releases the top `CHANGELOG.md` entry carries the pending version and
+the word `unreleased`, and work accumulates under it. Cutting a release means
+replacing that word with the date, in the commit that ships it — not after
+publishing. The changelog ships inside the package and npm versions are
+immutable, so an entry published as "unreleased" can only be corrected by
+burning another version number.
+
+The packaging self-check refuses to pack while the entry is undated, so
+`release-check.sh` fails by design until the release is actually being cut.
+That failure is the reminder, not a broken gate. The order is: date the
+entry → `verify.sh` → `release-check.sh` → `npm publish` → tag the commit
+that shipped.
 
 `adapter_version` is written into episode frontmatter but deliberately
 excluded from the payload digest, so a version bump never re-identifies or
