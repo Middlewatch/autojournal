@@ -49,6 +49,24 @@ if (adapterVersion !== manifest.version) {
     `version drift: package.json ${manifest.version} vs ADAPTER_VERSION ${adapterVersion}`,
   );
 }
+// The changelog ships inside the package, so the entry for the version being
+// packed has to name its release date before it leaves the machine. npm
+// versions are immutable: an entry published as "unreleased" stays wrong
+// forever, and correcting it costs an entire new version. That is exactly
+// what happened to 1.0.2, and this gate is why it cannot happen again.
+const changelog = fs.readFileSync(path.join(root, "CHANGELOG.md"), "utf8");
+const escaped = manifest.version.replace(/\./g, "\\.");
+const entry = changelog.match(new RegExp(`^##\\s+${escaped}\\s*[—–-]\\s*(.+)$`, "m"));
+if (!entry) {
+  throw new Error(`CHANGELOG.md has no entry for ${manifest.version}`);
+}
+if (/unreleased|unpublished|tbd|pending/i.test(entry[1])) {
+  throw new Error(
+    `CHANGELOG.md still marks ${manifest.version} as "${entry[1].trim()}" — ` +
+      `date the entry before publishing; npm cannot correct it afterward`,
+  );
+}
+
 const { execFileSync } = await import("node:child_process");
 const platformDir = `${process.platform}-${process.arch}`;
 const nativeBinary = path.join(root, "bin", platformDir, "autojournal");

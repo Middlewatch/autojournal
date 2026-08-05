@@ -10,13 +10,17 @@ version.
 excluded from the payload digest, so upgrading never re-identifies or
 re-publishes existing episodes.
 
-## 1.0.3 — unreleased
+## 1.0.3 — 2026-08-05
 
 Republishes 1.0.2 unchanged apart from this file. The copy of the changelog
 inside the published 1.0.2 package still described 1.0.2 as unreleased, and
 npm versions are immutable, so correcting a shipped file takes a new version.
 No code, format, or CLI change; 1.0.2 is functionally identical and remains
 safe to use.
+
+The packaging self-check now refuses to pack a version whose changelog entry
+is missing or still says "unreleased", so this cannot recur: dating the entry
+is part of cutting a release, not a step to remember afterward.
 
 ## 1.0.2 — 2026-08-05
 

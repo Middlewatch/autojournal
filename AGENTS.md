@@ -75,7 +75,14 @@ end-to-end matrix. A change is done when the gate is green.
 The npm package and the bundled core binary share one version stamp, asserted
 in three places and cross-checked by `adapters/pi/scripts/check-package.mjs`:
 `package.json`, `ADAPTER_VERSION` in `adapters/pi/index.ts`, and
-`PackageVersion` in `src/doc.go`. Record every release in `CHANGELOG.md`.
+`PackageVersion` in `src/doc.go`.
+
+Cutting a release means dating its `CHANGELOG.md` entry in the same commit
+that bumps the version — not after publishing. The changelog ships inside the
+package and npm versions are immutable, so an entry published as "unreleased"
+can only be corrected by burning another version number. The packaging
+self-check refuses to pack when the entry for the version being packed is
+missing or still undated.
 
 `adapter_version` is written into episode frontmatter but deliberately
 excluded from the payload digest, so a version bump never re-identifies or
