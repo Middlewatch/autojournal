@@ -2,8 +2,8 @@
 
 AutoJournal is install-and-forget durable memory for the
 [Pi coding agent](https://github.com/earendil-works/pi-coding-agent). Every
-successfully completed turn becomes an owner-controlled Markdown episode.
-Pi can later search those episodes with bounded, provenance-carrying tools.
+completed interactive turn becomes an owner-controlled Markdown episode. Pi
+can later search those episodes with bounded, provenance-carrying tools.
 
 ## Install
 
@@ -186,10 +186,6 @@ the host-neutral default location and can hold only capture defaults or
 retrieval knobs (the file **Save as default for new sessions** writes looks
 exactly like that).
 
-Pre-release configurations using the former **world_root** key remain
-accepted for migration, but new and updated configuration should use
-**journal_root**.
-
 ### Choose another location before first capture
 
 Create:
@@ -242,14 +238,13 @@ and sync: other local users can interfere there, and such locations are
 often cleared on reboot. Choose a private, persistent directory (or
 `chmod g-w,o-w` the parent you intend).
 
-### Journals from pre-release Pi installs
+### Journals from earlier installs
 
-Earlier preview builds defaulted the journal into Pi's agent directory
-(~/.pi/agent/journals). That location is no longer read by default; the
-adapter warns at session start when it finds a journal there while the
-host-neutral default is active. Follow the move steps above — or keep the
-journal where it is by setting "journal_root" to that path — then run
-**/autojournal sync**.
+Installs predating the host-neutral default kept journals in Pi's agent
+directory (`~/.pi/agent/journals`). That location is no longer read. If a
+journal is still there, the adapter says so once at session start; either
+follow the move steps above, or keep it in place by setting `journal_root`
+to that path. Run **/autojournal sync** afterward.
 
 ## Other harnesses
 
@@ -259,9 +254,9 @@ share the corpus when it resolves the same journal root, world, and scope.
 Pi and Evoker may provide richer first-class controls; simpler hooks can use
 owner-configured defaults.
 
-Legacy session Markdown is not silently interpreted as an AutoJournal 1.0
-episode. It must be imported through a versioned legacy importer before it
-participates in search.
+Markdown that AutoJournal did not write is never silently treated as an
+episode: only files matching its own naming and frontmatter contract are
+indexed.
 
 ## Update, remove, and recover
 

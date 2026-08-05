@@ -1,6 +1,11 @@
 /.zig-cache/
 /zig-out/
 /artifacts/
+__pycache__/
 /tmp/
 /adapters/pi/node_modules/
 /adapters/pi/bin/
+# Staged from the repo-root CHANGELOG.md at prepack; never edit in place.
+/adapters/pi/CHANGELOG.md
+# Local harness convenience symlink to AGENTS.md; AGENTS.md is the tracked one.
+/CLAUDE.md

@@ -1,0 +1,247 @@
+#!/usr/bin/env python3
+"""Tests for the two standalone Python capture hooks.
+
+These hooks are what every harness without a native integration uses, so
+they get the same treatment as the Pi adapter: run the real entry point
+against a fake `autojournal` binary and assert on the payload it would
+have published.
+
+Run directly (`python3 adapters/test_python_hooks.py`) or through
+scripts/verify.sh. Standard library only, matching the hooks themselves.
+"""
+
+import importlib.util
+import json
+import os
+import pathlib
+import stat
+import sys
+import tempfile
+import unittest
+from io import StringIO
+
+ADAPTERS = pathlib.Path(__file__).resolve().parent
+
+
+def load(name: str, relative: str):
+    spec = importlib.util.spec_from_file_location(name, ADAPTERS / relative)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+cc = load("aj_cc_hook", "claude-code/autojournal_capture.py")
+codex = load("aj_codex_hook", "codex/autojournal_capture.py")
+
+
+class HookHarness(unittest.TestCase):
+    """Gives each test a scratch dir, a fake binary that records the
+    payload it was handed, and clean hook-related environment."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, ignore_errors=True))
+        self.captured = self.tmp / "captured.json"
+        self.binary = self.tmp / "fake-autojournal"
+        self.binary.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, sys\n"
+            "open(os.environ['FAKE_AJ_OUT'], 'w').write(sys.stdin.read())\n"
+        )
+        self.binary.chmod(self.binary.stat().st_mode | stat.S_IEXEC)
+
+        self._env = dict(os.environ)
+        self.addCleanup(lambda: (os.environ.clear(), os.environ.update(self._env)))
+        os.environ["AUTOJOURNAL_BIN"] = str(self.binary)
+        os.environ["FAKE_AJ_OUT"] = str(self.captured)
+        # Belt and braces: if binary resolution ever fell through to a real
+        # install, these keep it writing into scratch instead of the owner's
+        # journal. A test must not be able to publish real memory.
+        os.environ["AUTOJOURNAL_HOOK_ROOT"] = str(self.tmp / "journal")
+        os.environ["AUTOJOURNAL_HOOK_INDEX"] = str(self.tmp / "index.sqlite")
+        os.environ["XDG_STATE_HOME"] = str(self.tmp / "state")
+
+    def run_hook(self, module, payload):
+        stdin = sys.stdin
+        sys.stdin = StringIO(json.dumps(payload))
+        try:
+            self.assertEqual(module.main(), 0)
+        finally:
+            sys.stdin = stdin
+        if not self.captured.exists():
+            return None
+        return json.loads(self.captured.read_text())
+
+    def transcript(self, prompt, reply):
+        path = self.tmp / "transcript.jsonl"
+        path.write_text(
+            json.dumps(
+                {
+                    "type": "user",
+                    "uuid": "turn-1",
+                    "timestamp": "2026-08-05T12:00:00Z",
+                    "message": {"content": prompt},
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {"type": "assistant", "message": {"content": [{"type": "text", "text": reply}]}}
+            )
+            + "\n"
+        )
+        return str(path)
+
+
+class ClaudeCodeHook(HookHarness):
+    def test_captures_a_session_outside_the_home_directory(self):
+        # Regression: capture was gated on the cwd living under one
+        # hard-coded directory, so every other install silently never
+        # captured anything.
+        published = self.run_hook(
+            cc,
+            {
+                "session_id": "s1",
+                "transcript_path": self.transcript("what broke the build?", "a stale lockfile"),
+                "cwd": "/srv/someone-elses-checkout",
+            },
+        )
+        self.assertIsNotNone(published, "no payload was published")
+        self.assertEqual(published["user_content"], "what broke the build?")
+        self.assertEqual(published["assistant_result"], "a stale lockfile")
+        self.assertEqual(published["harness"], "claude-code")
+        self.assertEqual(published["workspace_root"], "/srv/someone-elses-checkout")
+
+    def test_skips_a_machine_driven_turn(self):
+        prompt = "<system-reminder>budget warning</system-reminder>"
+        self.assertIsNone(
+            self.run_hook(
+                cc,
+                {
+                    "session_id": "s1",
+                    "transcript_path": self.transcript(prompt, "noted"),
+                    "cwd": str(self.tmp),
+                },
+            )
+        )
+
+    def test_no_binary_anywhere_is_a_silent_no_op(self):
+        os.environ["AUTOJOURNAL_BIN"] = str(self.tmp / "does-not-exist")
+        self.assertIsNone(
+            self.run_hook(
+                cc,
+                {
+                    "session_id": "s1",
+                    "transcript_path": self.transcript("hello there", "hi"),
+                    "cwd": str(self.tmp),
+                },
+            )
+        )
+
+    def test_omits_an_unusable_workspace_root(self):
+        published = self.run_hook(
+            cc,
+            {
+                "session_id": "s1",
+                "transcript_path": self.transcript("still capture this", "sure"),
+                "cwd": "/bad\x01path",
+            },
+        )
+        self.assertIsNotNone(published, "a bad cwd must not lose the turn")
+        self.assertNotIn("workspace_root", published)
+
+
+class CodexHook(HookHarness):
+    def stash_and_stop(self, cwd):
+        self.run_hook(
+            codex,
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "s2",
+                "turn_id": "t1",
+                "prompt": "where did the deploy fail?",
+                "cwd": cwd,
+            },
+        )
+        return self.run_hook(
+            codex,
+            {
+                "hook_event_name": "Stop",
+                "session_id": "s2",
+                "turn_id": "t1",
+                "last_assistant_message": "the arm64 job",
+            },
+        )
+
+    def test_captures_a_session_outside_the_home_directory(self):
+        published = self.stash_and_stop("/srv/someone-elses-checkout")
+        self.assertIsNotNone(published, "no payload was published")
+        self.assertEqual(published["user_content"], "where did the deploy fail?")
+        self.assertEqual(published["assistant_result"], "the arm64 job")
+        self.assertEqual(published["harness"], "codex")
+        self.assertEqual(published["workspace_root"], "/srv/someone-elses-checkout")
+
+    def test_pending_file_is_cleared_after_publication(self):
+        self.stash_and_stop(str(self.tmp))
+        pending = codex.pending_path({"session_id": "s2", "turn_id": "t1"})
+        self.assertFalse(pending.exists(), "pending prompt outlived its capture")
+
+    def test_pending_file_survives_a_missing_binary(self):
+        # The turn is recoverable on a later run rather than dropped.
+        self.run_hook(
+            codex,
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "s3",
+                "turn_id": "t1",
+                "prompt": "keep this prompt safe",
+                "cwd": str(self.tmp),
+            },
+        )
+        os.environ["AUTOJOURNAL_BIN"] = str(self.tmp / "does-not-exist")
+        self.run_hook(
+            codex,
+            {
+                "hook_event_name": "Stop",
+                "session_id": "s3",
+                "turn_id": "t1",
+                "last_assistant_message": "ok",
+            },
+        )
+        pending = codex.pending_path({"session_id": "s3", "turn_id": "t1"})
+        self.assertTrue(pending.exists(), "pending prompt was discarded unpublished")
+
+
+class BinaryResolution(HookHarness):
+    def test_explicit_override_wins(self):
+        self.assertEqual(cc.resolve_binary(), str(self.binary))
+        self.assertEqual(codex.resolve_binary(), str(self.binary))
+
+    def test_non_executable_override_resolves_to_nothing(self):
+        plain = self.tmp / "not-executable"
+        plain.write_text("")
+        os.environ["AUTOJOURNAL_BIN"] = str(plain)
+        self.assertIsNone(cc.resolve_binary())
+
+    def test_falls_back_to_path(self):
+        del os.environ["AUTOJOURNAL_BIN"]
+        on_path = self.tmp / "autojournal"
+        on_path.write_text("#!/bin/sh\n")
+        on_path.chmod(on_path.stat().st_mode | stat.S_IEXEC)
+        os.environ["PATH"] = str(self.tmp)
+        # Only meaningful when the conventional install is absent, which is
+        # the situation a fresh non-owner install is actually in.
+        if not os.access(pathlib.Path.home() / ".local" / "bin" / "autojournal", os.X_OK):
+            self.assertEqual(cc.resolve_binary(), str(on_path))
+
+
+class WorkspaceRootContract(unittest.TestCase):
+    def test_matches_the_payload_path_rule(self):
+        for module in (cc, codex):
+            self.assertEqual(module.workspace_root("/home/x/proj"), "/home/x/proj")
+            self.assertIsNone(module.workspace_root(""))
+            self.assertIsNone(module.workspace_root("/bad\x00path"))
+            self.assertIsNone(module.workspace_root("/x" + "y" * 512))
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

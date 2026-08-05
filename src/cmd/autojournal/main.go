@@ -34,7 +34,6 @@ commands:
 options:
   --config <path>    explicit config file (default: XDG lookup)
   --root <path>      journal root override (bypasses config/default)
-  --default-root <p> deprecated host fallback retained for adapters
   --index <path>     index database override (default: XDG state dir)
   --world <id>       world to search (default: config default_world,
                      else the capture world)
@@ -142,6 +141,10 @@ func (c *cli) run(args []string) int {
 			slot = &o.config
 		case "--root":
 			slot = &o.root
+		// Undocumented on purpose: pre-1.0 adapters passed a host
+		// fallback root here, ranking below owner config and above the
+		// XDG default. Still honored so an old hook keeps working; not
+		// advertised, because new callers should use --root or config.
 		case "--default-root":
 			slot = &o.defaultRoot
 		case "--index":

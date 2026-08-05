@@ -1,74 +1,89 @@
-# AutoJournal work lane
+# Working on AutoJournal
 
-This repository is the canonical implementation lane for AutoJournal 1.0.
+Guidance for anyone — human or coding agent — changing this repository. The
+codebase map is [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); the binding
+product contract and the reasoning behind it is
+[`docs/AUTOJOURNAL_1_0_DESIGN.md`](docs/AUTOJOURNAL_1_0_DESIGN.md); user-facing
+search behavior and thesaurus curation is
+[`docs/SEARCH_TUNING.md`](docs/SEARCH_TUNING.md). All three are as-built.
 
-- Design authority: `docs/AUTOJOURNAL_1_0_DESIGN.md`. User-facing search
-  behavior and thesaurus curation: `docs/SEARCH_TUNING.md`. Both still say
-  "Zig" — they describe behavior that survives the port and are revised to
-  as-built Go reality at cutover, not mid-port.
-- Product scope is durable completed-turn writes and ranked, bounded
-  retrieval. Memory curation, reflection, wiki maintenance, and generated
-  durable claims belong to a separate future product and must not be added
-  here.
+## Scope
 
-## Architecture (owner ruling 2026-08-03)
+AutoJournal does two things: durably write completed agent turns as episodes,
+and retrieve exact, ranked, bounded evidence from them. Memory curation,
+reflection, wiki maintenance, and model-generated durable claims are out of
+scope by design — that is a separate product, not a feature to add here. The
+full non-goals list is in the design doc, and it is a real boundary, not a
+placeholder.
 
-All Go. One implementation of every product rule, consumed three ways:
+## Architecture
 
-- a Go module (`github.com/Middlewatch/autojournal`, package `autojournal`
-  in `src/`) that Evoker imports natively for its bundled, toggleable
-  memory extension;
-- a standalone static CLI (`src/cmd/autojournal/`) that is the owner CLI
-  and the hook target for every other harness, cross-compiled for the npm
-  package's four targets (linux x64/arm64, macOS x64/arm64);
+One Go implementation of every product rule, consumed three ways:
+
+- a Go module (`github.com/Middlewatch/autojournal/src`, package
+  `autojournal`) that an embedding host imports directly;
+- a standalone static CLI (`src/cmd/autojournal/`), which is both the owner
+  CLI and the hook target for any harness without a native integration;
 - the thin TypeScript Pi adapter (`adapters/pi/`, the npm package), which
   supervises the CLI and invents no memory policy.
 
-The on-disk contracts are frozen across the port: episode Markdown and
-frontmatter bytes, episode-id/digest derivation, index schema, config file,
-and the CLI `--json` surface. Harness adapters (Pi TS, Python hooks) must
-not observe a behavior change.
+Adapters translate; they never reimplement storage, ranking, identity, or
+freshness. If a change would put a product rule in an adapter, it belongs in
+`src/` instead.
 
-## Port discipline
+## What is frozen
 
-- The archived Zig implementation is the behavioral spec: git tag
-  `zig-final`, tree + static binary at `~/projects/zig-reference/autojournal/`.
-  The live binary cut over to the Go build 2026-08-03
-  (`~/.local/bin/autojournal` → this repo's `artifacts/autojournal`).
-- `testdata/payloads` + `testdata/golden` pin the oracle's capture
-  behavior (episode bytes, identity/digest vectors, publish paths,
-  config rewrites, ops samples). Extend
-  the matrix when porting a module that has CLI-observable behavior; never
-  weaken it.
-- The port is complete and golden-verified end to end: contracts,
-  identity, render, frontmatter, paths, config, store, db, index,
-  retrieval, aliases, search, ops, and the CLI, whose `--json` output is
-  byte-compared against the oracle's ops samples. `modernc.org/sqlite`
-  (pure Go, no cgo) is the only dependency; everything else is stdlib.
-- Layout constraint (owner): no new top-level subtrees, no `go/` dir. Go
-  code lives in `src/` (package `autojournal`) and `src/cmd/autojournal/`;
-  only `go.mod`/`go.sum` sit at the repo root.
-- House Go rules match `~/projects/evoker/main/docs/GO_GUIDE.md`:
-  gofmt is law; `go vet ./...` and `go test -race ./...` green before
-  every commit; walkable code with package/owner doc comments (Jake is
-  learning Go through these builds).
+Within 1.x, these are contracts and changing them is a major version: episode
+Markdown and frontmatter bytes, episode-id and digest derivation, the index
+schema, the config file, and the CLI `--json` surface. Harness adapters must
+not observe a behavior change from an ordinary release.
+
+`testdata/payloads` and `testdata/golden` pin that behavior — episode bytes,
+identity and digest vectors, publish paths, config rewrites, and CLI `--json`
+ops samples. Extend the matrix whenever you change CLI-observable behavior;
+never weaken it. The fixtures were frozen from the Zig implementation this
+core was ported from (git tag `zig-final`), which remains the tiebreaker for
+any behavioral question the tests do not already answer.
+
+## Conventions
+
+- gofmt is law. `go vet ./...` and `go test -race ./...` are green before
+  every commit.
+- `modernc.org/sqlite` (pure Go, no cgo) is the only dependency; everything
+  else is stdlib. Keep it that way — the binary ships with no runtime
+  dependencies, and that is a product property, not an accident.
+- Layout: Go code lives in `src/` and `src/cmd/autojournal/`; only
+  `go.mod`/`go.sum` sit at the repo root. No new top-level subtrees.
+- Write walkable code with package-level doc comments explaining why a module
+  exists, not just what it does.
 
 ## Gates
 
-- Repository gate: `scripts/verify.sh` (gofmt, `go vet ./...`,
-  `go test -race ./...`, host binary build, adapter typecheck + tests,
-  design-contract grep, end-to-end retrieval smoke). CI runs the same
-  pipeline plus cross-compilation and the four-target e2e matrix.
-- Release gate: `scripts/release-check.sh` (verify + cross-compile +
-  npm package layout).
-- The live deployment (`~/.local/bin/autojournal` →
-  `artifacts/autojournal`) rebuilds via the command recorded in
-  `~/projects/system-services/DEPLOY_MANIFEST.toml`; after changing the
-  CLI, rebuild the artifact and run `autojournal sync` so the live
-  harness hooks pick it up.
-- Pushing and publication timing are Jake's decision. One writer at a time
-  in this repository.
+```sh
+./scripts/verify.sh        # the full repository gate
+./scripts/release-check.sh # verify + cross-compile + npm package layout
+```
 
-Before handoff, run the gate and `git diff --check`, and report the exact
-Git status. Do not claim capture or retrieval behavior that a test or
-oracle comparison has not demonstrated.
+`verify.sh` runs gofmt, `go vet`, race-enabled tests, a host binary build, the
+adapter typecheck and tests, design-contract greps, and an end-to-end
+capture → search → get → `stale_revision` → `no_match` smoke in an isolated
+root. CI runs the same pipeline plus cross-compilation and a four-target
+end-to-end matrix. A change is done when the gate is green.
+
+## Releases
+
+The npm package and the bundled core binary share one version stamp, asserted
+in three places and cross-checked by `adapters/pi/scripts/check-package.mjs`:
+`package.json`, `ADAPTER_VERSION` in `adapters/pi/index.ts`, and
+`PackageVersion` in `src/doc.go`. Record every release in `CHANGELOG.md`.
+
+`adapter_version` is written into episode frontmatter but deliberately
+excluded from the payload digest, so a version bump never re-identifies or
+re-publishes existing episodes.
+
+## Handoff
+
+Run the gate and `git diff --check`, and report the exact Git status. Do not
+claim capture or retrieval behavior that a test or a golden comparison has not
+demonstrated — this project stores other people's work, and an unverified
+claim about durability or recall is worse than an open bug.

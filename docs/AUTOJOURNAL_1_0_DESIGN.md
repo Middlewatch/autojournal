@@ -367,11 +367,13 @@ bounded, and never writes aliases automatically.
 ### No-memory decision
 
 A lexical occurrence is not automatically relevant memory. A versioned
-confidence policy (`aj-conf.v1`, owner-tunable floor) is reported separately
+confidence policy (`aj-conf.v2`, owner-tunable floor) is reported separately
 from score so ordinary noise queries can return `no_match` instead of ten
-low-quality results. Recalibrating the thresholds against larger judged
-query sets is future evidence work; the policy version exists so a
-recalibration is a visible identity change, not a silent behavior shift.
+low-quality results. The version exists so a recalibration is a visible
+identity change rather than a silent behavior shift, and it has been used
+once that way: `aj-conf.v1` → `aj-conf.v2` in 1.0.1, ratified against a
+private judged query set. Recalibration against a larger, publishable set
+remains open evidence work.
 
 ## Public operations
 
@@ -484,9 +486,12 @@ checkout) enforces:
 Evidence deliberately not yet collected, for whoever takes this further:
 large-corpus benchmarks (capture/fsync latency, search percentiles, rebuild
 time, and disk amplification at 10k–100k episodes), ranked-result parity
-runs against the preserved v1 fixtures at scale, and judged-query
-calibration of the confidence floor. Benchmark manifests should pin corpus,
-scorer, configuration, clock, source revision, toolchain, and host profile.
+runs against the preserved v1 fixtures at scale, and a judged query set that
+can ship with the repository. Scorer and confidence tuning to date used a
+private judged set, so no ranking-quality claim here is reproducible by a
+reader; `scripts/retrieval-eval.py` runs any judged set in that format
+against any binary. Benchmark manifests should pin corpus, scorer,
+configuration, clock, source revision, toolchain, and host profile.
 
 ## Explicit non-goals
 

@@ -37,6 +37,15 @@ else
   printf 'adapter gate: SKIPPED (node or adapters/pi/node_modules missing)\n' >&2
 fi
 
+# Python hook gate: the Claude Code and Codex hooks run against a fake
+# binary, so they never touch a real journal.
+if command -v python3 >/dev/null; then
+  python3 adapters/test_python_hooks.py >/dev/null 2>&1
+  printf 'python hook gate: PASS\n'
+else
+  printf 'python hook gate: SKIPPED (python3 missing)\n' >&2
+fi
+
 DESIGN=docs/AUTOJOURNAL_1_0_DESIGN.md
 for term in \
   "One completed turn is one atomic episode" \

@@ -11,8 +11,8 @@
 // name not matching the package name is deliberate; go tooling resolves
 // the import path github.com/Middlewatch/autojournal/src to this package.
 //
-// Port discipline: the archived Zig implementation (git tag zig-final,
-// ~/projects/zig-reference/autojournal) is the behavioral spec. On-disk formats
+// Port discipline: the archived Zig implementation (git tag zig-final) is
+// the behavioral spec. On-disk formats
 // (episode Markdown, frontmatter, index schema) and identity/digest
 // derivation are frozen — a Go-rendered episode is byte-identical to the
 // Zig-rendered one, verified against testdata/golden.
@@ -20,4 +20,4 @@ package autojournal
 
 // PackageVersion is the released package identity the CLI prints; the
 // reference took it from build.zig.zon.
-const PackageVersion = "1.0.1"
+const PackageVersion = "1.0.2"

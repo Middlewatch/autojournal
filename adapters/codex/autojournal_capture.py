@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """Codex hooks bridge — AutoJournal 1.0 capture.
 
-Publishes each completed Codex turn through the deployed `autojournal
-capture` binary (~/.local/bin/autojournal) into the owner-configured
-journal root. The binary owns identity, dedupe, atomic publish, and index
-freshness; the hook only assembles the turn and ships one payload.
+Publishes each completed Codex turn through the `autojournal capture`
+binary into the owner-configured journal root. The binary owns identity,
+dedupe, atomic publish, and index freshness; the hook only assembles the
+turn and ships one payload.
 
-Replaces legacy-ts/codex-hook.mjs, which appended markdown to the legacy
-~/memory/journal directly. Wired in ~/.codex/hooks.json for three events,
-all reading one JSON payload on stdin:
+Every session is captured, wherever it runs. Narrowing what enters memory
+is the journal's job, not the hook's: set capture defaults with
+`autojournal default --world <w> --scope <s>`, or point `journal_root`
+somewhere else in ~/.config/autojournal/config.json. The turn's working
+directory rides along as `workspace_root` provenance.
+
+Wired in ~/.codex/hooks.json for three events, all reading one JSON
+payload on stdin:
 
 - UserPromptSubmit stashes {prompt, cwd, time} in a pending file keyed by
   (session_id, turn_id), because Codex's Stop payload carries only the
@@ -34,13 +39,13 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 import time
 
-BINARY = pathlib.Path.home() / ".local" / "bin" / "autojournal"
 HARNESS = "codex"
-ADAPTER_VERSION = "codex-stop-hook-1.0.0"
+ADAPTER_VERSION = "codex-stop-hook-1.1.0"
 CAPTURE_POLICY = "codex-stop.v1"
 
 # A pending prompt whose Stop never arrived (crash, abandoned turn) is
@@ -65,13 +70,30 @@ def pending_path(payload: dict) -> pathlib.Path:
     return pending_dir() / f"{sid}-{turn}.json"
 
 
-def is_under_willow(cwd: str) -> bool:
-    try:
-        real = os.path.realpath(cwd)
-        root = os.path.realpath("/willow")
-    except Exception:
-        return False
-    return real == root or real.startswith(root + os.sep)
+def resolve_binary() -> str | None:
+    """AUTOJOURNAL_BIN, then the conventional user install, then PATH —
+    the same order the Pi adapter resolves. Returns None when no
+    executable is found, which makes the hook a no-op instead of an
+    error."""
+    override = os.environ.get("AUTOJOURNAL_BIN", "").strip()
+    if override:
+        return override if os.access(override, os.X_OK) else None
+    local = pathlib.Path.home() / ".local" / "bin" / "autojournal"
+    if os.access(local, os.X_OK):
+        return str(local)
+    return shutil.which("autojournal")
+
+
+def workspace_root(cwd: str) -> str | None:
+    """The turn's working directory, as optional episode provenance. Sent
+    only when it satisfies the payload contract's path rule (non-empty,
+    <=512 bytes, no control characters), because an invalid value would
+    reject the whole capture rather than just this field."""
+    if not cwd or len(cwd.encode("utf-8")) > 512:
+        return None
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in cwd):
+        return None
+    return cwd
 
 
 def sweep_stale(now_s: float) -> None:
@@ -90,8 +112,6 @@ def stash_prompt(payload: dict) -> None:
     prompt = payload.get("prompt")
     cwd = payload.get("cwd") or os.getcwd()
     if not isinstance(prompt, str) or len(prompt.strip()) < 3:
-        return
-    if not is_under_willow(cwd):
         return
     target = pending_path(payload)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -120,8 +140,8 @@ def capture_stop(payload: dict) -> None:
     if not isinstance(prompt, str) or len(prompt.strip()) < 3:
         source.unlink(missing_ok=True)
         return
-    if not is_under_willow(str(pending.get("cwd") or "")):
-        source.unlink(missing_ok=True)
+    binary = resolve_binary()
+    if binary is None:
         return
 
     event_time_ms = pending.get("event_time_ms")
@@ -141,8 +161,11 @@ def capture_stop(payload: dict) -> None:
         "user_content": prompt,
         "assistant_result": assistant,
     }
+    ws = workspace_root(str(pending.get("cwd") or ""))
+    if ws is not None:
+        capture["workspace_root"] = ws
 
-    cmd = [str(BINARY), "capture"]
+    cmd = [binary, "capture"]
     root = os.environ.get("AUTOJOURNAL_HOOK_ROOT")
     index = os.environ.get("AUTOJOURNAL_HOOK_INDEX")
     if root:
@@ -163,7 +186,7 @@ def capture_stop(payload: dict) -> None:
 
 
 def session_start(payload: dict) -> None:
-    if not is_under_willow(str(payload.get("cwd") or os.getcwd())):
+    if resolve_binary() is None:
         return
     context = (
         "Persistent memory of past agent sessions is available through the "

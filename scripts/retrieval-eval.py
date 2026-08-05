@@ -6,8 +6,8 @@ The query set is a private JSONL file (it quotes journal content), one
 record per query: {"id", "query", "type", "relevant": [episode ids]}.
 Types: known_item / plural_probe / paraphrase count toward ranking
 metrics; negative queries (empty relevant) report score/confidence of
-their best spurious hit instead. See ~/memory/eval/autojournal-retrieval/
-on the origin host.
+their best spurious hit instead. No judged set ships with this repository,
+so results from it are not reproducible by a reader; bring your own.
 
 Metrics over scored types: MRR@10 (reciprocal rank of the first relevant
 hit), recall@1/@10 (any relevant hit in the top 1/10), and page

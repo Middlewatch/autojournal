@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 """Claude Code 'Stop' hook — AutoJournal 1.0 capture.
 
-Publishes each completed turn through the deployed `autojournal capture`
-binary (~/.local/bin/autojournal) into the owner-configured journal root.
-The binary owns identity, dedupe, atomic publish, and index freshness; the
-hook only extracts the turn from the transcript and ships one payload.
+Publishes each completed turn through the `autojournal capture` binary into
+the owner-configured journal root. The binary owns identity, dedupe, atomic
+publish, and index freshness; the hook only extracts the turn from the
+transcript and ships one payload.
 
-Replaces the legacy markdown-append parity hook that wrote ~/memory/journal
-directly. Wired as a Stop hook in ~/.claude/settings.json. Reads the hook
-payload on stdin ({session_id, transcript_path, cwd, ...}). Non-blocking:
-any error → exit 0, no capture.
+Wired as a Stop hook in ~/.claude/settings.json. Reads the hook payload on
+stdin ({session_id, transcript_path, cwd, ...}). Non-blocking: any error →
+exit 0, no capture.
+
+Every session is captured, wherever it runs. Narrowing what enters memory
+is the journal's job, not the hook's: set capture defaults with
+`autojournal default --world <w> --scope <s>`, or point `journal_root`
+somewhere else in ~/.config/autojournal/config.json. The turn's working
+directory rides along as `workspace_root` provenance.
 
 Capture policy cc-stop.v2 — deterministic synthetic-turn filter:
 - Harness-generated blocks (task notifications, slash-command echoes,
@@ -27,14 +32,14 @@ Testing override: AUTOJOURNAL_HOOK_ROOT / AUTOJOURNAL_HOOK_INDEX pass
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import time
 from datetime import datetime
 
-BINARY = pathlib.Path.home() / ".local" / "bin" / "autojournal"
 HARNESS = "claude-code"
-ADAPTER_VERSION = "cc-stop-hook-1.1.0"
+ADAPTER_VERSION = "cc-stop-hook-1.2.0"
 CAPTURE_POLICY = "cc-stop.v2"
 
 # Closed list of harness-generated block tags. A prompt edge wrapped in one
@@ -81,13 +86,30 @@ def strip_synthetic_blocks(text: str) -> str:
     return strip_trailing(strip_leading(text)).strip()
 
 
-def is_under_willow(cwd: str) -> bool:
-    try:
-        real = os.path.realpath(cwd)
-        root = os.path.realpath("/willow")
-    except Exception:
-        return False
-    return real == root or real.startswith(root + os.sep)
+def resolve_binary() -> str | None:
+    """AUTOJOURNAL_BIN, then the conventional user install, then PATH —
+    the same order the Pi adapter resolves. Returns None when no
+    executable is found, which makes the hook a no-op instead of an
+    error."""
+    override = os.environ.get("AUTOJOURNAL_BIN", "").strip()
+    if override:
+        return override if os.access(override, os.X_OK) else None
+    local = pathlib.Path.home() / ".local" / "bin" / "autojournal"
+    if os.access(local, os.X_OK):
+        return str(local)
+    return shutil.which("autojournal")
+
+
+def workspace_root(cwd: str) -> str | None:
+    """The turn's working directory, as optional episode provenance. Sent
+    only when it satisfies the payload contract's path rule (non-empty,
+    <=512 bytes, no control characters), because an invalid value would
+    reject the whole capture rather than just this field."""
+    if not cwd or len(cwd.encode("utf-8")) > 512:
+        return None
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in cwd):
+        return None
+    return cwd
 
 
 def is_real_user(o: dict) -> bool:
@@ -152,7 +174,10 @@ def main() -> int:
     sid = payload.get("session_id") or ""
     transcript = payload.get("transcript_path") or ""
     cwd = payload.get("cwd") or os.getcwd()
-    if not sid or not transcript or not is_under_willow(cwd):
+    if not sid or not transcript:
+        return 0
+    binary = resolve_binary()
+    if binary is None:
         return 0
 
     try:
@@ -216,8 +241,11 @@ def main() -> int:
         "assistant_result": agent,
         "tools": [{"name": n} for n in tools[:256]],
     }
+    ws = workspace_root(cwd)
+    if ws is not None:
+        capture["workspace_root"] = ws
 
-    cmd = [str(BINARY), "capture"]
+    cmd = [binary, "capture"]
     root = os.environ.get("AUTOJOURNAL_HOOK_ROOT")
     index = os.environ.get("AUTOJOURNAL_HOOK_INDEX")
     if root:

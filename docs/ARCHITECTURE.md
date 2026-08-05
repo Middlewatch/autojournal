@@ -37,7 +37,7 @@ its output byte-for-byte.
 | `store.go` | Atomic publication: contained paths, owner-only dirs, temp-file + rename + dir sync, duplicate/conflict detection, date-only default layout with optional world/scope/lane directories. |
 | `db.go` | SQLite driver discipline over `modernc.org/sqlite` (pure Go): WAL, busy handling, typed error mapping. |
 | `index.go` | The disposable SQLite projection: per-line postings, per-world term stats, identity metadata, root-digest foreign-index gate. Sync dedupes by episode identity (first copy stays indexed), skips dot-directories, and repairs owner-only permissions best-effort. |
-| `retrieval.go` | Pure lexical core: tokenizer, stop words, IDF scorer, recency nudge, confidence, cursor codec. Versioned as `aj-tok.v1` / `aj-scorer.v1` / `aj-conf.v1`. |
+| `retrieval.go` | Pure lexical core: tokenizer, stop words, IDF scorer, recency nudge, confidence, cursor codec. Versioned as `aj-tok.v1` / `aj-scorer.v2` / `aj-conf.v2`. |
 | `aliases.go` | Owner-edited thesaurus (flat JSON, read fresh per search, digest-identified) and the opt-in weak-query miss log. |
 | `search.go` | `memory_search`/`memory_get` orchestration: discovery scan, word-start crediting, ranking, snippets, revision-verified evidence opening. |
 | `config.go` | The owner config file (XDG `config.json`): journal root, retrieval knobs, capture world/scope defaults. Every key is optional; the `default` command rewrites capture defaults atomically, preserving the rest. |

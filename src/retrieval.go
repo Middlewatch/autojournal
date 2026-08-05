@@ -27,8 +27,8 @@ import (
 // another tokenizer version are disposed. ScorerVersion is stamped on
 // every search result; callers may pin it.
 //
-// aj-scorer.v2 (ratified 2026-08-03, measured against the judged eval
-// set in ~/memory/eval/autojournal-retrieval on the origin host) is v1
+// aj-scorer.v2 (ratified 2026-08-03 against a private judged query set,
+// so the tuning basis is not reproducible from this repository) is v1
 // ordering plus: additive singular folding of plural query terms, and a
 // per-episode cap of MaxPerEpisodeDefault result regions so one long
 // episode cannot crowd a page. aj-conf.v2 bands confidence on the
