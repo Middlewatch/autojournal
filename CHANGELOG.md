@@ -23,6 +23,14 @@ published version.
   missing or still says "unreleased". Dating the entry is part of cutting a
   release rather than a step to remember afterward, which is how 1.0.2 shipped
   undated in the first place.
+- All three adapters now record the machine a turn ran on in the payload's
+  optional `host` field. One journal root can be fed by several machines — a
+  laptop syncing into a server's corpus — and without the label those episodes
+  are indistinguishable. A hostname the payload contract would reject is
+  omitted rather than sanitized, because this field names a real machine and a
+  mangled label would assert one that does not exist. No format change: `host`
+  was already in the payload contract and already rendered into frontmatter;
+  nothing previously captured is re-identified.
 
 ## 1.0.2 — 2026-08-05
 

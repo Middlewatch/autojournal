@@ -14,7 +14,8 @@ Every session is captured, wherever it runs. Narrowing what enters memory
 is the journal's job, not the hook's: set capture defaults with
 `autojournal default --world <w> --scope <s>`, or point `journal_root`
 somewhere else in ~/.config/autojournal/config.json. The turn's working
-directory rides along as `workspace_root` provenance.
+directory rides along as `workspace_root` provenance, and the machine it
+ran on as `host`.
 
 Capture policy cc-stop.v2 — deterministic synthetic-turn filter:
 - Harness-generated blocks (task notifications, slash-command echoes,
@@ -33,13 +34,14 @@ import json
 import os
 import pathlib
 import shutil
+import socket
 import subprocess
 import sys
 import time
 from datetime import datetime
 
 HARNESS = "claude-code"
-ADAPTER_VERSION = "cc-stop-hook-1.2.0"
+ADAPTER_VERSION = "cc-stop-hook-1.3.0"
 CAPTURE_POLICY = "cc-stop.v2"
 
 # Closed list of harness-generated block tags. A prompt edge wrapped in one
@@ -110,6 +112,24 @@ def workspace_root(cwd: str) -> str | None:
     if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in cwd):
         return None
     return cwd
+
+
+def origin_host() -> str | None:
+    """The machine the turn ran on, as optional episode provenance. One
+    journal root can be fed by several machines — a laptop syncing into a
+    server's corpus, say — and without this the episodes are
+    indistinguishable. Only the short name is sent, and only when it
+    satisfies the payload contract's token rule, because an invalid value
+    would reject the whole capture rather than just this field."""
+    try:
+        name = socket.gethostname().split(".")[0].strip()
+    except Exception:
+        return None
+    if not name or len(name) > 128:
+        return None
+    if not all(ch.isascii() and (ch.isalnum() or ch in "._-:+/@") for ch in name):
+        return None
+    return name
 
 
 def is_real_user(o: dict) -> bool:
@@ -244,6 +264,9 @@ def main() -> int:
     ws = workspace_root(cwd)
     if ws is not None:
         capture["workspace_root"] = ws
+    host = origin_host()
+    if host is not None:
+        capture["host"] = host
 
     cmd = [binary, "capture"]
     root = os.environ.get("AUTOJOURNAL_HOOK_ROOT")

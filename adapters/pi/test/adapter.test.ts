@@ -11,6 +11,7 @@ import {
   extractText,
   formatMenuTitle,
   legacyPiJournalRoot,
+  originHost,
   renderGetResult,
   renderSearchResults,
   resolveBinary,
@@ -115,6 +116,29 @@ test("buildPayload carries selected world/scope and sanitizes identities", () =>
 test("sanitizeToken falls back when nothing survives", () => {
   assert.equal(sanitizeToken("???", "fb"), "---");
   assert.equal(sanitizeToken("", "fb"), "fb");
+});
+
+test("originHost reports the short machine name, or nothing it cannot label", () => {
+  assert.equal(originHost("stealth.tail8255b9.ts.net"), "stealth");
+  assert.equal(originHost("battlestation"), "battlestation");
+  assert.equal(originHost(""), null);
+  assert.equal(originHost("   "), null);
+  // Provenance names a real machine, so an unusable name costs the field
+  // rather than being sanitized into a host that does not exist.
+  assert.equal(originHost("two words"), null);
+  assert.equal(originHost("x".repeat(129)), null);
+});
+
+test("buildPayload labels the originating machine and omits it when unknown", () => {
+  const base = {
+    summary: { userText: "u", assistantText: "a", toolNames: [] },
+    sessionId: "s",
+    turnId: "t",
+    eventTimeMs: 1,
+    selection: DEFAULT_SELECTION,
+  };
+  assert.equal(buildPayload({ ...base, host: "stealth" }).host, "stealth");
+  assert.ok(!("host" in buildPayload({ ...base, host: null })));
 });
 
 test("renderSearchResults covers match, no_match, and typed failures", () => {

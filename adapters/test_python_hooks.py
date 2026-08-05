@@ -14,10 +14,12 @@ import importlib.util
 import json
 import os
 import pathlib
+import socket
 import stat
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from io import StringIO
 
 ADAPTERS = pathlib.Path(__file__).resolve().parent
@@ -149,6 +151,18 @@ class ClaudeCodeHook(HookHarness):
         self.assertIsNotNone(published, "a bad cwd must not lose the turn")
         self.assertNotIn("workspace_root", published)
 
+    def test_labels_the_originating_machine(self):
+        published = self.run_hook(
+            cc,
+            {
+                "session_id": "s1",
+                "transcript_path": self.transcript("which box was this?", "this one"),
+                "cwd": str(self.tmp),
+            },
+        )
+        self.assertIsNotNone(published, "no payload was published")
+        self.assertEqual(published["host"], socket.gethostname().split(".")[0])
+
 
 class CodexHook(HookHarness):
     def stash_and_stop(self, cwd):
@@ -210,6 +224,11 @@ class CodexHook(HookHarness):
         pending = codex.pending_path({"session_id": "s3", "turn_id": "t1"})
         self.assertTrue(pending.exists(), "pending prompt was discarded unpublished")
 
+    def test_labels_the_originating_machine(self):
+        published = self.stash_and_stop(str(self.tmp))
+        self.assertIsNotNone(published, "no payload was published")
+        self.assertEqual(published["host"], socket.gethostname().split(".")[0])
+
 
 class BinaryResolution(HookHarness):
     def test_explicit_override_wins(self):
@@ -241,6 +260,33 @@ class WorkspaceRootContract(unittest.TestCase):
             self.assertIsNone(module.workspace_root(""))
             self.assertIsNone(module.workspace_root("/bad\x00path"))
             self.assertIsNone(module.workspace_root("/x" + "y" * 512))
+
+
+class OriginHostContract(unittest.TestCase):
+    """The host label is provenance, so a hostname the payload contract
+    would reject must cost the field, never the turn."""
+
+    def test_reports_the_short_hostname(self):
+        for module in (cc, codex):
+            with unittest.mock.patch.object(
+                module.socket, "gethostname", return_value="stealth.tail8255b9.ts.net"
+            ):
+                self.assertEqual(module.origin_host(), "stealth")
+
+    def test_omits_a_hostname_the_contract_would_reject(self):
+        for module in (cc, codex):
+            for bad in ("", "   ", "two words", "bad\x01name", "x" * 129):
+                with unittest.mock.patch.object(
+                    module.socket, "gethostname", return_value=bad
+                ):
+                    self.assertIsNone(module.origin_host(), f"accepted {bad!r}")
+
+    def test_survives_an_unreadable_hostname(self):
+        for module in (cc, codex):
+            with unittest.mock.patch.object(
+                module.socket, "gethostname", side_effect=OSError("no hostname")
+            ):
+                self.assertIsNone(module.origin_host())
 
 
 if __name__ == "__main__":

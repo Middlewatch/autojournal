@@ -229,6 +229,19 @@ export function sanitizeToken(raw: string, fallback: string): string {
   return cleaned === "" ? fallback : cleaned;
 }
 
+// The machine the turn ran on, as optional episode provenance. One journal
+// root can be fed by several machines — a laptop syncing into a server's
+// corpus, say — and without this the episodes are indistinguishable. Only
+// the short name is sent, and a name the payload contract would reject is
+// dropped rather than sanitized: unlike a session id, this field names a
+// real machine, and a mangled label would assert a host that does not
+// exist. The Python hooks apply the same rule.
+export function originHost(hostname: string = os.hostname()): string | null {
+  const short = (hostname ?? "").split(".")[0].trim();
+  if (short === "" || short.length > 128) return null;
+  return /^[A-Za-z0-9._:+/@-]+$/.test(short) ? short : null;
+}
+
 // The store places an episode at a date path derived from event_time_ms and
 // detects duplicates by that path, so every delivery of a turn must derive
 // the same event time. The leaf entry's timestamp is that stable source:
@@ -280,9 +293,12 @@ export function buildPayload(input: {
   eventTimeMs: number;
   selection: SessionSelection;
   adapterVersion?: string;
+  host?: string | null;
 }): Record<string, unknown> {
+  const host = input.host === undefined ? originHost() : input.host;
   return {
     schema_version: 1,
+    ...(host === null ? {} : { host }),
     world: input.selection.world,
     scope: input.selection.scope,
     lane: "conversation",
