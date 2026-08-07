@@ -16,14 +16,6 @@ No format change. Episode bytes, identity, index schema, config, and the
 CLI `--json` surface are untouched. The headline is sync: it is now
 incremental, and a long one is visible while it runs.
 
-- The copy of this changelog inside the published 1.0.2 package describes
-  1.0.2 as unreleased, because the file was packed as it stood before
-  publication. npm versions are immutable, so the published text stays wrong;
-  the corrected history reaches the registry with this release.
-- The packaging self-check refuses to pack a version whose changelog entry is
-  missing or still says "unreleased". Dating the entry is part of cutting a
-  release rather than a step to remember afterward, which is how 1.0.2 shipped
-  undated in the first place.
 - All three adapters now record the machine a turn ran on in the payload's
   optional `host` field. One journal root can be fed by several machines — a
   laptop syncing into a server's corpus — and without the label those episodes
