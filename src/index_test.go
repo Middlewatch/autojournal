@@ -1,6 +1,7 @@
 package autojournal
 
 import (
+	"bytes"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -157,7 +158,9 @@ func TestCaptureUpsertRebuildAndGoneFileRepairAgree(t *testing.T) {
 	shard := filepath.Dir(published[0].RelPath)
 	writeCorpusFile(t, rootPath, shard+"/aj1-junk.md", "not an episode")
 
-	// Deleting a source file removes its row on the next sync.
+	// Deleting a source file removes its row on the next sync. The one
+	// surviving episode is digest-matched and skipped: Indexed counts
+	// only rows this run (re)wrote, Unchanged the skips.
 	if err := os.Remove(filepath.Join(rootPath, filepath.FromSlash(published[1].RelPath))); err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +168,7 @@ func TestCaptureUpsertRebuildAndGoneFileRepairAgree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
-	if second.Indexed != 1 || second.Removed != 1 || second.SkippedMalformed != 1 {
+	if second.Indexed != 0 || second.Unchanged != 1 || second.Removed != 1 || second.SkippedMalformed != 1 {
 		t.Errorf("second sync = %+v", second)
 	}
 	if n, _ := idx.EpisodeCount(); n != 1 {
@@ -450,6 +453,57 @@ func TestCurrentVersionReopenPreservesDataForeignRootRejected(t *testing.T) {
 	// Another root's digest is a foreign index, never an empty corpus.
 	if _, err := OpenIndex(dbPath, &digestB); !errors.Is(err, ErrForeignIndex) {
 		t.Errorf("err = %v, want ErrForeignIndex", err)
+	}
+}
+
+func TestSyncSkipsUnchangedFilesAndTracksByteEdits(t *testing.T) {
+	base := mustValidate(t, testPayloadJSON)
+	rootPath, root := testCorpus(t)
+	published := publishDistinctCorpus(t, root, base)
+
+	idx := openMemoryIndex(t)
+	first, err := idx.SyncFromCorpus(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Indexed != 3 || first.Unchanged != 0 {
+		t.Fatalf("first sync = %+v, want 3 indexed, 0 unchanged", first)
+	}
+
+	// A no-change re-sync is a walk: every file byte-matches its stored
+	// hash, so nothing is parsed or rewritten.
+	second, err := idx.SyncFromCorpus(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Indexed != 0 || second.Unchanged != 3 || second.Removed != 0 {
+		t.Fatalf("second sync = %+v, want 0 indexed, 3 unchanged", second)
+	}
+
+	// A body-only hand edit leaves the frontmatter payload_digest stale,
+	// but the byte hash still forces reindexing — the README's
+	// hand-editing promise depends on sync noticing any byte change.
+	edited := bytes.Replace(published[0].Content, []byte("zebra"), []byte("aardvark"), 1)
+	if bytes.Equal(edited, published[0].Content) {
+		t.Fatal("edit did not change the file")
+	}
+	writeCorpusFile(t, rootPath, published[0].RelPath, string(edited))
+	third, err := idx.SyncFromCorpus(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.Indexed != 1 || third.Unchanged != 2 {
+		t.Fatalf("third sync = %+v, want 1 indexed, 2 unchanged", third)
+	}
+
+	// The incrementally maintained projection equals a from-scratch
+	// rebuild of the same corpus, df bookkeeping included.
+	fresh := openMemoryIndex(t)
+	if _, err := fresh.SyncFromCorpus(root); err != nil {
+		t.Fatal(err)
+	}
+	if a, b := snapshotRetrieval(t, idx), snapshotRetrieval(t, fresh); a != b {
+		t.Fatalf("incremental projection differs from fresh rebuild\n--- incremental ---\n%s\n--- fresh ---\n%s", a, b)
 	}
 }
 

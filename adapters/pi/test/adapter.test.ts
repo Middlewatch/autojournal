@@ -57,6 +57,69 @@ test("syncResultBody names the timeout instead of blaming the binary", () => {
   assert.equal(syncResultBody(silent), "(sync produced no output)");
 });
 
+test(
+  "/autojournal sync owns the footer status for its duration, then clears it",
+  { skip: e2eBinary === null },
+  async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aj-syncstatus-"));
+    const previous = {
+      bin: process.env.AUTOJOURNAL_BIN,
+      config: process.env.AUTOJOURNAL_CONFIG,
+      xdgConfig: process.env.XDG_CONFIG_HOME,
+      data: process.env.XDG_DATA_HOME,
+      state: process.env.XDG_STATE_HOME,
+    };
+    process.env.AUTOJOURNAL_BIN = e2eBinary as string;
+    delete process.env.AUTOJOURNAL_CONFIG;
+    process.env.XDG_CONFIG_HOME = path.join(tmp, "config");
+    process.env.XDG_DATA_HOME = path.join(tmp, "data");
+    process.env.XDG_STATE_HOME = path.join(tmp, "state");
+    try {
+      // An existing-but-empty root: sync exits 0 with a report rather
+      // than the missing-root failure.
+      fs.mkdirSync(path.join(tmp, "data", "autojournal", "journals"), { recursive: true });
+      let command: ((args: string, ctx: unknown) => Promise<void>) | undefined;
+      const fakePi = {
+        on() {},
+        registerTool() {},
+        registerCommand(_name: string, spec: { handler: typeof command }) {
+          command = spec.handler;
+        },
+        appendEntry() {},
+      };
+      autojournalExtension(fakePi as never);
+      assert.ok(command);
+      const statuses: Array<string | undefined> = [];
+      const notices: Array<{ msg: string; type: string }> = [];
+      await command("sync", {
+        hasUI: true,
+        ui: {
+          notify(msg: string, type: string) { notices.push({ msg, type }); },
+          setStatus(_key: string, text: string | undefined) { statuses.push(text); },
+          async select() { return "Close"; },
+          async input() { return ""; },
+        },
+      });
+      assert.ok(statuses.length >= 2, `status lifecycle too short: ${JSON.stringify(statuses)}`);
+      assert.match(statuses[0] as string, /autojournal: syncing index/);
+      assert.equal(statuses[statuses.length - 1], undefined, "status must be cleared at the end");
+      assert.ok(notices.some((n) => n.type === "info" && n.msg.includes("indexed:")));
+    } finally {
+      if (previous.bin === undefined) delete process.env.AUTOJOURNAL_BIN;
+      else process.env.AUTOJOURNAL_BIN = previous.bin;
+      if (previous.config === undefined) delete process.env.AUTOJOURNAL_CONFIG;
+      else process.env.AUTOJOURNAL_CONFIG = previous.config;
+      if (previous.xdgConfig === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = previous.xdgConfig;
+      if (previous.data === undefined) delete process.env.XDG_DATA_HOME;
+      else process.env.XDG_DATA_HOME = previous.data;
+      if (previous.state === undefined) delete process.env.XDG_STATE_HOME;
+      else process.env.XDG_STATE_HOME = previous.state;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+);
+
 test("extractText handles strings, blocks, and junk", () => {
   assert.equal(extractText("plain"), "plain");
   assert.equal(extractText("   "), "");

@@ -15,7 +15,9 @@ package autojournal
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +28,11 @@ import (
 	"strconv"
 	"strings"
 )
+
+// syncHashKeyPrefix namespaces the per-file content hashes sync stores
+// in meta. Keys (not columns) keep the frozen index schema untouched;
+// the SQL literals below hard-code the prefix's 12-byte length.
+const syncHashKeyPrefix = "sync_sha256:"
 
 // IndexSchemaVersion is the projection's schema identity; a database
 // stamped with anything else is disposed and recreated.
@@ -395,11 +402,18 @@ func (idx *Index) indexEpisodeInTx(tx *sql.Tx, relPath, content string) error {
 	}
 
 	lineNo := ep.BodyLine
+	// One prepare per episode instead of one implicit prepare per token:
+	// a body yields hundreds of postings, and modernc.org/sqlite
+	// re-parses an unprepared statement on every Exec.
+	postingStmt, err := tx.PrepareContext(context.Background(),
+		"INSERT OR IGNORE INTO postings (term, episode_id, line_no) VALUES (?1, ?2, ?3);")
+	if err != nil {
+		return mapDBError(err)
+	}
+	defer postingStmt.Close()
 	for _, line := range strings.Split(content[ep.BodyOffset:], "\n") {
 		for _, token := range TokenizeLine(line) {
-			_, err := tx.ExecContext(context.Background(),
-				"INSERT OR IGNORE INTO postings (term, episode_id, line_no) VALUES (?1, ?2, ?3);",
-				token, ep.EpisodeID, int64(lineNo))
+			_, err := postingStmt.ExecContext(context.Background(), token, ep.EpisodeID, int64(lineNo))
 			if err != nil {
 				return mapDBError(err)
 			}
@@ -425,7 +439,7 @@ func (idx *Index) indexEpisodeInTx(tx *sql.Tx, relPath, content string) error {
 		  WHERE true
 		  ON CONFLICT(world, term) DO UPDATE SET eval_df = eval_df + 1;`
 	}
-	_, err := tx.ExecContext(context.Background(), statsSQL, ep.World, ep.EpisodeID)
+	_, err = tx.ExecContext(context.Background(), statsSQL, ep.World, ep.EpisodeID)
 	return mapDBError(err)
 }
 
@@ -757,18 +771,26 @@ func (idx *Index) WorldScopePairs() ([]WorldScope, error) {
 	return pairs, mapDBError(rows.Err())
 }
 
-// SyncReport is the rebuild accounting.
+// SyncReport is the sync accounting. Indexed counts episodes whose
+// projection rows were (re)written this run; Unchanged counts episodes
+// whose file still matches the stored row and were skipped wholesale.
 type SyncReport struct {
 	Indexed          uint64
+	Unchanged        uint64
 	Removed          uint64
 	SkippedMalformed uint64
 	DuplicateIDs     uint64
 }
 
-// SyncFromCorpus rebuilds the projection to match the corpus: every
-// parseable episode file is fully reindexed (row, postings, stats), rows
-// whose files are gone are removed, malformed files are counted and
-// excluded. One transaction; a torn sync never leaves a half-projection.
+// SyncFromCorpus brings the projection up to date with the corpus.
+// Each file's SHA-256 is compared against the hash stored under its
+// meta key when it was last indexed; a byte-identical file with its row
+// still present is skipped without parsing or writing, because
+// re-deriving its rows would rewrite exactly them. New, edited, and
+// moved files are fully reindexed (row, postings, stats), rows whose
+// files are gone are removed, malformed files are counted and excluded.
+// One transaction; a torn sync never leaves a half-projection or
+// half-updated hash map.
 func (idx *Index) SyncFromCorpus(root *os.Root) (SyncReport, error) {
 	var report SyncReport
 	tx, err := idx.db.BeginTx(context.Background(), nil)
@@ -777,6 +799,51 @@ func (idx *Index) SyncFromCorpus(root *os.Root) (SyncReport, error) {
 	}
 	defer tx.Rollback()
 
+	// The skip decision needs two maps up front, both consistent with
+	// the transaction's writes: path -> episode identity for the seen
+	// bookkeeping, and path -> content hash for the change test. The
+	// hashes live in meta keys (not a column) so the frozen index schema
+	// is untouched; losing them degrades to a full rebuild, never to a
+	// wrong projection — a hash miss always reindexes.
+	stored := map[string]string{}
+	storedRows, err := tx.QueryContext(context.Background(), "SELECT rel_path, episode_id FROM episodes;")
+	if err != nil {
+		return report, mapDBError(err)
+	}
+	for storedRows.Next() {
+		var relPath, id string
+		if err := storedRows.Scan(&relPath, &id); err != nil {
+			storedRows.Close()
+			return report, mapDBError(err)
+		}
+		stored[relPath] = id
+	}
+	if err := storedRows.Err(); err != nil {
+		storedRows.Close()
+		return report, mapDBError(err)
+	}
+	storedRows.Close()
+
+	syncedHashes := map[string]string{}
+	hashRows, err := tx.QueryContext(context.Background(),
+		"SELECT key, value FROM meta WHERE substr(key, 1, 12) = 'sync_sha256:';")
+	if err != nil {
+		return report, mapDBError(err)
+	}
+	for hashRows.Next() {
+		var key, value string
+		if err := hashRows.Scan(&key, &value); err != nil {
+			hashRows.Close()
+			return report, mapDBError(err)
+		}
+		syncedHashes[key[len(syncHashKeyPrefix):]] = value
+	}
+	if err := hashRows.Err(); err != nil {
+		hashRows.Close()
+		return report, mapDBError(err)
+	}
+	hashRows.Close()
+
 	// A vanished corpus (deleted between root open and sync) is an empty
 	// corpus: the whole projection becomes empty too.
 	if _, err := fs.Stat(root.FS(), "."); errors.Is(err, fs.ErrNotExist) {
@@ -784,6 +851,10 @@ func (idx *Index) SyncFromCorpus(root *os.Root) (SyncReport, error) {
 			if _, err := tx.ExecContext(context.Background(), "DELETE FROM "+table+";"); err != nil {
 				return report, mapDBError(err)
 			}
+		}
+		if _, err := tx.ExecContext(context.Background(),
+			"DELETE FROM meta WHERE substr(key, 1, 12) = 'sync_sha256:';"); err != nil {
+			return report, mapDBError(err)
 		}
 		return report, mapDBError(tx.Commit())
 	}
@@ -833,6 +904,21 @@ func (idx *Index) SyncFromCorpus(root *os.Root) (SyncReport, error) {
 			report.SkippedMalformed++
 			return nil
 		}
+		// The change test is the raw bytes, not the frontmatter's
+		// payload_digest: that digest is written by capture and a hand
+		// edit does not update it, so trusting it would leave edited
+		// postings stale. A byte hash catches every edit; requiring the
+		// episode row too keeps a hand-mangled database self-healing
+		// (the row is missing -> no skip -> full reindex).
+		sum := sha256.Sum256(content)
+		hexSum := hex.EncodeToString(sum[:])
+		if syncedHashes[path] == hexSum {
+			if id, ok := stored[path]; ok {
+				seen[id] = struct{}{}
+				report.Unchanged++
+				return nil
+			}
+		}
 		ep := ParseEpisode(string(content))
 		if ep == nil {
 			report.SkippedMalformed++
@@ -852,6 +938,11 @@ func (idx *Index) SyncFromCorpus(root *os.Root) (SyncReport, error) {
 			}
 			return err
 		}
+		if _, err := tx.ExecContext(context.Background(),
+			"INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2);",
+			syncHashKeyPrefix+path, hexSum); err != nil {
+			return mapDBError(err)
+		}
 		seen[ep.EpisodeID] = struct{}{}
 		report.Indexed++
 		return nil
@@ -861,19 +952,19 @@ func (idx *Index) SyncFromCorpus(root *os.Root) (SyncReport, error) {
 	}
 
 	// Remove rows (and their postings/stats) whose source files are gone.
-	rows, err := tx.QueryContext(context.Background(), "SELECT episode_id FROM episodes;")
+	rows, err := tx.QueryContext(context.Background(), "SELECT episode_id, rel_path FROM episodes;")
 	if err != nil {
 		return report, mapDBError(err)
 	}
-	var toRemove []string
+	var toRemove []struct{ id, relPath string }
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var id, relPath string
+		if err := rows.Scan(&id, &relPath); err != nil {
 			rows.Close()
 			return report, mapDBError(err)
 		}
 		if _, ok := seen[id]; !ok {
-			toRemove = append(toRemove, id)
+			toRemove = append(toRemove, struct{ id, relPath string }{id, relPath})
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -881,12 +972,16 @@ func (idx *Index) SyncFromCorpus(root *os.Root) (SyncReport, error) {
 		return report, mapDBError(err)
 	}
 	rows.Close()
-	for _, id := range toRemove {
-		if err := idx.deindexEpisodeInTx(tx, id); err != nil {
+	for _, victim := range toRemove {
+		if err := idx.deindexEpisodeInTx(tx, victim.id); err != nil {
 			return report, err
 		}
 		if _, err := tx.ExecContext(context.Background(),
-			"DELETE FROM episodes WHERE episode_id = ?1;", id); err != nil {
+			"DELETE FROM episodes WHERE episode_id = ?1;", victim.id); err != nil {
+			return report, mapDBError(err)
+		}
+		if _, err := tx.ExecContext(context.Background(),
+			"DELETE FROM meta WHERE key = ?1;", syncHashKeyPrefix+victim.relPath); err != nil {
 			return report, mapDBError(err)
 		}
 		report.Removed++

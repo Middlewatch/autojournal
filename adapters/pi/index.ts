@@ -133,6 +133,28 @@ export function syncResultBody(run: RunResult): string {
   return run.stdout.trim() || run.stderr.trim() || "(sync produced no output)";
 }
 
+// A running sync owns the footer status for its duration: a toast
+// vanishes mid-rebuild, but the status line persists and its ticker
+// keeps the elapsed time visible. Completion or failure always clears
+// it. Routine incremental syncs clear in well under a second; the
+// ticker is for first builds, post-upgrade rebuilds, and big imports.
+function beginSyncStatus(ctx: {
+  hasUI?: boolean;
+  ui: { setStatus?(key: string, text: string | undefined): void };
+}): () => void {
+  if (ctx.hasUI === false || typeof ctx.ui.setStatus !== "function") return () => {};
+  const setStatus = ctx.ui.setStatus.bind(ctx.ui);
+  const started = Date.now();
+  const render = () => `autojournal: syncing index… ${Math.round((Date.now() - started) / 1000)}s`;
+  setStatus("autojournal", render());
+  const timer = setInterval(() => setStatus("autojournal", render()), 1000);
+  timer.unref?.();
+  return () => {
+    clearInterval(timer);
+    setStatus("autojournal", undefined);
+  };
+}
+
 interface ContentBlock {
   type: string;
   text?: string;
@@ -979,20 +1001,19 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
       }
       if (sub === "status" || sub === "sync" || !ctx.hasUI) {
         const command = sub === "" ? "status" : sub;
-        if (command === "sync") {
-          ctx.ui.notify(
-            "autojournal: syncing index — a full corpus rebuild, this scales with episode count",
-            "info",
-          );
+        const endStatus = command === "sync" ? beginSyncStatus(ctx) : () => {};
+        try {
+          const run = await runBinary(binary, [command], {
+            timeoutMs: command === "sync" ? SYNC_TIMEOUT_MS : QUERY_TIMEOUT_MS,
+          });
+          const body =
+            command === "sync"
+              ? syncResultBody(run)
+              : run.stdout.trim() || run.stderr.trim() || `(${command} produced no output)`;
+          ctx.ui.notify(`${body}\n${adapterLine}`, run.code === 0 && !run.timedOut ? "info" : "warning");
+        } finally {
+          endStatus();
         }
-        const run = await runBinary(binary, [command], {
-          timeoutMs: command === "sync" ? SYNC_TIMEOUT_MS : QUERY_TIMEOUT_MS,
-        });
-        const body =
-          command === "sync"
-            ? syncResultBody(run)
-            : run.stdout.trim() || run.stderr.trim() || `(${command} produced no output)`;
-        ctx.ui.notify(`${body}\n${adapterLine}`, run.code === 0 && !run.timedOut ? "info" : "warning");
         return;
       }
 
@@ -1039,12 +1060,13 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
           continue;
         }
         if (choice === "Sync index") {
-          ctx.ui.notify(
-            "autojournal: syncing index — a full corpus rebuild, this scales with episode count",
-            "info",
-          );
-          const run = await runBinary(binary, ["sync"], { timeoutMs: SYNC_TIMEOUT_MS });
-          ctx.ui.notify(syncResultBody(run), run.code === 0 && !run.timedOut ? "info" : "warning");
+          const endStatus = beginSyncStatus(ctx);
+          try {
+            const run = await runBinary(binary, ["sync"], { timeoutMs: SYNC_TIMEOUT_MS });
+            ctx.ui.notify(syncResultBody(run), run.code === 0 && !run.timedOut ? "info" : "warning");
+          } finally {
+            endStatus();
+          }
           continue;
         }
         if (choice === "Import Pi session history") {
@@ -1078,7 +1100,13 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
           const imported = await importPiHistory({ binary, selection, files: candidates });
           let indexLine = "";
           if (imported.published > 0) {
-            const syncRun = await runBinary(binary, ["sync"], { timeoutMs: SYNC_TIMEOUT_MS });
+            const endStatus = beginSyncStatus(ctx);
+            let syncRun;
+            try {
+              syncRun = await runBinary(binary, ["sync"], { timeoutMs: SYNC_TIMEOUT_MS });
+            } finally {
+              endStatus();
+            }
             if (syncRun.code === 0 && !syncRun.timedOut) {
               indexLine = "\nindex synced";
             } else {

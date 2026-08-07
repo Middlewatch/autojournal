@@ -32,13 +32,28 @@ published version.
   was already in the payload contract and already rendered into frontmatter;
   nothing previously captured is re-identified.
 - `/autojournal sync` now runs on a ten-minute maintenance budget instead of
-  the 15 s query budget. Sync is a full corpus rebuild (~9 ms/episode, so a
-  ~4k-episode journal takes ~36 s); under the query budget the adapter killed
-  it mid-rebuild and reported "(sync produced no output)", and the rolled-back
-  projection still needed the whole rebuild the next time. A timed-out sync
-  now says so and points at running `autojournal sync` from a shell, both sync
-  paths announce that a rebuild is starting, and the post-import sync no
-  longer claims "index synced" when the rebuild did not finish.
+  the 15 s query budget, and while a sync runs the footer status shows
+  `autojournal: syncing index… Ns` with a one-second ticker, cleared when it
+  finishes. A timed-out sync says so and points at running `autojournal sync`
+  from a shell instead of reporting "(sync produced no output)", and the
+  post-import sync no longer claims "index synced" when the rebuild did not
+  finish.
+- Sync is incremental. Previously every sync re-derived every episode's rows,
+  postings, and stats — about 9 ms per episode, so a ~4k-episode journal took
+  ~36 s and grew linearly forever. Now each file's SHA-256 is compared
+  against a hash stored under a `sync_sha256:` meta key at index time, and a
+  byte-identical file is skipped without parsing or writing: a routine
+  no-change sync on that journal takes ~0.1 s. The hash lives in meta keys,
+  not a column, so the frozen index schema v2 is untouched; losing the hashes
+  degrades to a full rebuild, never a wrong projection. The change test is
+  the raw bytes rather than the frontmatter `payload_digest`, which capture
+  writes and hand edits do not update — a body-only edit is still reindexed,
+  preserving the hand-editing promise. One transaction still covers the whole
+  sync, so a torn run leaves neither a half-projection nor half-updated
+  hashes. The report gains an `unchanged:` line and `indexed:` now counts
+  only episodes (re)written this run; the full-rebuild path (first sync,
+  disposed index) also benefits from a prepared postings statement, ~10% off
+  the old per-token re-parse cost.
 
 ## 1.0.2 — 2026-08-05
 

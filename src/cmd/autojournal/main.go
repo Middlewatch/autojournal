@@ -1156,8 +1156,8 @@ func (c *cli) syncCommand(rootPath, indexPath string) int {
 			return c.fail(exitFailure, "cannot open index database\n")
 		}
 	}
-	fmt.Fprintf(c.stdout, "indexed: %d\nremoved: %d\nskipped_malformed: %d\nduplicate_ids: %d\n",
-		report.Indexed, report.Removed, report.SkippedMalformed, report.DuplicateIDs)
+	fmt.Fprintf(c.stdout, "indexed: %d\nunchanged: %d\nremoved: %d\nskipped_malformed: %d\nduplicate_ids: %d\n",
+		report.Indexed, report.Unchanged, report.Removed, report.SkippedMalformed, report.DuplicateIDs)
 	return exitOK
 }
 

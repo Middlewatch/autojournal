@@ -126,8 +126,9 @@ var (
 	ErrSyncFailed = errors.New("sync failed and was rolled back")
 )
 
-// Sync rebuilds the projection from the corpus and re-stamps its
-// identity.
+// Sync brings the projection up to date with the corpus and re-stamps
+// its identity. Unchanged files are skipped by digest match; new,
+// edited, and moved files are (re)indexed.
 //
 // Opened without the foreign-root gate on purpose: sync replaces
 // whatever projection is at indexPath with this root's content, which is
