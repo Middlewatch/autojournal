@@ -31,6 +31,14 @@ published version.
   mangled label would assert one that does not exist. No format change: `host`
   was already in the payload contract and already rendered into frontmatter;
   nothing previously captured is re-identified.
+- `/autojournal sync` now runs on a ten-minute maintenance budget instead of
+  the 15 s query budget. Sync is a full corpus rebuild (~9 ms/episode, so a
+  ~4k-episode journal takes ~36 s); under the query budget the adapter killed
+  it mid-rebuild and reported "(sync produced no output)", and the rolled-back
+  projection still needed the whole rebuild the next time. A timed-out sync
+  now says so and points at running `autojournal sync` from a shell, both sync
+  paths announce that a rebuild is starting, and the post-import sync no
+  longer claims "index synced" when the rebuild did not finish.
 
 ## 1.0.2 — 2026-08-05
 

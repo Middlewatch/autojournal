@@ -22,7 +22,14 @@ export const ADAPTER_VERSION = "1.0.3";
 const HARNESS = "pi";
 const CAPTURE_POLICY = "pi-default-v1";
 const CAPTURE_TIMEOUT_MS = 10_000;
-const QUERY_TIMEOUT_MS = 15_000;
+export const QUERY_TIMEOUT_MS = 15_000;
+// Sync is a full corpus rebuild, not a query: measured ~9 ms/episode
+// (4,040 episodes -> 36 s). Run it under the query budget and a mid-rebuild
+// SIGKILL reports the misleading "(sync produced no output)" and the rolled-
+// back projection still needs the whole rebuild next time. 10 min covers
+// ~65k episodes; the README already flags the six-figure crossover as
+// unmeasured, and this budget is part of what revisits it.
+export const SYNC_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_SEARCH_LIMIT = 6;
 // Binary-side cap is 2 MiB per content field; truncate below it so an
 // oversized turn degrades to a marked partial capture instead of a failure.
@@ -114,6 +121,17 @@ export function runBinary(
 }
 
 // --- Turn summarization (Pi messages -> completed-turn facts) ---
+
+export function syncResultBody(run: RunResult): string {
+  if (run.timedOut) {
+    return (
+      `autojournal: sync timed out after ${Math.round(SYNC_TIMEOUT_MS / 1000)}s — ` +
+      "a full corpus rebuild scales with episode count; the projection was rolled " +
+      "back unchanged, so run `autojournal sync` from a shell and let it finish"
+    );
+  }
+  return run.stdout.trim() || run.stderr.trim() || "(sync produced no output)";
+}
 
 interface ContentBlock {
   type: string;
@@ -961,9 +979,20 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
       }
       if (sub === "status" || sub === "sync" || !ctx.hasUI) {
         const command = sub === "" ? "status" : sub;
-        const run = await runBinary(binary, [command]);
-        const body = run.stdout.trim() || run.stderr.trim() || `(${command} produced no output)`;
-        ctx.ui.notify(`${body}\n${adapterLine}`, run.code === 0 ? "info" : "warning");
+        if (command === "sync") {
+          ctx.ui.notify(
+            "autojournal: syncing index — a full corpus rebuild, this scales with episode count",
+            "info",
+          );
+        }
+        const run = await runBinary(binary, [command], {
+          timeoutMs: command === "sync" ? SYNC_TIMEOUT_MS : QUERY_TIMEOUT_MS,
+        });
+        const body =
+          command === "sync"
+            ? syncResultBody(run)
+            : run.stdout.trim() || run.stderr.trim() || `(${command} produced no output)`;
+        ctx.ui.notify(`${body}\n${adapterLine}`, run.code === 0 && !run.timedOut ? "info" : "warning");
         return;
       }
 
@@ -1010,9 +1039,12 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
           continue;
         }
         if (choice === "Sync index") {
-          const run = await runBinary(binary, ["sync"]);
-          const body = run.stdout.trim() || run.stderr.trim() || "(sync produced no output)";
-          ctx.ui.notify(body, run.code === 0 ? "info" : "warning");
+          ctx.ui.notify(
+            "autojournal: syncing index — a full corpus rebuild, this scales with episode count",
+            "info",
+          );
+          const run = await runBinary(binary, ["sync"], { timeoutMs: SYNC_TIMEOUT_MS });
+          ctx.ui.notify(syncResultBody(run), run.code === 0 && !run.timedOut ? "info" : "warning");
           continue;
         }
         if (choice === "Import Pi session history") {
@@ -1044,11 +1076,22 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
             "info",
           );
           const imported = await importPiHistory({ binary, selection, files: candidates });
-          if (imported.published > 0) await runBinary(binary, ["sync"]);
+          let indexLine = "";
+          if (imported.published > 0) {
+            const syncRun = await runBinary(binary, ["sync"], { timeoutMs: SYNC_TIMEOUT_MS });
+            if (syncRun.code === 0 && !syncRun.timedOut) {
+              indexLine = "\nindex synced";
+            } else {
+              indexLine = syncRun.timedOut
+                ? "\nindex rebuild timed out — run /autojournal sync to finish it"
+                : "\nindex sync failed — run /autojournal sync to finish it";
+            }
+          }
           ctx.ui.notify(
-            formatImportSummary(imported) +
-              (imported.published > 0 ? "\nindex synced" : ""),
-            imported.failed > 0 ? "warning" : "info",
+            formatImportSummary(imported) + indexLine,
+            imported.failed > 0 || (indexLine !== "" && indexLine !== "\nindex synced")
+              ? "warning"
+              : "info",
           );
           continue;
         }

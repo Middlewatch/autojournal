@@ -21,6 +21,9 @@ import {
   SESSION_POLICY_ENTRY,
   stableTurnId,
   summarizeRun,
+  syncResultBody,
+  QUERY_TIMEOUT_MS,
+  SYNC_TIMEOUT_MS,
   validScope,
   validWorld,
 } from "../index.ts";
@@ -34,6 +37,24 @@ const e2eBinary = resolveBinary({
     "autojournal",
   ),
   PATH: process.env.PATH,
+});
+
+test("sync runs on a maintenance budget, not the query budget", () => {
+  // Regression: a 4k-episode rebuild takes ~36s; under the 15s query budget
+  // the adapter SIGKILLed it and reported "(sync produced no output)".
+  assert.ok(SYNC_TIMEOUT_MS > QUERY_TIMEOUT_MS);
+});
+
+test("syncResultBody names the timeout instead of blaming the binary", () => {
+  const timedOut = { code: null, stdout: "", stderr: "", timedOut: true };
+  assert.match(syncResultBody(timedOut), /timed out after 600s/);
+  assert.match(syncResultBody(timedOut), /rolled back unchanged/);
+  const ok = { code: 0, stdout: "indexed: 3\n", stderr: "", timedOut: false };
+  assert.equal(syncResultBody(ok), "indexed: 3");
+  const stderrOnly = { code: 1, stdout: "", stderr: "boom\n", timedOut: false };
+  assert.equal(syncResultBody(stderrOnly), "boom");
+  const silent = { code: 0, stdout: "", stderr: "", timedOut: false };
+  assert.equal(syncResultBody(silent), "(sync produced no output)");
 });
 
 test("extractText handles strings, blocks, and junk", () => {
