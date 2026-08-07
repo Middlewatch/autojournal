@@ -10,10 +10,11 @@ version.
 excluded from the payload digest, so upgrading never re-identifies or
 re-publishes existing episodes.
 
-## 1.0.3 — unreleased
+## 1.0.3 — 2026-08-07
 
-Accumulating for the next release. Nothing here has shipped; `1.0.2` is the
-published version.
+No format change. Episode bytes, identity, index schema, config, and the
+CLI `--json` surface are untouched. The headline is sync: it is now
+incremental, and a long one is visible while it runs.
 
 - The copy of this changelog inside the published 1.0.2 package describes
   1.0.2 as unreleased, because the file was packed as it stood before
