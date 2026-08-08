@@ -17,14 +17,18 @@ somewhere else in ~/.config/autojournal/config.json. The turn's working
 directory rides along as `workspace_root` provenance, and the machine it
 ran on as `host`.
 
-Capture policy cc-stop.v2 — deterministic synthetic-turn filter:
+Capture policy cc-stop.v3 — settled terminal-turn projection:
 - Harness-generated blocks (task notifications, slash-command echoes,
   system reminders) are stripped from the leading and trailing edges of the
   user prompt before capture; only the owner-typed remainder is journaled.
 - A turn whose prompt is nothing but such blocks was machine-driven, not
   owner-driven, and is skipped entirely (its output never enters memory).
-- Assistant output is already structurally filtered: only assistant text
-  and one-line tool-call summaries are captured, never tool results.
+- Stop may run before Claude Code has appended its separate terminal-text
+  record to the transcript. Capture waits briefly for that record and skips
+  the turn if it never settles rather than publishing progress text as the
+  result.
+- The body contains only the terminal assistant text. Tool names ride in the
+  structured tools field; tool arguments and results are never captured.
 
 Testing override: AUTOJOURNAL_HOOK_ROOT / AUTOJOURNAL_HOOK_INDEX pass
 --root/--index to the binary instead of the owner config.
@@ -41,8 +45,11 @@ import time
 from datetime import datetime
 
 HARNESS = "claude-code"
-ADAPTER_VERSION = "cc-stop-hook-1.3.0"
-CAPTURE_POLICY = "cc-stop.v2"
+ADAPTER_VERSION = "cc-stop-hook-1.4.0"
+CAPTURE_POLICY = "cc-stop.v3"
+TRANSCRIPT_SETTLE_TIMEOUT_S = 2.0
+TRANSCRIPT_POLL_INTERVAL_S = 0.05
+TRANSCRIPT_QUIET_INTERVAL_S = 0.15
 
 # Closed list of harness-generated block tags. A prompt edge wrapped in one
 # of these was produced by the machine, not typed by the owner.
@@ -125,11 +132,21 @@ def origin_host() -> str | None:
         name = socket.gethostname().split(".")[0].strip()
     except Exception:
         return None
-    if not name or len(name) > 128:
-        return None
-    if not all(ch.isascii() and (ch.isalnum() or ch in "._-:+/@") for ch in name):
+    if not valid_token(name):
         return None
     return name
+
+
+def valid_token(value: object) -> bool:
+    """Match the core token rule used by tool names and identity fields."""
+    return (
+        isinstance(value, str)
+        and 0 < len(value.encode("utf-8")) <= 128
+        and all(
+            ch.isascii() and (ch.isalnum() or ch in "._-:+/@")
+            for ch in value
+        )
+    )
 
 
 def is_real_user(o: dict) -> bool:
@@ -152,37 +169,111 @@ def user_text(o: dict) -> str:
     ).strip()
 
 
-def brief(x) -> str:
+def read_entries(transcript: str) -> list[dict] | None:
+    """Read every complete JSON object currently durable in a transcript.
+    A final line being appended concurrently is ignored on this pass and
+    reconsidered by the settle loop."""
     try:
-        s = json.dumps(x, ensure_ascii=False)
+        entries = []
+        with open(transcript, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    try:
+                        entries.append(json.loads(line))
+                    except Exception:
+                        continue
+        return entries
     except Exception:
-        s = str(x)
-    s = s.replace("\n", " ")
-    return s[:80] + ("…" if len(s) > 80 else "")
+        return None
 
 
-def assistant_sections(entries: list, start_idx: int) -> tuple[list[str], list[str]]:
-    secs: list[str] = []
+def turn_identity(entry: dict, index: int) -> str:
+    """Return Claude's durable user UUID or a transcript-position fallback."""
+    value = entry.get("uuid")
+    return value if isinstance(value, str) and value else f"idx{index}"
+
+
+def completed_turn(entries: list, turn_id: str) -> tuple[str, list[str]] | None:
+    """Project one transcript turn only after terminal text is present.
+
+    Claude Code can append a thinking-only ``end_turn`` entry first and the
+    user-visible text as a second ``end_turn`` entry shortly afterward. A
+    nonempty terminal text record is therefore the settlement condition;
+    progress prose and tool calls cannot make a turn publishable."""
+    start_idx = next(
+        (
+            i
+            for i, entry in enumerate(entries)
+            if turn_identity(entry, i) == turn_id and is_real_user(entry)
+        ),
+        None,
+    )
+    if start_idx is None:
+        return None
+
+    terminal_text = ""
     tools: list[str] = []
     for o in entries[start_idx + 1:]:
+        if is_real_user(o):
+            break
         if o.get("type") != "assistant":
             continue
-        c = o.get("message", {}).get("content")
+        message = o.get("message", {})
+        c = message.get("content")
         if isinstance(c, str):
-            if c.strip():
-                secs.append(c.strip())
+            if message.get("stop_reason") == "end_turn" and c.strip():
+                terminal_text = c.strip()
             continue
         if not isinstance(c, list):
             continue
-        texts = [b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text" and b.get("text")]
-        calls = [f"{b.get('name')}({brief(b.get('input'))})" for b in c if isinstance(b, dict) and b.get("type") == "tool_use"]
-        names = [b.get("name") for b in c if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name")]
-        if texts:
-            secs.append("\n".join(t.strip() for t in texts))
-        if calls:
-            secs.append("\n".join(calls))
+        texts = [
+            b.get("text", "").strip()
+            for b in c
+            if isinstance(b, dict)
+            and b.get("type") == "text"
+            and b.get("text", "").strip()
+        ]
+        names = [
+            b.get("name")
+            for b in c
+            if isinstance(b, dict)
+            and b.get("type") == "tool_use"
+            and valid_token(b.get("name"))
+        ]
+        if message.get("stop_reason") == "end_turn" and texts:
+            terminal_text = "\n".join(texts)
         tools.extend(n for n in names if n not in tools)
-    return secs, tools
+    if terminal_text == "":
+        return None
+    return terminal_text, tools
+
+
+def wait_for_completed_turn(transcript: str, turn_id: str) -> tuple[str, list[str]] | None:
+    """Poll for terminal text, then require a short unchanged quiet period.
+
+    The quiet interval lets a second terminal record supersede the first if
+    Claude Code is still appending the settled response when Stop starts."""
+    deadline = time.monotonic() + TRANSCRIPT_SETTLE_TIMEOUT_S
+    candidate = None
+    candidate_since = 0.0
+    while True:
+        entries = read_entries(transcript)
+        if entries is None:
+            return None
+        completed = completed_turn(entries, turn_id)
+        now = time.monotonic()
+        if completed is None:
+            candidate = None
+        elif completed != candidate:
+            candidate = completed
+            candidate_since = now
+        elif now - candidate_since >= TRANSCRIPT_QUIET_INTERVAL_S:
+            return completed
+        remaining = deadline - now
+        if remaining <= 0:
+            return None
+        time.sleep(min(TRANSCRIPT_POLL_INTERVAL_S, remaining))
 
 
 def main() -> int:
@@ -200,17 +291,8 @@ def main() -> int:
     if binary is None:
         return 0
 
-    try:
-        entries = []
-        with open(transcript, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if line:
-                    try:
-                        entries.append(json.loads(line))
-                    except Exception:
-                        continue
-    except Exception:
+    entries = read_entries(transcript)
+    if entries is None:
         return 0
 
     # latest real user prompt = start of the turn to capture
@@ -225,7 +307,7 @@ def main() -> int:
     prompt = strip_synthetic_blocks(user_text(entries[last_user_idx]))
     if len(prompt) < 3:
         return 0
-    turn_id = entries[last_user_idx].get("uuid", "") or f"idx{last_user_idx}"
+    turn_id = turn_identity(entries[last_user_idx], last_user_idx)
 
     # The transcript's own timestamp keeps the payload deterministic, so a
     # repeated Stop for the same turn dedupes instead of conflicting.
@@ -239,10 +321,10 @@ def main() -> int:
     except Exception:
         pass
 
-    secs, tools = assistant_sections(entries, last_user_idx)
-    agent = "\n\n".join(s for s in secs if s).strip()
-    if not agent:
+    completed = wait_for_completed_turn(transcript, turn_id)
+    if completed is None:
         return 0
+    agent, tools = completed
 
     # Identity (session, turn, policy) is deterministic, so a repeated Stop
     # for the same turn is a duplicate the binary absorbs; a re-delivery

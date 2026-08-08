@@ -18,6 +18,7 @@ import socket
 import stat
 import sys
 import tempfile
+import threading
 import unittest
 import unittest.mock
 from io import StringIO
@@ -87,7 +88,13 @@ class HookHarness(unittest.TestCase):
             )
             + "\n"
             + json.dumps(
-                {"type": "assistant", "message": {"content": [{"type": "text", "text": reply}]}}
+                {
+                    "type": "assistant",
+                    "message": {
+                        "stop_reason": "end_turn",
+                        "content": [{"type": "text", "text": reply}],
+                    },
+                }
             )
             + "\n"
         )
@@ -112,6 +119,180 @@ class ClaudeCodeHook(HookHarness):
         self.assertEqual(published["assistant_result"], "a stale lockfile")
         self.assertEqual(published["harness"], "claude-code")
         self.assertEqual(published["workspace_root"], "/srv/someone-elses-checkout")
+
+    def test_waits_for_terminal_text_and_excludes_tool_arguments(self):
+        path = pathlib.Path(self.transcript("explain the result", "placeholder"))
+        lines = path.read_text().splitlines()
+        path.write_text(
+            lines[0]
+            + "\n"
+            + json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "stop_reason": "tool_use",
+                        "content": [
+                            {"type": "text", "text": "I will inspect it."},
+                            {
+                                "type": "tool_use",
+                                "name": "Bash",
+                                "input": {"command": "echo secret-tool-input"},
+                            },
+                        ],
+                    },
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "stop_reason": "end_turn",
+                        "content": [{"type": "thinking", "thinking": ""}],
+                    },
+                }
+            )
+            + "\n"
+        )
+
+        def append_terminal():
+            with path.open("a") as transcript:
+                transcript.write(
+                    json.dumps(
+                        {
+                            "type": "assistant",
+                            "message": {
+                                "stop_reason": "end_turn",
+                                "content": [
+                                    {"type": "text", "text": "The final answer."}
+                                ],
+                            },
+                        }
+                    )
+                    + "\n"
+                )
+
+        timer = threading.Timer(0.05, append_terminal)
+        timer.start()
+        self.addCleanup(timer.cancel)
+        published = self.run_hook(
+            cc,
+            {
+                "session_id": "s1",
+                "transcript_path": str(path),
+                "cwd": str(self.tmp),
+            },
+        )
+        timer.join()
+
+        self.assertIsNotNone(published, "settled turn was not published")
+        self.assertEqual(published["assistant_result"], "The final answer.")
+        self.assertEqual(published["tools"], [{"name": "Bash"}])
+        self.assertNotIn("secret-tool-input", json.dumps(published))
+        self.assertEqual(published["capture_policy"], "cc-stop.v3")
+
+    def test_quiet_period_selects_the_last_terminal_record(self):
+        path = pathlib.Path(self.transcript("settle this", "first terminal draft"))
+
+        def append_settled_terminal():
+            with path.open("a") as transcript:
+                transcript.write(
+                    json.dumps(
+                        {
+                            "type": "assistant",
+                            "message": {
+                                "stop_reason": "end_turn",
+                                "content": [
+                                    {"type": "text", "text": "settled final response"}
+                                ],
+                            },
+                        }
+                    )
+                    + "\n"
+                )
+
+        timer = threading.Timer(0.05, append_settled_terminal)
+        timer.start()
+        self.addCleanup(timer.cancel)
+        published = self.run_hook(
+            cc,
+            {
+                "session_id": "s1",
+                "transcript_path": str(path),
+                "cwd": str(self.tmp),
+            },
+        )
+        timer.join()
+
+        self.assertEqual(published["assistant_result"], "settled final response")
+
+    def test_user_without_uuid_uses_the_stable_index_fallback(self):
+        path = pathlib.Path(self.transcript("uuid-free turn", "complete response"))
+        entries = [json.loads(line) for line in path.read_text().splitlines()]
+        del entries[0]["uuid"]
+        path.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+
+        published = self.run_hook(
+            cc,
+            {
+                "session_id": "s1",
+                "transcript_path": str(path),
+                "cwd": str(self.tmp),
+            },
+        )
+
+        self.assertEqual(published["turn_id"], "idx0")
+        self.assertEqual(published["assistant_result"], "complete response")
+
+    def test_invalid_tool_name_is_dropped_without_losing_the_turn(self):
+        path = pathlib.Path(self.transcript("use a tool", "complete response"))
+        entries = [json.loads(line) for line in path.read_text().splitlines()]
+        entries.insert(
+            1,
+            {
+                "type": "assistant",
+                "message": {
+                    "stop_reason": "tool_use",
+                    "content": [
+                        {"type": "tool_use", "name": "bad tool name", "input": {}}
+                    ],
+                },
+            },
+        )
+        path.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+
+        published = self.run_hook(
+            cc,
+            {
+                "session_id": "s1",
+                "transcript_path": str(path),
+                "cwd": str(self.tmp),
+            },
+        )
+
+        self.assertEqual(published["assistant_result"], "complete response")
+        self.assertEqual(published["tools"], [])
+
+    def test_skips_a_turn_that_never_gains_terminal_text(self):
+        path = pathlib.Path(self.transcript("unfinished", "placeholder"))
+        entries = [json.loads(line) for line in path.read_text().splitlines()]
+        entries[1]["message"] = {
+            "stop_reason": "tool_use",
+            "content": [{"type": "tool_use", "name": "Read", "input": {}}],
+        }
+        path.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+
+        with unittest.mock.patch.object(cc, "TRANSCRIPT_SETTLE_TIMEOUT_S", 0):
+            self.assertIsNone(
+                self.run_hook(
+                    cc,
+                    {
+                        "session_id": "s1",
+                        "transcript_path": str(path),
+                        "cwd": str(self.tmp),
+                    },
+                )
+            )
 
     def test_skips_a_machine_driven_turn(self):
         prompt = "<system-reminder>budget warning</system-reminder>"

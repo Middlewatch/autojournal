@@ -10,6 +10,18 @@ version.
 excluded from the payload digest, so upgrading never re-identifies or
 re-publishes existing episodes.
 
+## 1.0.4 — unreleased
+
+### Fixed
+
+- The Claude Code Stop hook now waits for the separate terminal-text
+  transcript record and a short quiet interval before publishing. Previously
+  it could treat progress prose and compact tool-call summaries as a completed
+  result, then miss the final answer appended just afterward. A turn that never
+  gains terminal text is skipped rather than stored as partial memory. Claude
+  episode bodies now contain only that terminal response; tool names remain in
+  the structured `## Tools` list, while tool arguments and results are excluded.
+
 ## 1.0.3 — 2026-08-07
 
 No format change. Episode bytes, identity, index schema, config, and the
