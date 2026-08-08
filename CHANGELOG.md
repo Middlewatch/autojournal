@@ -10,7 +10,7 @@ version.
 excluded from the payload digest, so upgrading never re-identifies or
 re-publishes existing episodes.
 
-## 1.0.4 — unreleased
+## 1.0.4 — 2026-08-08
 
 ### Fixed
 

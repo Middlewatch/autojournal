@@ -20,4 +20,4 @@ package autojournal
 
 // PackageVersion is the released package identity the CLI prints; the
 // reference took it from build.zig.zon.
-const PackageVersion = "1.0.3"
+const PackageVersion = "1.0.4"
