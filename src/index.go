@@ -244,12 +244,98 @@ func (idx *Index) metaGetInt(key string) (int64, error) {
 // excluded (duplicate ids, malformed). Freshness checks add this to the
 // indexed count so deliberate exclusions never read as staleness.
 func (idx *Index) ExcludedCount() uint64 {
+	n, _ := idx.excludedCount()
+	return n
+}
+
+func (idx *Index) excludedCount() (uint64, error) {
 	text, err := idx.metaGet("sync_excluded")
 	if err != nil {
-		return 0
+		return 0, err
 	}
 	n, _ := strconv.ParseUint(text, 10, 64)
-	return n
+	return n, nil
+}
+
+// CorpusMatches reports the visible episode count and whether every current
+// candidate has the same path and bytes recorded by capture or the last sync.
+// It is read-only; a missing hash means stale so older indexes self-repair on
+// their next sync rather than claiming freshness from row counts alone.
+func (idx *Index) CorpusMatches(root *os.Root) (uint64, bool, error) {
+	stored := map[string]string{}
+	rows, err := idx.db.Query(
+		"SELECT key, value FROM meta WHERE substr(key, 1, 12) = 'sync_sha256:';")
+	if err != nil {
+		return 0, false, mapDBError(err)
+	}
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			rows.Close()
+			return 0, false, mapDBError(err)
+		}
+		stored[key[len(syncHashKeyPrefix):]] = value
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, false, mapDBError(err)
+	}
+	rows.Close()
+
+	var total uint64
+	current := true
+	seen := map[string]struct{}{}
+	walkErr := fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if path == "." {
+				return err
+			}
+			if d != nil && d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			if path == "." {
+				return nil
+			}
+			name := d.Name()
+			if name == "" || name[0] == '.' {
+				return fs.SkipDir
+			}
+			if strings.Count(path, "/")+1 > CorpusWalkDepth {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		name := d.Name()
+		if !strings.HasPrefix(name, IDPrefix) || !strings.HasSuffix(name, ".md") {
+			return nil
+		}
+		total++
+		seen[path] = struct{}{}
+		content, err := readRootFile(root, path, MaxEpisodeFileBytes)
+		if err != nil {
+			current = false
+			return nil
+		}
+		sum := sha256.Sum256(content)
+		value := hex.EncodeToString(sum[:])
+		if stored[path] != value {
+			current = false
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return total, false, walkErr
+	}
+	if len(seen) != len(stored) {
+		current = false
+	}
+	return total, current, nil
 }
 
 func (idx *Index) metaSet(key, value string) error {
@@ -365,8 +451,30 @@ func (idx *Index) IndexEpisode(relPath, content string) error {
 		return mapDBError(err)
 	}
 	defer tx.Rollback() // no-op after Commit; undoes the partial write otherwise
+	parsed := ParseEpisode(content)
+	if parsed == nil {
+		return ErrIndexMalformed
+	}
+	var priorPath string
+	err = tx.QueryRowContext(context.Background(),
+		"SELECT rel_path FROM episodes WHERE episode_id = ?1;", parsed.EpisodeID).Scan(&priorPath)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return mapDBError(err)
+	}
 	if err := idx.indexEpisodeInTx(tx, relPath, content); err != nil {
 		return err
+	}
+	if priorPath != "" && priorPath != relPath {
+		if _, err := tx.ExecContext(context.Background(),
+			"DELETE FROM meta WHERE key = ?1;", syncHashKeyPrefix+priorPath); err != nil {
+			return mapDBError(err)
+		}
+	}
+	sum := sha256.Sum256([]byte(content))
+	if _, err := tx.ExecContext(context.Background(),
+		"INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2);",
+		syncHashKeyPrefix+relPath, hex.EncodeToString(sum[:])); err != nil {
+		return mapDBError(err)
 	}
 	return mapDBError(tx.Commit())
 }
@@ -792,6 +900,13 @@ type SyncReport struct {
 // One transaction; a torn sync never leaves a half-projection or
 // half-updated hash map.
 func (idx *Index) SyncFromCorpus(root *os.Root) (SyncReport, error) {
+	return idx.syncFromCorpus(root, "")
+}
+
+// syncFromCorpus optionally stamps the owner root identity in the same
+// transaction as every projection and freshness update. Package-level Sync
+// supplies it; direct index tests and embeddings may leave it empty.
+func (idx *Index) syncFromCorpus(root *os.Root, rootDigest string) (SyncReport, error) {
 	var report SyncReport
 	tx, err := idx.db.BeginTx(context.Background(), nil)
 	if err != nil {
@@ -856,10 +971,22 @@ func (idx *Index) SyncFromCorpus(root *os.Root) (SyncReport, error) {
 			"DELETE FROM meta WHERE substr(key, 1, 12) = 'sync_sha256:';"); err != nil {
 			return report, mapDBError(err)
 		}
+		if _, err := tx.ExecContext(context.Background(),
+			"INSERT OR REPLACE INTO meta (key, value) VALUES ('sync_excluded', '0');"); err != nil {
+			return report, mapDBError(err)
+		}
+		if rootDigest != "" {
+			if _, err := tx.ExecContext(context.Background(),
+				"INSERT OR REPLACE INTO meta (key, value) VALUES ('root_digest', ?1);",
+				rootDigest); err != nil {
+				return report, mapDBError(err)
+			}
+		}
 		return report, mapDBError(tx.Commit())
 	}
 
 	seen := map[string]struct{}{}
+	seenPaths := map[string]struct{}{}
 	walkErr := fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			// The reference aborts the sync (rolled back) when the corpus
@@ -898,9 +1025,14 @@ func (idx *Index) SyncFromCorpus(root *os.Root) (SyncReport, error) {
 		if !strings.HasPrefix(name, IDPrefix) || !strings.HasSuffix(name, ".md") {
 			return nil
 		}
+		seenPaths[path] = struct{}{}
 		_ = root.Chmod(path, 0o600) // best effort by contract
 		content, err := readRootFile(root, path, MaxEpisodeFileBytes)
 		if err != nil {
+			if _, err := tx.ExecContext(context.Background(),
+				"DELETE FROM meta WHERE key = ?1;", syncHashKeyPrefix+path); err != nil {
+				return mapDBError(err)
+			}
 			report.SkippedMalformed++
 			return nil
 		}
@@ -912,8 +1044,19 @@ func (idx *Index) SyncFromCorpus(root *os.Root) (SyncReport, error) {
 		// (the row is missing -> no skip -> full reindex).
 		sum := sha256.Sum256(content)
 		hexSum := hex.EncodeToString(sum[:])
+		if syncedHashes[path] != hexSum {
+			if _, err := tx.ExecContext(context.Background(),
+				"INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2);",
+				syncHashKeyPrefix+path, hexSum); err != nil {
+				return mapDBError(err)
+			}
+		}
 		if syncedHashes[path] == hexSum {
 			if id, ok := stored[path]; ok {
+				if _, dup := seen[id]; dup {
+					report.DuplicateIDs++
+					return nil
+				}
 				seen[id] = struct{}{}
 				report.Unchanged++
 				return nil
@@ -937,11 +1080,6 @@ func (idx *Index) SyncFromCorpus(root *os.Root) (SyncReport, error) {
 				return nil
 			}
 			return err
-		}
-		if _, err := tx.ExecContext(context.Background(),
-			"INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2);",
-			syncHashKeyPrefix+path, hexSum); err != nil {
-			return mapDBError(err)
 		}
 		seen[ep.EpisodeID] = struct{}{}
 		report.Indexed++
@@ -980,11 +1118,37 @@ func (idx *Index) SyncFromCorpus(root *os.Root) (SyncReport, error) {
 			"DELETE FROM episodes WHERE episode_id = ?1;", victim.id); err != nil {
 			return report, mapDBError(err)
 		}
-		if _, err := tx.ExecContext(context.Background(),
-			"DELETE FROM meta WHERE key = ?1;", syncHashKeyPrefix+victim.relPath); err != nil {
-			return report, mapDBError(err)
+		if _, present := seenPaths[victim.relPath]; !present {
+			if _, err := tx.ExecContext(context.Background(),
+				"DELETE FROM meta WHERE key = ?1;", syncHashKeyPrefix+victim.relPath); err != nil {
+				return report, mapDBError(err)
+			}
 		}
 		report.Removed++
+	}
+	// Excluded candidates have no episode row, so their stale hash keys
+	// need path-based cleanup in addition to the row-based removal above.
+	for path := range syncedHashes {
+		if _, ok := seenPaths[path]; ok {
+			continue
+		}
+		if _, err := tx.ExecContext(context.Background(),
+			"DELETE FROM meta WHERE key = ?1;", syncHashKeyPrefix+path); err != nil {
+			return report, mapDBError(err)
+		}
+	}
+	excluded := report.DuplicateIDs + report.SkippedMalformed
+	if _, err := tx.ExecContext(context.Background(),
+		"INSERT OR REPLACE INTO meta (key, value) VALUES ('sync_excluded', ?1);",
+		strconv.FormatUint(excluded, 10)); err != nil {
+		return report, mapDBError(err)
+	}
+	if rootDigest != "" {
+		if _, err := tx.ExecContext(context.Background(),
+			"INSERT OR REPLACE INTO meta (key, value) VALUES ('root_digest', ?1);",
+			rootDigest); err != nil {
+			return report, mapDBError(err)
+		}
 	}
 
 	return report, mapDBError(tx.Commit())

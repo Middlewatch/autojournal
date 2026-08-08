@@ -21,6 +21,13 @@ re-publishes existing episodes.
   gains terminal text is skipped rather than stored as partial memory. Claude
   episode bodies now contain only that terminal response; tool names remain in
   the structured `## Tools` list, while tool arguments and results are excluded.
+- `status` now checks the path and raw-byte hash of every visible episode
+  candidate instead of inferring freshness from file and row counts alone.
+  Same-count owner edits therefore report `stale` until `sync` reindexes them.
+  Capture records its file hash transactionally; sync also tracks readable
+  malformed and duplicate exclusions, removes vanished hash entries, refuses
+  to call unreadable or over-budget candidates fresh, and commits root identity
+  and exclusion accounting with the rebuilt projection.
 
 ## 1.0.3 — 2026-08-07
 

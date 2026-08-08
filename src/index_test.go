@@ -142,12 +142,13 @@ func TestCaptureUpsertRebuildAndGoneFileRepairAgree(t *testing.T) {
 		t.Fatalf("count = %d, want 1", n)
 	}
 
-	// Sync discovers the second episode and keeps the first (idempotent).
+	// Sync discovers the second episode and skips the byte-identical first,
+	// whose live-capture hash already proves its projection current.
 	first, err := idx.SyncFromCorpus(root)
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
-	if first.Indexed != 2 || first.Removed != 0 || first.SkippedMalformed != 0 {
+	if first.Indexed != 1 || first.Unchanged != 1 || first.Removed != 0 || first.SkippedMalformed != 0 {
 		t.Errorf("first sync = %+v", first)
 	}
 	if n, _ := idx.EpisodeCount(); n != 2 {

@@ -14,7 +14,6 @@ package autojournal
 import (
 	"errors"
 	"os"
-	"strconv"
 )
 
 // Status is one journal health report.
@@ -44,27 +43,35 @@ func StatusOf(rootPath, indexPath string) Status {
 		return Status{Freshness: IndexNotBuilt}
 	}
 	defer root.Close()
-	episodes := CountEpisodes(root)
-
 	// A missing database is not_built, never mistaken for empty memory.
 	if _, err := os.Stat(indexPath); err != nil {
+		episodes := CountEpisodes(root)
 		return Status{RootOK: true, Episodes: episodes, Freshness: IndexNotBuilt}
 	}
 	digest := RootDigestHex(rootPath)
 	idx, err := OpenIndex(indexPath, &digest)
 	if err != nil {
+		episodes := CountEpisodes(root)
 		return Status{RootOK: true, Episodes: episodes, Freshness: IndexUnavailable}
 	}
 	defer idx.Close()
+	episodes, corpusMatches, err := idx.CorpusMatches(root)
+	if err != nil {
+		return Status{RootOK: true, Episodes: episodes, Freshness: IndexUnavailable}
+	}
 	indexed, err := idx.EpisodeCount()
 	if err != nil {
-		indexed = 0
+		return Status{RootOK: true, Episodes: episodes, Freshness: IndexUnavailable}
+	}
+	excluded, err := idx.excludedCount()
+	if err != nil {
+		return Status{RootOK: true, Episodes: episodes, Indexed: indexed, Freshness: IndexUnavailable}
 	}
 	// Files the last sync deliberately excluded (duplicate ids,
 	// malformed) count as accounted for, or they read as staleness that
 	// no sync can ever clear.
 	freshness := IndexStale
-	if indexed+idx.ExcludedCount() == episodes {
+	if corpusMatches && indexed+excluded == episodes {
 		freshness = IndexFresh
 	}
 	return Status{RootOK: true, Episodes: episodes, Indexed: indexed, Freshness: freshness}
@@ -154,14 +161,11 @@ func Sync(rootPath, indexPath string) (SyncReport, error) {
 	}
 	defer idx.Close()
 
-	report, err := idx.SyncFromCorpus(root)
+	digest := RootDigestHex(rootPath)
+	report, err := idx.syncFromCorpus(root, digest)
 	if err != nil {
 		return SyncReport{}, ErrSyncFailed
 	}
-	digest := RootDigestHex(rootPath)
-	_ = idx.metaSet("root_digest", digest)
-	excluded := report.DuplicateIDs + report.SkippedMalformed
-	_ = idx.metaSet("sync_excluded", strconv.FormatUint(excluded, 10))
 	if err := HardenIndexFiles(indexPath); err != nil {
 		return SyncReport{}, ErrIndexUnavailable
 	}
