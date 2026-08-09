@@ -77,7 +77,7 @@ func TestClosedConfigSchemaRejections(t *testing.T) {
 	}
 }
 
-// The reference's std.json typed parse is lenient about numeric shapes in
+// The Zig oracle's std.json typed parse is lenient about numeric shapes in
 // ways encoding/json is not; these acceptances are frozen behavior.
 func TestConfigNumericCoercions(t *testing.T) {
 	cases := []struct {
@@ -295,12 +295,12 @@ func TestSaveCaptureDefaultsSemantics(t *testing.T) {
 }
 
 // The save path validates the *rewritten* document, not the input — the
-// reference parses the existing file as a generic JSON value, mutates,
+// Zig oracle parses the existing file as a generic JSON value, mutates,
 // and only then applies the closed schema. Inputs whose malformed parts
 // are exactly the ones the mutation replaces are therefore repaired, not
 // rejected. (The CLI never reaches this: it loads the config, with the
 // closed schema, before dispatching `default`.) These cases pin the
-// reference's library semantics so they are not "fixed" into divergence.
+// Zig oracle's library semantics so they are not "fixed" into divergence.
 func TestSaveCaptureDefaultsRepairsWhatTheMutationReplaces(t *testing.T) {
 	env := mapEnviron()
 	cases := []struct {

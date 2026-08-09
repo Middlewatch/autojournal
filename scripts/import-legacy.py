@@ -22,7 +22,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 from collections import Counter
@@ -140,8 +142,8 @@ def discover(source: Path) -> list[Path]:
     return files
 
 
-def capture(binary: Path, payload: dict, root: str | None, index: str | None) -> dict:
-    cmd = [str(binary), "capture"]
+def capture(binary: str, payload: dict, root: str | None, index: str | None) -> dict:
+    cmd = [binary, "capture"]
     if root:
         cmd += ["--root", root]
     if index:
@@ -163,11 +165,20 @@ def capture(binary: Path, payload: dict, root: str | None, index: str | None) ->
     return report
 
 
+def resolve_binary(value: str) -> str | None:
+    candidate = Path(value).expanduser()
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return str(candidate)
+    return shutil.which(value)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--source", default="~/memory/journal", help="legacy journal directory")
-    ap.add_argument("--binary", default=str(Path(__file__).resolve().parent.parent / "artifacts/autojournal"))
-    ap.add_argument("--tz", default="America/Anchorage", help="timezone the legacy writers stamped local times in")
+    ap.add_argument("--source", required=True, help="legacy journal directory")
+    ap.add_argument("--binary", default="autojournal",
+                    help="autojournal executable or path (default: resolve from PATH)")
+    ap.add_argument("--tz", required=True,
+                    help="timezone the legacy writers stamped local times in")
     ap.add_argument("--root", default=None, help="journal root override (rehearsal); omit to use owner config")
     ap.add_argument("--index", default=None, help="index override (rehearsal)")
     ap.add_argument("--dry-run", action="store_true", help="parse and validate everything, publish nothing")
@@ -175,13 +186,13 @@ def main() -> int:
     args = ap.parse_args()
 
     source = Path(args.source).expanduser()
-    binary = Path(args.binary)
+    binary = resolve_binary(args.binary)
     tz = ZoneInfo(args.tz)
     if not source.is_dir():
         print(f"source {source} is not a directory", file=sys.stderr)
         return 2
-    if not args.dry_run and not binary.is_file():
-        print(f"binary {binary} not found; build first", file=sys.stderr)
+    if not args.dry_run and binary is None:
+        print(f"binary {args.binary!r} not found or not executable", file=sys.stderr)
         return 2
 
     files = discover(source)
@@ -205,6 +216,7 @@ def main() -> int:
         files_imported += 1
         if args.dry_run:
             continue
+        assert binary is not None
         for payload in turns:
             report = capture(binary, payload, args.root, args.index)
             outcome = report.get("outcome", "missing-outcome")

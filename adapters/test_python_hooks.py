@@ -405,6 +405,30 @@ class CodexHook(HookHarness):
         pending = codex.pending_path({"session_id": "s3", "turn_id": "t1"})
         self.assertTrue(pending.exists(), "pending prompt was discarded unpublished")
 
+    def test_pending_file_survives_a_failed_capture(self):
+        self.run_hook(
+            codex,
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "s4",
+                "turn_id": "t1",
+                "prompt": "retry this capture",
+                "cwd": str(self.tmp),
+            },
+        )
+        self.binary.write_text("#!/bin/sh\nexit 7\n")
+        self.run_hook(
+            codex,
+            {
+                "hook_event_name": "Stop",
+                "session_id": "s4",
+                "turn_id": "t1",
+                "last_assistant_message": "capture should remain pending",
+            },
+        )
+        pending = codex.pending_path({"session_id": "s4", "turn_id": "t1"})
+        self.assertTrue(pending.exists(), "failed capture discarded its pending prompt")
+
     def test_labels_the_originating_machine(self):
         published = self.stash_and_stop(str(self.tmp))
         self.assertIsNotNone(published, "no payload was published")

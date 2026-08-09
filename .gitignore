@@ -1,5 +1,3 @@
-/.zig-cache/
-/zig-out/
 /artifacts/
 __pycache__/
 /tmp/

@@ -118,7 +118,7 @@ func CheckRedelivery(root *os.Root, idx *Index, payload *Payload) *Redelivery {
 	return &Redelivery{Outcome: outcome, RelPath: row.RelPath}
 }
 
-// Sync failure vocabulary, one sentinel per typed reference error.
+// Sync failure vocabulary, one sentinel per typed compatibility error.
 var (
 	// ErrSharedDirectory: the journal root sits under a group- or
 	// world-writable directory.

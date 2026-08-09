@@ -28,6 +28,27 @@ re-publishes existing episodes.
   malformed and duplicate exclusions, removes vanished hash entries, refuses
   to call unreadable or over-budget candidates fresh, and commits root identity
   and exclusion accounting with the rebuilt projection.
+- The Codex hook now retains its pending turn when the capture process exits
+  unsuccessfully. A later retry can publish the completed turn instead of the
+  hook silently discarding it; successful and duplicate captures still clear
+  the pending file.
+- The repository gate now fails when Node, Pi adapter dependencies, or Python
+  are missing instead of reporting a misleading pass with skipped suites. Its
+  permission checks use the native `stat` syntax on both Linux and macOS.
+
+### Changed
+
+- Living documentation was reset to an as-built baseline. It now distinguishes
+  shipped integrations from embedding contracts, names the actual CLI and Pi
+  menu operations, documents elapsed 24-hour recency buckets, and states the
+  current revision-freshness limit: an in-place body edit is reindexed by
+  `sync`, but remains under the old evidence revision if its frontmatter
+  `payload_digest` is unchanged.
+- Maintenance utilities no longer default to development-machine paths or a
+  local timezone: corpus inspection requires an explicit root, legacy import
+  requires its source directory and timezone, and the executable resolves from
+  `PATH` unless supplied. Retrieval evaluation now includes `paraphrase`
+  queries in its scored metrics, matching its documented judged-set format.
 
 ## 1.0.3 — 2026-08-07
 

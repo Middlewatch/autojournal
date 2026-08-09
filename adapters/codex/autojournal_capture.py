@@ -196,7 +196,7 @@ def capture_stop(payload: dict) -> None:
     if index:
         cmd += ["--index", index]
     try:
-        subprocess.run(
+        proc = subprocess.run(
             cmd,
             input=json.dumps(capture).encode(),
             stdout=subprocess.DEVNULL,
@@ -204,6 +204,8 @@ def capture_stop(payload: dict) -> None:
             timeout=30,
         )
     except Exception:
+        return
+    if proc.returncode != 0:
         return
     source.unlink(missing_ok=True)
 

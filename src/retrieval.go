@@ -27,8 +27,8 @@ import (
 // another tokenizer version are disposed. ScorerVersion is stamped on
 // every search result; callers may pin it.
 //
-// aj-scorer.v2 (ratified 2026-08-03 against a private judged query set,
-// so the tuning basis is not reproducible from this repository) is v1
+// aj-scorer.v2 (ratified against a private judged query set, so the tuning
+// basis is not reproducible from this repository) is v1
 // ordering plus: additive singular folding of plural query terms, and a
 // per-episode cap of MaxPerEpisodeDefault result regions so one long
 // episode cannot crowd a page. aj-conf.v2 bands confidence on the
@@ -189,9 +189,10 @@ func TokenizeLine(line string) []string {
 
 // --- Scorer ---
 
-// RecencyMultiplier is 1 + boost/(days+1) day-quantized recency. A nudge,
-// not an override; future timestamps get no boost. Day flooring keeps
-// identical queries stable within a day.
+// RecencyMultiplier is 1 + boost/(periods+1), where periods is elapsed time
+// floored to 24-hour units. It is a nudge, not an override; future timestamps
+// get no boost. Flooring keeps a given episode's score stable within each
+// elapsed-time bucket.
 func RecencyMultiplier(eventTimeMs, nowMs uint64, boost float64) float64 {
 	if eventTimeMs > nowMs {
 		return 1.0
@@ -315,7 +316,9 @@ func Rank(candidates []Candidate, episodes []EpisodeInfo, idf []float64, params 
 
 // --- Confidence ---
 
-// Confidence is the versioned band vocabulary (aj-conf.v1).
+// Confidence is the stable wire vocabulary shared by every confidence-policy
+// version. A policy version may change classification without changing these
+// JSON values.
 type Confidence string
 
 const (

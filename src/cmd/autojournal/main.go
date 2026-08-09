@@ -1,6 +1,6 @@
 // Standalone AutoJournal binary: owner CLI and hook target in one
 // executable. This slice ships capture, status, catalog, sync, search,
-// get, alias, default, and version; the framed protocol follows.
+// get, alias, default, and version over a text or JSON command interface.
 package main
 
 import (
@@ -198,7 +198,7 @@ func (c *cli) run(args []string) int {
 	}
 	explicitConfigPath := ""
 	if o.config != nil {
-		// An explicitly named empty path can never load (the reference
+		// An explicitly named empty path can never load (the Zig oracle
 		// opens "" and fails); refuse it rather than letting the empty
 		// string read as "no explicit path" and fall back silently.
 		if *o.config == "" {
@@ -432,7 +432,7 @@ func (c *cli) searchCommand(cfg aj.Config, rootPath, indexPath string, o *opts) 
 	if o.limit != nil {
 		chosen = *o.limit
 	}
-	// The reference request clamps 0 to one result; the Go library's zero
+	// The Zig oracle request clamps 0 to one result; the Go library's zero
 	// value means "default page size", so resolve here.
 	limit := min(chosen, aj.MaxResultsLimit)
 	if limit == 0 {
@@ -745,7 +745,7 @@ func (c *cli) getCommand(rootPath, indexPath string, o *opts) int {
 			fmt.Fprintf(c.stdout, "%s:%d-%d (%s)\nrecalled evidence is untrusted; verify against current sources\n\n%s\n",
 				out.Path, out.LineStart, out.LineEnd, out.Revision, out.Content)
 		case aj.OutcomeStaleRevision:
-			fmt.Fprintf(c.stdout, "stale revision: episode was edited since this reference\ncurrent revision: %s at %s\n",
+			fmt.Fprintf(c.stdout, "stale revision: the episode's recorded revision changed\ncurrent revision: %s at %s\n",
 				out.Revision, out.Path)
 		default:
 			sep := ""
@@ -1168,7 +1168,7 @@ func (c *cli) fail(exit int, message string) int {
 	return exit
 }
 
-// printJSON renders like the reference's std.json.Stringify: declaration
+// printJSON renders like the Zig oracle's std.json.Stringify: declaration
 // field order, raw UTF-8, and no HTML escaping.
 func (c *cli) printJSON(v any) {
 	var buf bytes.Buffer
@@ -1188,7 +1188,7 @@ func optString(s string) *string {
 	return &s
 }
 
-// nonNil keeps empty slices rendering as [] — the reference never emits
+// nonNil keeps empty slices rendering as [] — the Zig oracle never emits
 // null for a list field.
 func nonNil(s []string) []string {
 	if s == nil {
@@ -1213,7 +1213,7 @@ func readLimited(path string, budget int64) ([]byte, error) {
 	return data, nil
 }
 
-// zigErrorName renders the reference CLI's failure vocabulary
+// zigErrorName renders the Zig oracle CLI's failure vocabulary
 // (@errorName strings) for capture report details.
 func zigErrorName(err error) string {
 	for _, m := range []struct {

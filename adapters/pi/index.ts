@@ -952,7 +952,7 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
     name: "memory_get",
     label: "Memory Get",
     description:
-      "Open one evidence reference returned by memory_search: exact source lines with provenance. Edited or deleted evidence returns stale_revision or gone.",
+      "Open one evidence reference returned by memory_search: exact source lines with provenance. A changed recorded revision or deleted episode returns stale_revision or gone.",
     parameters: Type.Object({
       episode_id: Type.String(),
       revision: Type.String({ description: "sha256:<hex> revision from the search result" }),

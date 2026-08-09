@@ -13,22 +13,22 @@
 // symlink-refusing Lstat check per descent step, so a link planted inside
 // the corpus cannot redirect writes outside it.
 //
-// Two notes on the mechanics versus the Zig reference (behavior is
+// Two notes on the mechanics versus the Zig oracle (behavior is
 // identical; the primitives differ because the Go stdlib exposes no
 // no-replace rename):
 //
-//   - The reference publishes with renameat2(RENAME_NOREPLACE). Go's
+//   - The Zig implementation publishes with renameat2(RENAME_NOREPLACE). Go's
 //     os.Rename always replaces, so publication here uses link(2), which
 //     fails atomically with EEXIST when the target exists — the same
 //     no-replace guarantee from a different syscall. A crash between link
 //     and unlink can leave an orphan temp file; it is invisible to
 //     CountEpisodes and to readers, and the next publish retries a fresh
 //     temp name.
-//   - The reference refuses to follow symlinks per descent step with
+//   - The Zig implementation refuses to follow symlinks per descent step with
 //     openat(O_NOFOLLOW). os.Root confines resolution to the tree but
 //     would follow an in-corpus link, so each descent step first Lstats
 //     and refuses anything that is not a real directory. A planted link
-//     is rejected exactly as the reference rejects it; the residual
+//     is rejected exactly as the Zig implementation rejects it; the residual
 //     check-then-open race window requires an attacker who already holds
 //     write access inside the owner-only corpus.
 
@@ -91,9 +91,9 @@ type Published struct {
 }
 
 // OpenJournalRoot opens the journal root for publishing, creating it if
-// absent and enforcing owner-only permissions — the reference CLI's
+// absent and enforcing owner-only permissions — the Zig oracle CLI's
 // openOrCreateRoot. Intermediate directories of a freshly created root
-// get default permissions (0o755 before umask), as in the reference; only
+// get default permissions (0o755 before umask), as in the Zig oracle; only
 // the root itself is hardened.
 func OpenJournalRoot(path string) (*os.Root, error) {
 	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
@@ -248,7 +248,7 @@ func openOrCreateChild(parent *os.Root, name string) (*os.Root, error) {
 	}
 	if !info.IsDir() {
 		// Lstat does not follow links, so a symlink reports !IsDir and
-		// is refused here — the reference's O_NOFOLLOW descent.
+		// is refused here — equivalent to the Zig oracle's O_NOFOLLOW descent.
 		return nil, fmt.Errorf("corpus component %s: %w", name, ErrContainmentViolation)
 	}
 	child, err := parent.OpenRoot(name)
@@ -295,7 +295,7 @@ func writeTemp(dir *os.Root, tmpName string, content []byte) error {
 // classifyExisting decides duplicate versus conflict by comparing the
 // stored episode's frontmatter digest against the incoming payload
 // digest. The existing file's permissions are repaired to owner-only on
-// the way, matching the reference.
+// the way, matching the Zig oracle.
 func classifyExisting(dir *os.Root, finalName, digestHex string) (CaptureOutcome, error) {
 	f, err := dir.Open(finalName)
 	if err != nil {
@@ -340,7 +340,7 @@ func syncDir(dir *os.Root) error {
 func CountEpisodes(root *os.Root) uint64 {
 	var total uint64
 	// The walk is diagnostics-best-effort: any read failure skips that
-	// subtree, matching the reference's error-swallowing iterator.
+	// subtree, matching the Zig oracle's error-swallowing iterator.
 	fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if d != nil && d.IsDir() {

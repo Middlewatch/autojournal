@@ -1,7 +1,7 @@
 // Where the journal and its projection live.
 //
-// One definition, every host. The owner CLI and an embedding host (Evoker)
-// must derive the journal root and index path identically or they silently
+// One definition, every host. The owner CLI and an embedding host must derive
+// the journal root and index path identically or they silently
 // address different corpora: the host captures into a journal the CLI never
 // reports, or opens a projection keyed to another root.
 //
@@ -27,7 +27,7 @@ import (
 type Environ func(key string) (string, bool)
 
 // ErrMissingHome is returned when a derivation needs $HOME and it is not
-// set. A set-but-empty HOME is used as-is, matching the reference.
+// set. A set-but-empty HOME is used as-is, matching the Zig oracle.
 var ErrMissingHome = errors.New("HOME is not set")
 
 // xdgBase returns a usable XDG base directory, or false. Per the XDG Base
@@ -107,7 +107,7 @@ func RootInSharedDirectory(rootPath string) bool {
 	candidate := filepath.Dir(rootPath)
 	for {
 		info, err := os.Stat(candidate)
-		// A non-directory ancestor answers nothing either: the reference
+		// A non-directory ancestor answers nothing either: the Zig oracle
 		// opens each candidate as a directory, so a file in the way sends
 		// the walk upward just like a missing path does.
 		if err != nil || !info.IsDir() {

@@ -1,9 +1,9 @@
 # AutoJournal design basis
 
-Status: as built, 2026-08-03. This document records the design decisions
+Status: as built, 2026-08-08. This document records the design decisions
 behind AutoJournal as shipped (the Go core, the standalone static binary,
-and the Pi adapter published as the npm package) and the reasoning a future
-maintainer needs to extend it. The core was originally built in Zig and
+and the Pi adapter published as the npm package) and the reasoning needed to
+maintain it. The core was originally built in Zig and
 ported to Go in August 2026 with every on-disk format, identity rule, and
 CLI contract frozen; where this document reasons about the implementation
 language, the reasoning carried over unchanged. The codebase map for
@@ -17,8 +17,8 @@ AutoJournal has two jobs:
 Everything here exists to make those two paths correct, inspectable, fast,
 portable, and recoverable. Memory curation, reflection, knowledge synthesis,
 wiki maintenance, and automatic promotion of generated claims are not part of
-AutoJournal. If that work ever exists, it is a separate product with separate
-write authority that consumes AutoJournal's public evidence interface.
+AutoJournal. Such work belongs in a separate product with separate write
+authority that consumes AutoJournal's public evidence interface.
 
 ## How this design came to be
 
@@ -49,10 +49,9 @@ is settled evidence, not an iteration surface.
 AutoJournal is an independent product and repository, not a session subsystem
 of any harness and not policy for one machine.
 
-- An embedding host engine (Evoker is the intended first) ships an
-  opinionated built-in integration by importing the AutoJournal Go package
-  directly in its build, disableable by owner configuration. Dependency
-  direction is host → AutoJournal; AutoJournal never depends on a host.
+- The Go package exposes the same operations to an embedding host. No
+  embedding-host integration ships in this repository. Dependency direction
+  remains host → AutoJournal; AutoJournal never depends on a host.
 - Every other harness uses the standalone AutoJournal binary: one static
   executable that is simultaneously the versioned stdio helper, the hook
   target, and the owner CLI. A mandatory daemon is not part of local
@@ -120,8 +119,8 @@ durability:
 The package builds two ways from one source tree: a Go module an embedding
 host imports in its build, and a standalone static binary that is the
 helper, the owner CLI, and the hook target in one executable. The current
-adapter transport is the CLI's `--json` surface; a framed-stdio protocol for
-long-lived helper supervision is a designed extension point, not yet built.
+adapter transport is the CLI's `--json` surface. Adapters invoke a process per
+operation; no long-lived framed-stdio transport ships.
 
 No AutoJournal capture or ranking policy lives in a host engine; the host
 calls AutoJournal's public API and owns nothing behind it. SQLite is linked
@@ -144,10 +143,10 @@ one user account shares the corpus without setup. Owner configuration always
 wins. Harness wiring invents no policy, but a first-class host may transport
 an explicit owner-selected session world/scope to the core.
 
-### What an embedding host must provide
+### Embedding host contract
 
-The built-in integration path is native, so AutoJournal does not depend on a
-host's scripted extension API. A host engine needs three generic
+An embedding integration is native, so AutoJournal does not depend on a host's
+scripted extension API. A host importing the package provides three generic
 capabilities — useful to any consumer, not AutoJournal-private hooks:
 
 1. **Completed-turn projection.** After durable settlement, a droppable
@@ -230,9 +229,9 @@ The minimum completed-turn body contains:
 - explicit redaction markers where policy removed content; and
 - an optional structured list of tool names plus allowlisted safe metadata.
 
-Shell bodies, search queries, credentials, arbitrary tool arguments, hidden
-reasoning, and raw provider metadata are excluded by default. Adapters may
-apply stricter redaction, but must identify the policy used. Prompt
+Shell-command bodies, search queries, credentials, arbitrary tool arguments,
+hidden reasoning, and raw provider metadata are excluded by default. Adapters
+may apply stricter redaction, but must identify the policy used. Prompt
 inspection never selects capture lanes or privacy behavior.
 
 Delegated work may use a compact body containing the assigned task and
@@ -265,29 +264,32 @@ If publication finds an existing target, AutoJournal validates its identity
 and digest. An exact duplicate is success; any mismatch is a typed conflict.
 If the source episode publishes but SQLite update fails, capture remains
 successful, the world becomes visibly index-stale, and `sync` repairs the
-projection from Markdown. Temporary files and interrupted transactions are
-detected and reconciled on the next status/sync operation.
+projection from Markdown. Ordinary failure paths remove their temporary file;
+a process terminated during publication can leave a dot-prefixed `.tmp` file,
+which corpus scans ignore.
 
 No source episode is deleted or rewritten merely because indexing failed.
-Capture errors are returned to the adapter and recorded in AutoJournal
-status, but a harness turn that already settled remains settled.
+Capture errors are returned to the adapter. The Pi adapter counts them in its
+session diagnostics and warns once; standalone hooks remain non-blocking. A
+harness turn that already settled remains settled.
 
 ## Owner edits, moves, and deletion
 
 Markdown remains owner-controlled:
 
-- An owner edit creates a new revision digest after validation and reindexing.
-- An evidence reference to the prior digest returns `stale_revision`; it never
-  silently serves edited content as the old evidence.
+- Search reflects owner edits after `sync`.
+- Evidence freshness compares a requested revision with the digest recorded in
+  frontmatter. Replacing or regenerating a file with a new digest makes a prior
+  reference return `stale_revision`. An in-place body edit that leaves the
+  recorded digest unchanged is not detected in the current release.
 - Moving a file within the same world preserves episode identity after sync.
 - Duplicate episode IDs are deduplicated (the first copy found stays served,
   later copies are counted); malformed frontmatter is excluded with visible
   diagnostics. Files are never merged by filename.
 - A missing episode is removed from the projection on sync. `memory_get` for
   its prior reference returns `gone`.
-- AutoJournal performs no age-based or automatic deletion. Confirmed bulk
-  deletion with a dry-run inventory is a designed owner operation, not yet
-  built; today the owner deletes files directly and rebaselines with `sync`.
+- AutoJournal performs no age-based or automatic deletion. The owner deletes
+  files directly and rebaselines with `sync`; no bulk-delete command ships.
 - SQLite is never required for recovery: the corpus is the export.
 
 ## World, scope, and lane model
@@ -299,7 +301,7 @@ text to invent them.
 - A **scope** may identify global, workspace, project, session, delegated, or
   user-defined boundaries.
 - A **lane** distinguishes normal conversation, delegated work, evaluation,
-  and explicit imported legacy source.
+  and explicit `imported_legacy` source.
 
 Public installations default to shared main/default capture and recall
 across sessions, projects, and conforming harnesses under the local user
@@ -309,9 +311,9 @@ first-class host may persist that selection with its conversation and may
 save it as the owner default. Evaluation is always system-selected and
 excluded from ordinary queries.
 
-Source directories, episode files, indexes, locks, and helper state are
-owner-only. Reads and writes reject symlink escapes and paths outside the
-configured journal root.
+Source directories, episode files, indexes, and helper state are owner-only.
+Reads and writes reject symlink escapes and paths outside the configured
+journal root.
 
 ## SQLite projection
 
@@ -321,20 +323,18 @@ SQLite contains only rebuildable retrieval state:
   identity;
 - indexed body regions and source line bounds;
 - normalized terms/postings and corpus document frequencies;
-- index schema, scorer, tokenizer, alias, and configuration identities; and
+- index schema, scorer, tokenizer, confidence-policy, and root identities; and
 - freshness and repair state.
 
-SQLite uses WAL with an explicit busy timeout and bounded retry policy.
-Source publication does not wait indefinitely for an index writer. Multiple
-processes may publish unique episodes concurrently; index updates serialize
-through SQLite, and a failed/busy update leaves a known-stale projection
-repairable by `sync`.
+SQLite uses WAL with an explicit busy timeout. Source publication does not
+wait indefinitely for an index writer, and AutoJournal adds no application
+retry loop. Multiple processes may publish unique episodes concurrently;
+index updates serialize through SQLite, and a failed/busy update leaves a
+known-stale projection repairable by `sync`.
 
 Repair ships as `sync`: one transaction re-walks the corpus and rebuilds the
 projection in place, so a torn rebuild rolls back rather than leaving a
-half-projection. A generation-switching `rebuild` (new projection validated
-against a source inventory, then swapped atomically) is a designed extension
-for corpora large enough that in-place rebuild windows matter. A missing,
+half-projection. No generation-switching rebuild command ships. A missing,
 corrupt, wrong-root, wrong-schema, or wrong-configuration index is never
 interpreted as an empty memory corpus.
 
@@ -372,8 +372,9 @@ from score so ordinary noise queries can return `no_match` instead of ten
 low-quality results. The version exists so a recalibration is a visible
 identity change rather than a silent behavior shift, and it has been used
 once that way: `aj-conf.v1` → `aj-conf.v2` in 1.0.1, ratified against a
-private judged query set. Recalibration against a larger, publishable set
-remains open evidence work.
+private judged query set. No larger publishable judged set ships with the
+repository, so the ranking-quality evidence remains private and
+non-reproducible by external readers.
 
 ## Public operations
 
@@ -408,10 +409,10 @@ provenance, and trust metadata. Edited and deleted evidence return
 ### Owner operations
 
 `status`, `catalog`, `sync`, `default`, and `alias` maintenance ship in the
-CLI and through the adapter's `/autojournal` command, reporting source and
-index health separately. A generation-switching `rebuild`, a dry-run
-`inventory`, `export` with a digest manifest, and confirmed deletion are
-designed under the same reporting contract, not yet built.
+CLI, reporting source and index health separately. Pi's `/autojournal` menu
+exposes status, sync, session world/scope selection, capture control, owner
+defaults, diagnostics, and Pi-session import. No `rebuild`, `inventory`,
+`export`, or bulk-deletion command ships.
 
 Outcomes distinguish at least `match`, `no_match`, `stale_revision`, `gone`,
 `index_stale`, `timeout`, `unavailable`, `permission_denied`, `malformed`,
@@ -423,9 +424,9 @@ exposes `memory_search` and `memory_get` directly.
 
 ## Adapter behavior
 
-### Embedded host (Evoker)
+### Embedding hosts
 
-The designed built-in native integration:
+A native integration using the public Go package:
 
 - subscribes to the completed-turn seam and translates the explicit payload
   into `capture_completed_turn`;
@@ -457,21 +458,22 @@ interactive modes while leaving recall tools available.
 
 ## Legacy import
 
-Pre-AutoJournal session Markdown is valid read-only legacy source. The
-design reserves the `imported` lane for it: each legacy turn receives a
-deterministic synthesized evidence identity and revision digest without
-rewriting its source file, and imported episodes are distinguishable from
-native capture forever. An importer is not part of the shipped surface;
-anyone building one inherits those constraints.
+`scripts/import-legacy.py` reads pre-AutoJournal session Markdown and publishes
+each legacy turn through the normal capture operation into the
+`imported_legacy` lane. Each turn receives a deterministic synthesized identity
+and revision digest, so repeated imports deduplicate; the source files are
+never rewritten. The Pi adapter has a separate menu importer for Pi's JSONL
+session history. It publishes completed owner turns as conversation episodes,
+preserves their event times, and skips subagent logs.
 
 ## Verification
 
-The shipped verification gate (`scripts/verify.sh`, run from a clean
-checkout) enforces:
+The shipped verification gate (`scripts/verify.sh`, run after `npm ci` in
+`adapters/pi/`) enforces:
 
 - closed runtime schemas rejecting unknown, malformed, cross-world, and
   over-budget data;
-- leak-checked unit and fault-path tests across publication, indexing,
+- race-enabled unit and fault-path tests across publication, indexing,
   dedupe, corruption, and containment (including symlink rejection and
   owner-only permissions);
 - an end-to-end smoke of capture → search → alias rescue → evidence opening
@@ -483,15 +485,14 @@ checkout) enforces:
   binary rebuilt, the actual npm tarball inspected, and version identity
   cross-checked between the manifest, the adapter, and the binary.
 
-Evidence deliberately not yet collected, for whoever takes this further:
-large-corpus benchmarks (capture/fsync latency, search percentiles, rebuild
-time, and disk amplification at 10k–100k episodes), ranked-result parity
-runs against the preserved v1 fixtures at scale, and a judged query set that
-can ship with the repository. Scorer and confidence tuning to date used a
-private judged set, so no ranking-quality claim here is reproducible by a
-reader; `scripts/retrieval-eval.py` runs any judged set in that format
-against any binary. Benchmark manifests should pin corpus, scorer,
-configuration, clock, source revision, toolchain, and host profile.
+The repository does not contain large-corpus benchmarks (capture/fsync
+latency, search percentiles, rebuild time, and disk amplification at
+10k–100k episodes), ranked-result parity runs at that scale, or a publishable
+judged query set. Scorer and confidence tuning used a private judged set, so
+no ranking-quality claim here is reproducible by a reader;
+`scripts/retrieval-eval.py` runs any judged set in that format against any
+binary. A reproducible benchmark manifest pins corpus, scorer, configuration,
+clock, source revision, toolchain, and host profile.
 
 ## Explicit non-goals
 
@@ -509,16 +510,16 @@ AutoJournal does not include:
 - compatibility with retired prototype wire/disk formats; or
 - host-specific paths, prompt heuristics, or global-memory defaults in core.
 
-A future curator is a separate repository, process, policy, and owner
-decision. It may read exported/source evidence through public AutoJournal
-operations, but it receives no implicit authority to rewrite episodes or any
-other knowledge store.
+A curator is a separate repository, process, policy, and owner decision. It
+may read exported/source evidence through public AutoJournal operations, but
+it receives no implicit authority to rewrite episodes or any other knowledge
+store.
 
-## Decisions deferred to implementation evidence
+## Intentionally open choices
 
-The design does not preselect:
+The 1.x contract does not freeze:
 
-- numeric no-memory thresholds;
+- owner-tunable numeric no-memory thresholds;
 - fixed latency, memory, or disk ceilings before a measured baseline exists;
 - post-lexical semantic retrieval technology; or
 - optional ambient-recall UX.
@@ -528,16 +529,15 @@ the Markdown authority, atomic episode contract, public operations, adapter
 boundary, or separation from curation without a new owner-approved design
 revision.
 
-## Implementation decision records
+## Implementation decisions
 
-Resolutions taken during implementation under the clause above — reversible,
-and not revisions of the contract. Public operations are unchanged by all of
-them.
+These choices are reversible without changing the public operations or the
+frozen 1.x contracts.
 
 - **Config file is JSON.** The owner config is
   `~/.config/autojournal/config.json` (closed schema, absolute paths,
-  optional retrieval knobs), chosen over TOML because the closed `std.json`
-  parsing was already proven for the capture contracts.
+  optional retrieval knobs), chosen over TOML to reuse the existing closed
+  JSON contract shape and standard-library parsing.
 - **Index location.** The SQLite projection lives outside the journal root,
   in the XDG state directory, keyed by a digest of the root path
   (`index-<hex16>.sqlite`) so the corpus stays a clean git-trackable tree and
@@ -581,7 +581,7 @@ them.
   (`thesaurus.json`, byte-compatible with the proven v1 map) is read fresh
   on every search invocation, which makes hot reload deterministic and
   removes a projection-drift surface; only its canonical SHA-256 digest is
-  recorded (index metadata and every search report) as the alias identity.
+  recorded in every search report as the alias identity.
   Revisit only if a long-lived embedded host measures the per-call read as
   significant.
 - **Candidate discovery and df.** Discovery scans the per-world vocabulary
@@ -613,5 +613,5 @@ them.
 - **Known limitation — in-place edits.** Revision verification compares the
   frontmatter-recorded digest, so replaced or regenerated files are detected
   (`stale_revision`), but a hand edit to body text that leaves the
-  frontmatter digest line untouched is not; a designed owner-edit workflow
-  (validate → recompute digest → reindex) closes this.
+  frontmatter digest line untouched is not. No owner-edit command currently
+  validates the episode and recomputes that digest.

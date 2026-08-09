@@ -12,7 +12,7 @@
 //     float fields accept strings ("1.5", "inf"). Unknown keys, duplicate
 //     keys, and wrong shapes are malformed.
 //   - SaveCaptureDefaults rewrites the file byte-identically to the
-//     reference: key order preserved, `world_root` migrated to
+//     Zig oracle: key order preserved, `world_root` migrated to
 //     `journal_root` (removed from its old position, appended at the
 //     end), numbers re-emitted with std.json's normalization (1.0 -> 1,
 //     1e-10 -> 0.0000000001, over-i64 integers verbatim), and std.json's
@@ -146,7 +146,7 @@ func LoadConfig(env Environ, explicitPath string) (*LoadedConfig, error) {
 }
 
 // readConfigFile reads up to MaxConfigBytes; an over-budget file is
-// Unavailable, matching the reference's limited-read error mapping.
+// Unavailable, matching the Zig oracle's limited-read error mapping.
 func readConfigFile(path string) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -256,7 +256,7 @@ func ParseConfig(data []byte) (Config, error) {
 		cfg.Capture = cap
 	}
 
-	// Validation, mirroring the reference's check order. Presence is
+	// Validation, mirroring the Zig oracle's check order. Presence is
 	// tracked separately from the value: an explicit empty string is
 	// present, and fails the absolute-path and world-token checks.
 	if rootSet && !filepath.IsAbs(cfg.JournalRoot) {
@@ -277,7 +277,7 @@ func ParseConfig(data []byte) (Config, error) {
 		return cfg, ErrConfigMalformed
 	}
 	// The !(x >= 0) shape is deliberate: it rejects NaN, like the
-	// reference. (+Inf passes, as it did there.)
+	// Zig oracle. (+Inf passes, as it did there.)
 	if !(cfg.RecencyBoost >= 0) || !(cfg.MinScore >= 0) || !(cfg.ConfidenceFloor >= 0) {
 		return cfg, ErrConfigMalformed
 	}
@@ -326,7 +326,7 @@ func optStringField(get func(string) (configValue, bool), key string) (string, b
 	return v.s, true, nil
 }
 
-// optUintField extracts an unsigned integer field with the reference's
+// optUintField extracts an unsigned integer field with the Zig oracle's
 // sliceToInt coercions: integer-shaped literals parse directly; strings
 // and float-shaped literals are accepted when they are exactly integral
 // and in range.
@@ -351,7 +351,7 @@ func optUintField(get func(string) (configValue, bool), key string, bitSize int,
 
 // optFloatField extracts a float field: number or string literals,
 // strconv grammar. Overflow to ±Inf is accepted (ErrRange tolerated),
-// matching the reference's parseFloat, which returns inf for "1e999".
+// matching the Zig oracle's parseFloat, which returns inf for "1e999".
 func optFloatField(get func(string) (configValue, bool), key string, def float64) (float64, error) {
 	v, ok := get(key)
 	if !ok {
@@ -384,7 +384,7 @@ func optBoolField(get func(string) (configValue, bool), key string, def bool) (b
 }
 
 // isIntegerShaped reports whether a JSON number literal has no fraction
-// or exponent and is not "-0" — the reference's
+// or exponent and is not "-0" — the Zig oracle's
 // isNumberFormattedLikeAnInteger.
 func isIntegerShaped(lit string) bool {
 	return lit != "-0" && !strings.ContainsAny(lit, ".eE")
@@ -401,7 +401,7 @@ func zigCoerceUint(lit string, bitSize int) (uint64, bool) {
 		return n, err == nil
 	}
 	// f128 has a 113-bit mantissa; parsing at that precision reproduces
-	// the reference's coercion boundary (e.g. 18446744073709551615.0 is
+	// the Zig oracle's coercion boundary (e.g. 18446744073709551615.0 is
 	// exactly u64 max and accepted, ...616.0 overflows and is rejected).
 	f, _, err := big.ParseFloat(lit, 10, 113, big.ToNearestEven)
 	if err != nil || !f.IsInt() || f.Sign() < 0 {
@@ -524,10 +524,10 @@ func writeAtomicConfig(path, text string) error {
 // --- Ordered JSON model -------------------------------------------------
 //
 // The config rewrite must preserve the owner's key order and re-emit
-// numbers with the reference's normalization, neither of which
+// numbers with the Zig oracle's normalization, neither of which
 // encoding/json's map-based decoding can do. This is a minimal ordered
 // document model: parsing rejects duplicate keys, trailing garbage, and
-// invalid UTF-8 in strings (all malformed in the reference), and writing
+// invalid UTF-8 in strings (all malformed in the Zig oracle), and writing
 // reproduces std.json's indent_2 byte format.
 
 type valueKind int
@@ -548,7 +548,7 @@ type pair struct {
 
 // orderedObject is a key-ordered JSON object. set replaces in place when
 // the key exists and appends otherwise — the exact semantics of the
-// reference's array hash map, which the frozen byte order depends on.
+// Zig oracle's array hash map, which the frozen byte order depends on.
 type orderedObject struct {
 	pairs []pair
 }
@@ -587,7 +587,7 @@ func (o *orderedObject) remove(key string) {
 }
 
 // configValue is one JSON value. Numbers keep their raw literal; the
-// reference's normalization is applied at write time, and typed
+// Zig oracle's normalization is applied at write time, and typed
 // extraction (zigCoerceUint) needs the literal for its coercions.
 type configValue struct {
 	kind valueKind
@@ -603,7 +603,7 @@ func parseOrderedJSON(data []byte) (configValue, error) {
 	// The decoder silently replaces invalid UTF-8 with U+FFFD, so the
 	// check has to happen on the raw document: outside strings JSON is
 	// all-ASCII, and invalid bytes anywhere mean a corrupt string —
-	// malformed in the reference (its scanner validates UTF-8).
+	// malformed in the Zig oracle (its scanner validates UTF-8).
 	if !utf8.Valid(data) {
 		return configValue{}, ErrConfigMalformed
 	}
@@ -739,7 +739,7 @@ func writeIndent(b *strings.Builder, indent int) {
 	}
 }
 
-// writeZigJSONString applies the reference's escaping table: only control
+// writeZigJSONString applies the Zig oracle's escaping table: only control
 // bytes below 0x20, '"', and '\' are escaped (\b \f \n \r \t short forms,
 // \u00xx lowercase otherwise); every other byte — UTF-8 continuation
 // bytes, DEL, and the HTML-significant characters encoding/json would
@@ -775,7 +775,7 @@ func writeZigJSONString(b *strings.Builder, s string) {
 }
 
 // formatConfigNumber re-emits a JSON number literal the way the
-// reference's Value round-trip does: integer-shaped literals that fit an
+// Zig oracle's Value round-trip does: integer-shaped literals that fit an
 // i64 print as-is (they are already canonical), over-i64 integer literals
 // and non-finite floats print verbatim (number_string), and everything
 // else is parsed to f64 and printed in full decimal notation — shortest

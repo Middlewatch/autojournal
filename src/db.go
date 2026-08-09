@@ -2,7 +2,7 @@
 //
 // The Zig reference wrapped the C sqlite3 API directly; in Go the
 // database/sql package with the pure-Go modernc.org/sqlite driver is that
-// layer (the approved single dependency: no cgo, static binaries keep
+// layer (the only direct dependency: no cgo, static binaries keep
 // working). This file owns the two things that must not drift between call
 // sites: the connection configuration (WAL, bounded busy wait, immediate
 // transactions) and the driver-error → sentinel mapping the rest of the
@@ -10,8 +10,8 @@
 //
 // One connection per handle (SetMaxOpenConns(1)): the CLI is
 // single-threaded per invocation, and cross-process writers serialize
-// through SQLite itself (WAL plus the busy timeout), exactly the
-// reference's contract. An embedding host that shares an *Index across
+// through SQLite itself (WAL plus the busy timeout), exactly the Zig
+// compatibility contract. An embedding host that shares an *Index across
 // goroutines gets correct serialization from database/sql; write latency
 // under contention is bounded by the busy timeout.
 
@@ -25,7 +25,7 @@ import (
 	"modernc.org/sqlite"
 )
 
-// Failure vocabulary for the SQLite layer, mirroring the reference's
+// Failure vocabulary for the SQLite layer, mirroring the Zig oracle's
 // db.zig error set. Search maps ErrSQLiteBusy to the timeout outcome and
 // every other database failure to unavailable.
 var (
@@ -88,8 +88,8 @@ func mapDBError(err error) error {
 // concurrent capture processes serialize without blocking readers; the
 // busy timeout bounds the wait instead of failing instantly; the index is
 // disposable, so NORMAL durability is enough. _txlock=immediate makes
-// every database/sql transaction BEGIN IMMEDIATE, matching the
-// reference's explicit transaction statements.
+// every database/sql transaction BEGIN IMMEDIATE, matching the Zig
+// oracle's explicit transaction statements.
 //
 // The DSN is plain concatenation: index paths are derived by paths.go
 // under the owner's state directory and never contain '?' or '#'.

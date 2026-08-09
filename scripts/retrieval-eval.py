@@ -88,7 +88,7 @@ def main():
         })
 
     scored = [q for q in per_query if q["type"] in
-              ("known_item", "plural_probe")]
+              ("known_item", "plural_probe", "paraphrase")]
     mrr = statistics.mean(
         (1.0 / q["rank"]) if q["rank"] and q["rank"] <= 10 else 0.0
         for q in scored)

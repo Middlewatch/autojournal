@@ -18,7 +18,7 @@ placeholder.
 
 ## Architecture
 
-One Go implementation of every product rule, consumed three ways:
+One Go implementation of every product rule, exposed in three forms:
 
 - a Go module (`github.com/Middlewatch/autojournal/src`, package
   `autojournal`) that an embedding host imports directly;
@@ -49,9 +49,10 @@ any behavioral question the tests do not already answer.
 
 - gofmt is law. `go vet ./...` and `go test -race ./...` are green before
   every commit.
-- `modernc.org/sqlite` (pure Go, no cgo) is the only dependency; everything
-  else is stdlib. Keep it that way — the binary ships with no runtime
-  dependencies, and that is a product property, not an accident.
+- `modernc.org/sqlite` (pure Go, no cgo) is the only direct Go module
+  dependency. Keep the direct dependency surface narrow — the binary ships
+  with no external runtime dependencies, and that is a product property, not
+  an accident.
 - Layout: Go code lives in `src/` and `src/cmd/autojournal/`; only
   `go.mod`/`go.sum` sit at the repo root. No new top-level subtrees.
 - Write walkable code with package-level doc comments explaining why a module
@@ -60,6 +61,7 @@ any behavioral question the tests do not already answer.
 ## Gates
 
 ```sh
+(cd adapters/pi && npm ci) # once per dependency or lockfile change
 ./scripts/verify.sh        # the full repository gate
 ./scripts/release-check.sh # verify + cross-compile + npm package layout
 ```
@@ -67,8 +69,9 @@ any behavioral question the tests do not already answer.
 `verify.sh` runs gofmt, `go vet`, race-enabled tests, a host binary build, the
 adapter typecheck and tests, design-contract greps, and an end-to-end
 capture → search → get → `stale_revision` → `no_match` smoke in an isolated
-root. CI runs the same pipeline plus cross-compilation and a four-target
-end-to-end matrix. A change is done when the gate is green.
+root. CI separately runs the core and adapter tests, cross-compilation, package
+layout checks, and a four-target binary end-to-end matrix. A change is done
+when the local gate and applicable CI jobs are green.
 
 ## Releases
 

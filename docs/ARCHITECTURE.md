@@ -1,5 +1,7 @@
 # Architecture map for contributors
 
+Status: as built, 2026-08-08.
+
 This is the orientation document for someone who pulled the repository and
 wants to work on it. The binding product contract — laws, formats, typed
 outcomes, release gates — is [`AUTOJOURNAL_1_0_DESIGN.md`](AUTOJOURNAL_1_0_DESIGN.md);
@@ -12,14 +14,13 @@ A single Go package (`src/`, import path
 `github.com/Middlewatch/autojournal/src`, package `autojournal`) builds two
 ways from one source tree:
 
-- a **module** an embedding host imports in its build (the planned Evoker
-  built-in integration), and
+- a **module** available for an embedding host to import in its build, and
 - a **standalone static binary** (`src/cmd/autojournal/`) that is
   simultaneously the owner CLI and the hook target for every other harness.
 
-There is one scoring implementation and one storage protocol; adapters are
-translation layers and are forbidden (by design, and by review) from
-reimplementing storage, ranking, identity, or freshness rules.
+There is one scoring implementation and one storage protocol. Adapters remain
+translation layers; storage, ranking, identity, and freshness rules belong in
+the Go package.
 
 The package was ported from Zig to Go in August 2026 with all on-disk
 formats and the CLI `--json` surface frozen; the archived Zig tree (git tag
@@ -62,7 +63,8 @@ scan (needles under 3 bytes skipped when longer ones exist) → postings fetch
 under world/scope/lane filters → per-line crediting at word-start boundaries
 against the source text → IDF ranking with day-quantized recency → span
 dedup, confidence floor, cursor pagination. `memory_get` then opens one
-reference, re-verifying the revision digest against the file on disk.
+reference, comparing the requested revision with the digest recorded in the
+file's frontmatter.
 
 ## The Pi adapter (`adapters/pi/`)
 
@@ -85,6 +87,7 @@ owner config, the core resolves the host-neutral journal default from
 ## Verification workflow
 
 ```sh
+(cd adapters/pi && npm ci)          # install adapter development dependencies
 go test -race ./...                # unit + golden suites
 ./scripts/verify.sh                # the full gate
 ```
@@ -105,6 +108,7 @@ guards refuse to pack when any expected executable is missing.
 
 ## Toolchain
 
-Go 1.26+ (`go.mod` pins the module's minimum). Node ≥ 22.6 for the adapter.
-SQLite is `modernc.org/sqlite`, the pure-Go driver — the only dependency;
-everything else is stdlib.
+Go 1.26.4+ (`go.mod` pins the module's minimum), Node ≥ 22.6 for the Pi
+adapter, and Python 3 for the standalone hooks and their tests. SQLite is
+`modernc.org/sqlite`, the pure-Go driver and the core's only direct module
+dependency. The compiled executable has no external runtime dependency.

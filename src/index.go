@@ -212,7 +212,7 @@ func HardenIndexFiles(path string) error {
 // metaGet reads one meta value; "" when absent. A missing meta table
 // (fresh or foreign database) reads as absence too — the generic driver
 // error for "no such table" — while busy/corrupt failures still
-// propagate, matching the reference's error split.
+// propagate, matching the Zig oracle's error split.
 func (idx *Index) metaGet(key string) (string, error) {
 	var value string
 	err := idx.db.QueryRow("SELECT value FROM meta WHERE key = ?1;", key).Scan(&value)
@@ -410,7 +410,7 @@ type EpisodeRow struct {
 	BodyLine      uint32
 }
 
-// clampMillis bounds a stored millisecond timestamp the way the reference
+// clampMillis bounds a stored millisecond timestamp the way the Zig oracle
 // does: negative reads as 0, above int64 on write clamps to int64.
 func clampMillis(v uint64) int64 {
 	return int64(min(v, math.MaxInt64))
@@ -989,7 +989,7 @@ func (idx *Index) syncFromCorpus(root *os.Root, rootDigest string) (SyncReport, 
 	seenPaths := map[string]struct{}{}
 	walkErr := fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			// The reference aborts the sync (rolled back) when the corpus
+			// The Zig oracle aborts the sync (rolled back) when the corpus
 			// root itself cannot be read; an unreadable subdirectory is
 			// just skipped, like its openDir-failure continue.
 			if path == "." {

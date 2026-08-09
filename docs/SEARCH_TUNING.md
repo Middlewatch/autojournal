@@ -69,7 +69,7 @@ Work through these in order; each has a fast check.
    is for: `autojournal alias add vpn tailscale`.
 5. **Check the miss log.** With `"miss_log": true` in `config.json`, every
    weak-scoring search is recorded, and `autojournal alias candidates`
-   aggregates repeated misses into suggested thesaurus entries. This is the
+   aggregates repeated misses into candidate queries for review. This is the
    intended feedback loop for growing the map from real usage instead of
    guessing.
 
@@ -77,7 +77,8 @@ Work through these in order; each has a fast check.
 
 The thesaurus is one flat JSON object mapping a query word to the canonical
 terms your journals actually use. It lives at
-`~/.config/autojournal/thesaurus.json` (or the configured `thesaurus_path`)
+`$XDG_CONFIG_HOME/autojournal/thesaurus.json` (normally
+`~/.config/autojournal/thesaurus.json`, or the configured `thesaurus_path`)
 and is read fresh on every search — edits apply immediately, no restart or
 reindex.
 
@@ -102,9 +103,9 @@ Hand-editing the file is fine too; a corrupt file degrades to an empty map
   (`configuration → config`) and casual-to-canonical (`vpn → tailscale`).
 - **Avoid near-universal targets.** An alias value that appears in most of
   your journal flattens the query into "match everything". Before adding a
-  broad word (for this corpus: "session", "agent", "log", "model"), ask
-  whether the results of searching that word alone would be useful — the
-  alias inherits exactly that behavior.
+  broad word such as "session", "agent", "log", or "model", ask whether the
+  results of searching that word alone would be useful — the alias inherits
+  exactly that behavior.
 - **Phrase values are supported and precise.** `oom → "out of memory"`
   credits only lines containing the whole phrase; use phrases when the
   single-word form is too common (`memory`).
@@ -142,9 +143,10 @@ to end; every verdict stays with the owner.
    uses, not another guess.
 4. **Check breadth before proposing.** A near-universal target flattens the
    query into "match everything". Run `autojournal search <value> --json`
-   and compare `total` against the corpus size from `autojournal status`;
-   if the value matches a large share of all episodes (as a rule of thumb,
-   half or more), prefer a rarer word or a phrase value. The curation
+   and compare its breadth with the corpus size from `autojournal status`.
+   The search `total` counts result regions, not distinct episodes, so it is a
+   conservative warning signal rather than an episode percentage. If the
+   value is visibly broad, prefer a rarer word or a phrase value. The curation
    rules above (no prefix expansions, phrases for precision, no short
    fragments) all apply to the proposed value.
 5. **Present verdicts to the owner.** For each candidate: the failed
@@ -155,7 +157,8 @@ to end; every verdict stays with the owner.
    reviewing agent.
 6. **Reset the log.** After the ruling session, truncate the miss log so
    the next review starts from fresh signal:
-   `: > ~/.local/state/autojournal/thesaurus-candidates.jsonl`. The log is
+   `: > "${AUTOJOURNAL_MISS_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/autojournal/thesaurus-candidates.jsonl}"`.
+   The log is
    bounded (1 MiB default) and best-effort, so stale entries otherwise
    linger and crowd `alias candidates`.
 
@@ -170,7 +173,8 @@ for diagnosis:
 | `substring` | any occurrence (v1 parity) | `index` credits "reindexing" |
 | `whole_word` | both edges bounded | `hang` credits only "hang" |
 
-`whole_word` was evaluated on the full journal corpus and rejected as the
-default: it drops legitimate inflections ("configuration", "deployment").
-Word-start removed 60–80% of credited matches on boundary-prone queries
-(`hang`, `lock`, `space`) with no measured loss of relevant top results.
+`whole_word` was evaluated on a private journal corpus and rejected as the
+default because it drops legitimate inflections ("configuration",
+"deployment"). In that unpublished evaluation, word-start removed 60–80% of
+credited matches on boundary-prone queries (`hang`, `lock`, `space`) with no
+measured loss of relevant top results.

@@ -4,6 +4,13 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
 
+file_mode() {
+  case "$(uname -s)" in
+    Darwin) stat -f '%Lp' "$1" ;;
+    *) stat -c '%a' "$1" ;;
+  esac
+}
+
 UNFORMATTED=$(gofmt -l src)
 if [[ -n "$UNFORMATTED" ]]; then
   printf 'gofmt needed:\n%s\n' "$UNFORMATTED" >&2
@@ -29,22 +36,27 @@ mkdir -p "$(dirname "$AJ")"
 CGO_ENABLED=0 go build -trimpath -o "$AJ" ./src/cmd/autojournal
 
 # Pi adapter gate: typecheck + tests (the e2e case runs against the binary
-# installed by the build above).
-if command -v node >/dev/null && [[ -d adapters/pi/node_modules ]]; then
-  (cd adapters/pi && npx tsc --noEmit && npm test --silent >/dev/null 2>&1)
-  printf 'adapter gate: PASS\n'
-else
-  printf 'adapter gate: SKIPPED (node or adapters/pi/node_modules missing)\n' >&2
+# installed by the build above). A complete gate must not silently pass
+# without its adapter dependencies.
+if ! command -v node >/dev/null; then
+  printf 'adapter gate: FAIL (node is required)\n' >&2
+  exit 1
 fi
+if [[ ! -d adapters/pi/node_modules ]]; then
+  printf 'adapter gate: FAIL (run npm ci in adapters/pi first)\n' >&2
+  exit 1
+fi
+(cd adapters/pi && npm run typecheck && npm test)
+printf 'adapter gate: PASS\n'
 
 # Python hook gate: the Claude Code and Codex hooks run against a fake
 # binary, so they never touch a real journal.
-if command -v python3 >/dev/null; then
-  python3 adapters/test_python_hooks.py >/dev/null 2>&1
-  printf 'python hook gate: PASS\n'
-else
-  printf 'python hook gate: SKIPPED (python3 missing)\n' >&2
+if ! command -v python3 >/dev/null; then
+  printf 'python hook gate: FAIL (python3 is required)\n' >&2
+  exit 1
 fi
+python3 adapters/test_python_hooks.py
+printf 'python hook gate: PASS\n'
 
 DESIGN=docs/AUTOJOURNAL_1_0_DESIGN.md
 for term in \
@@ -52,7 +64,7 @@ for term in \
   "Completed-turn projection" \
   'memory_search' \
   'memory_get' \
-  "A future curator is a separate repository"; do
+  "No generated durable claims"; do
   if ! rg -Fq "$term" "$DESIGN"; then
     printf 'missing required design contract: %s\n' "$term" >&2
     exit 1
@@ -134,23 +146,23 @@ printf '%s' "$ZERO_CAPTURE" | rg -q '"path":"[0-9]{4}/[0-9]{2}/[0-9]{2}/aj1-[^"]
 ZERO_REL=$(printf '%s' "$ZERO_CAPTURE" | sed -n 's/.*"path":"\([^"]*\)".*/\1/p')
 DEFAULT_ROOT="$ZERO/data/autojournal/journals"
 [[ -d "$DEFAULT_ROOT" ]]
-[[ "$(stat -c '%a' "$DEFAULT_ROOT")" == 700 ]]
+[[ "$(file_mode "$DEFAULT_ROOT")" == 700 ]]
 STATUS_JSON=$("${ZERO_ENV[@]}" "$AJ" status --json)
 printf '%s' "$STATUS_JSON" | rg -q '"journal_root":"'"$DEFAULT_ROOT"'"'
 printf '%s' "$STATUS_JSON" | rg -q '"root_source":"autojournal_default"'
 printf '%s' "$STATUS_JSON" | rg -q '"episodes":1'
 "${ZERO_ENV[@]}" "$AJ" catalog --json | rg -q '"world":"main","scope":"default"'
 ZERO_INDEX=$(printf '%s' "$STATUS_JSON" | sed -n 's/.*"path":"\([^"]*\)".*/\1/p')
-[[ "$(stat -c '%a' "$ZERO_INDEX")" == 600 ]]
+[[ "$(file_mode "$ZERO_INDEX")" == 600 ]]
 chmod 644 "$DEFAULT_ROOT/$ZERO_REL"
 find "$DEFAULT_ROOT" -mindepth 1 -type d -exec chmod 755 {} +
 "${ZERO_ENV[@]}" "$AJ" sync >/dev/null
 while IFS= read -r -d '' dir; do
-  [[ "$(stat -c '%a' "$dir")" == 700 ]]
+  [[ "$(file_mode "$dir")" == 700 ]]
 done < <(find "$DEFAULT_ROOT" -type d -print0)
-[[ "$(stat -c '%a' "$DEFAULT_ROOT/$ZERO_REL")" == 600 ]]
+[[ "$(file_mode "$DEFAULT_ROOT/$ZERO_REL")" == 600 ]]
 for sidecar in "$ZERO_INDEX-wal" "$ZERO_INDEX-shm" "$ZERO_INDEX-journal"; do
-  [[ ! -e "$sidecar" || "$(stat -c '%a' "$sidecar")" == 600 ]]
+  [[ ! -e "$sidecar" || "$(file_mode "$sidecar")" == 600 ]]
 done
 
 MOVED="$ZERO/moved-journal"
@@ -230,6 +242,6 @@ EMPTY_PAYLOAD=${ZERO_PAYLOAD/"turn_id":"first"/"turn_id":"empty-xdg"}
 printf '%s' "$EMPTY_PAYLOAD" |
   env HOME="$EMPTY_XDG/home" XDG_DATA_HOME= XDG_CONFIG_HOME= XDG_STATE_HOME= "$AJ" capture >/dev/null
 [[ -d "$EMPTY_XDG/home/.local/share/autojournal/journals" ]]
-[[ "$(stat -c '%a' "$EMPTY_XDG/home/.local/share/autojournal/journals")" == 700 ]]
+[[ "$(file_mode "$EMPTY_XDG/home/.local/share/autojournal/journals")" == 700 ]]
 
 printf 'AutoJournal repository verification: PASS\n'

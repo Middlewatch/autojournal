@@ -58,23 +58,24 @@ extension updates and removal do not delete memory.
 
 The SQLite search index under `$XDG_STATE_HOME/autojournal` (normally
 `~/.local/state/autojournal`) is a disposable projection that
-`/autojournal sync` rebuilds. It is future-proofing for a corpus growing
-toward six figures of episodes; a plain `rg` scan is probably fast enough well
-past current corpus sizes, and that crossover has not been measured against a
-real dataset of that scale.
+`/autojournal sync` rebuilds. It keeps incremental search work separate from
+the source corpus. The repository does not include a large-corpus benchmark,
+so it makes no claim about the crossover where SQLite becomes faster than a
+direct text scan.
 
-Hand-editing is safe for search integrity: an episode whose content changed
-serves `stale_revision` rather than silently different evidence, a manual copy
-sharing an episode identity is deduplicated (the first copy found stays
-searchable), and dot-directories such as `.git` or `.obsidian` are never read
-as episodes. After copying, moving, or deleting files yourself, run
-`/autojournal sync` to rebaseline the index.
+Copying, moving, deleting, and editing episode files is reflected after
+`/autojournal sync`. A manual copy sharing an episode identity is deduplicated
+(the first copy found stays searchable), and dot-directories such as `.git` or
+`.obsidian` are never read as episodes. Revision checking compares the
+requested digest with the digest recorded in frontmatter. Replacing an episode
+with a correctly regenerated revision therefore returns `stale_revision`, but
+an in-place body edit that leaves `payload_digest` unchanged is not detected in
+the current release.
 
 ## Worlds and scopes
 
 Most users never touch these: every normal session captures and searches
-**main / default**, across projects and sessions. The terminology is
-provisional and may change.
+**main / default**, across projects and sessions.
 
 - **World** is a separate corpus. Choosing another world changes both capture
   and search for the current conversation.
@@ -100,10 +101,11 @@ no ambient injection — the agent asks, or nothing happens.
 classic IDF sum: each matched query term contributes log(N / df), so a term
 appearing in one episode out of thousands dominates while a term appearing
 everywhere contributes almost nothing. That is multiplied by a recency factor
-of 1 + boost / (days_old + 1); at the default boost of 1.0, something written
-today scores ×2, yesterday ×1.5, a week ago about ×1.13, decaying toward ×1.
-Age is floored to whole days, so results stay stable through the day instead
-of drifting hour to hour. Recency is a nudge, not an override.
+of 1 + boost / (elapsed_24h_periods + 1); at the default boost of 1.0, an
+episode under 24 hours old scores ×2, one 24–47 hours old ×1.5, and one seven
+elapsed periods old about ×1.13, decaying toward ×1. Each episode's age is
+floored into 24-hour periods, so its score changes only at those boundaries.
+Recency is a nudge, not an override.
 
 **Thesaurus.** A single hand-editable JSON file maps a casual query word to
 the canonical terms that actually appear in the journal — for example
@@ -138,7 +140,7 @@ To move an existing journal:
 2. Move the journal without rearranging its contents:
 
    ~~~sh
-   mv $XDG_DATA_HOME/autojournal/journals /absolute/new/location
+   mv "${XDG_DATA_HOME:-$HOME/.local/share}/autojournal/journals" /absolute/new/location
    ~~~
 
 3. Point `journal_root` at the new location.
@@ -163,20 +165,22 @@ reboot. Choose a private, persistent directory, or `chmod g-w,o-w` the parent.
 
 ## Other harnesses
 
-The default directory is host-neutral. Claude Code, Codex, Evoker, or any
-adapter invoking the same completed-turn capture protocol shares the corpus
-when it resolves the same journal root, world, and scope. Pi gets the richest
-first-class controls through its TypeScript adapter; `adapters/claude-code/`
-and `adapters/codex/` are working single-file Python hooks you can wire in
-directly, and they are short enough to read as a template for another agent.
-Each captures every session it sees and finds the binary via
+The default directory is host-neutral. Any adapter invoking the same
+completed-turn capture protocol shares the corpus when it resolves the same
+journal root, world, and scope. Pi gets the richest first-class controls
+through its TypeScript adapter; `adapters/claude-code/` and `adapters/codex/`
+are working single-file Python hooks you can wire in directly, and they are
+short enough to read as a template for another agent. The Go package also
+exposes the same core operations to an embedding host, though this repository
+does not ship an embedding-host integration. Each hook finds the binary via
 `AUTOJOURNAL_BIN`, `~/.local/bin/autojournal`, or `PATH`. Bound what enters
 memory with `autojournal default --world <w> --scope <s>` or a `journal_root`
 of its own, not by narrowing the hook.
 
-Only interactive sessions publish episodes: headless runs and exec-spawned
-sub-agents are synthetic work products and are skipped, so automation never
-pollutes the journal. Their recall tools still work.
+The Pi adapter publishes only interactive sessions: headless runs and
+exec-spawned sub-agents are skipped, while their recall tools still work. The
+standalone hooks apply the completion events and owner-turn filters available
+in their respective harnesses.
 
 ## Contributors
 
@@ -191,9 +195,11 @@ docs/                design, architecture, and search tuning
 scripts/             verification and release gates
 ~~~
 
-Use a Go 1.26+ toolchain and the complete gate:
+The complete gate requires Go 1.26.4+, Node 22.6+, Python 3, and the Pi
+adapter's installed development dependencies:
 
 ~~~sh
+(cd adapters/pi && npm ci)
 ./scripts/verify.sh
 ~~~
 

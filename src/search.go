@@ -33,8 +33,8 @@ var DefaultLanes = []Lane{LaneConversation, LaneDelegatedWork, LaneImportedLegac
 // substring scan; beyond it discovery is truncated and flagged in Detail.
 const MaxVocabMatches = 1024
 
-// DefaultResultsLimit is the page size when the caller does not set one
-// (the reference's `limit: u32 = 10` field default).
+// DefaultResultsLimit is the page size when the caller does not set one. It
+// preserves the Zig oracle's `limit: u32 = 10` field default.
 const DefaultResultsLimit = 10
 
 // MinNeedleLen: needles shorter than this are excluded from the
@@ -69,7 +69,7 @@ type Knobs struct {
 	ConfidenceFloor float64
 }
 
-// DefaultKnobs are the reference defaults.
+// DefaultKnobs are the frozen compatibility defaults.
 var DefaultKnobs = Knobs{
 	ContextWindow:   3,
 	RecencyBoost:    1.0,
@@ -83,7 +83,7 @@ type SearchRequest struct {
 	World string
 	Scope *string
 	Lanes []Lane // nil means DefaultLanes
-	// Limit 0 resolves to DefaultResultsLimit (the reference's field
+	// Limit 0 resolves to DefaultResultsLimit (the Zig oracle's field
 	// default); above MaxResultsLimit clamps down.
 	Limit uint32
 	// Cursor pages a previous identical request; nil for the first page.
@@ -169,7 +169,7 @@ type SearchOutput struct {
 // gone outcome.
 var ErrEvidenceUnavailable = errors.New("evidence unavailable")
 
-// dbErrorName renders the failure vocabulary the reference put in
+// dbErrorName renders the failure vocabulary the Zig oracle put in
 // `detail` (@errorName strings).
 func dbErrorName(err error) string {
 	switch {
@@ -203,7 +203,7 @@ func outcomeForError(err error) Outcome {
 //
 // A zero Knobs struct resolves to DefaultKnobs — Go has no field
 // defaults, and silently scoring with a zero context window or recency
-// boost would drift from the reference without any signal. Callers that
+// boost would drift from the frozen behavior without any signal. Callers that
 // want non-default scoring start from DefaultKnobs and change fields.
 // A zero CreditMode resolves to CreditWordStart for the same reason.
 func Search(root *os.Root, idx *Index, aliasMap *AliasMap, req SearchRequest) SearchOutput {
@@ -825,7 +825,8 @@ func ReadContained(root *os.Root, relPath string) (string, error) {
 		last := i == len(components)-1
 		if !last {
 			// Lstat does not follow links, so a symlink reports !IsDir
-			// and is refused here — the reference's O_NOFOLLOW descent.
+			// and is refused here — equivalent to the Zig oracle's
+			// O_NOFOLLOW descent.
 			if !info.IsDir() {
 				if ownsCurrent {
 					current.Close()

@@ -80,7 +80,7 @@ func TestCorruptOrMissingThesaurusIsEmptyMapNeverError(t *testing.T) {
 	}
 }
 
-// Tolerance profile pinned to the reference parser: a duplicate key
+// Tolerance profile pinned to the Zig oracle parser: a duplicate key
 // fails the whole document (empty map), a null value drops its key, and
 // a non-string array item — even an overflowing number — is skipped item
 // by item with the key kept.
@@ -188,7 +188,7 @@ func TestAliasEditingRefusesToClobberNonObjectFile(t *testing.T) {
 }
 
 // A mistyped terms field never discards the counted query: the
-// reference reads query first and consumes terms only when it is an
+// Zig oracle reads query first and consumes terms only when it is an
 // array, skipping non-string items individually.
 func TestAggregateMissesToleratesMistypedTerms(t *testing.T) {
 	log := []byte(`{"query":"vpn","terms":"vpn"}` + "\n" +

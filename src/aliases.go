@@ -5,8 +5,8 @@
 // should also search: {"firmware": ["fwupd", "polkit"]}. It is
 // byte-compatible with the deployed v1 map, loaded fresh on every search
 // invocation (editor changes apply immediately, no cache to invalidate),
-// and never projected into SQLite — only its canonical digest is recorded
-// and stamped on results as the alias identity.
+// and never projected into SQLite. Its canonical digest is computed and
+// stamped on results as the alias identity.
 //
 // Curation is manual by design: the engine never writes an alias itself.
 // The miss log is the raw material for growing the map from real recall
@@ -14,7 +14,7 @@
 //
 // Corrupt-file tolerance note: a hand-edit that introduces a duplicate
 // JSON key is rejected as ErrAliasMalformed on edit and reads as an
-// empty map on load — matching the reference parser, which fails the
+// empty map on load — matching the Zig oracle parser, which fails the
 // whole document on a duplicate key. Refusing to interpret the ambiguous
 // file protects it from being clobbered, the same intent as the
 // non-object Malformed guardrail.
@@ -81,12 +81,12 @@ func lowerASCII(s string) string {
 // entries whose value is an array become aliases (array items that are
 // not strings are skipped item by item); keys and values are lowercased.
 // Anything unreadable or unparseable — including a duplicate key, which
-// the reference's parser rejects wholesale — is a valid empty
+// the Zig oracle's parser rejects wholesale — is a valid empty
 // configuration: recall never fails because the thesaurus does.
 func LoadAliasMapFromBytes(data []byte) *AliasMap {
 	var entries []AliasEntry
 	// encoding/json silently replaces invalid UTF-8 with U+FFFD; the
-	// reference's scanner validates it, and a corrupt document is an
+	// Zig oracle's scanner validates it, and a corrupt document is an
 	// empty map there — so it is here too.
 	if utf8.Valid(data) {
 		if parsed, ok := parseAliasEntries(data); ok {
@@ -98,7 +98,7 @@ func LoadAliasMapFromBytes(data []byte) *AliasMap {
 }
 
 // parseAliasEntries walks the top-level object token by token so a
-// duplicate key is seen and rejected — the reference parser fails the
+// duplicate key is seen and rejected — the Zig oracle parser fails the
 // whole document there, and an ambiguous hand-edit must not silently
 // resolve to either value. Map decoding cannot detect this.
 func parseAliasEntries(data []byte) ([]AliasEntry, bool) {
@@ -123,7 +123,7 @@ func parseAliasEntries(data []byte) ([]AliasEntry, bool) {
 			return nil, false
 		}
 		// Only arrays become aliases; null, scalars, and objects are
-		// skipped whole, like the reference's non-array branch.
+		// skipped whole, like the Zig oracle's non-array branch.
 		if len(raw) == 0 || raw[0] != '[' {
 			continue
 		}
@@ -343,7 +343,7 @@ func readEditableThesaurus(path string) (configValue, error) {
 	return root, nil
 }
 
-// writeThesaurusAtomic rewrites the file in the reference's indent_2
+// writeThesaurusAtomic rewrites the file in the Zig oracle's indent_2
 // byte format via a sibling temp file and rename.
 func writeThesaurusAtomic(path string, root configValue) error {
 	var b strings.Builder
@@ -423,7 +423,7 @@ func AggregateMisses(data []byte) []MissCandidate {
 	byQuery := map[string]*agg{}
 	var order []string // first-seen order; sort decides presentation
 	for _, line := range bytes.Split(data, []byte{'\n'}) {
-		// The reference trims exactly space/tab/CR — not the wider
+		// The Zig oracle trims exactly space/tab/CR — not the wider
 		// Unicode space set — so a query differing only in NBSP stays
 		// distinct on both sides.
 		trimmed := bytes.Trim(line, " \t\r")

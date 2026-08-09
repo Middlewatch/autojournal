@@ -17,7 +17,7 @@ binaries; users do not need Go, SQLite, a compiler, or an **autojournal**
 command on PATH.
 
 Supported package targets are Linux x64/ARM64 and macOS Intel/Apple Silicon.
-Windows is not yet supported.
+Windows is unsupported.
 
 ## First use
 
@@ -105,12 +105,14 @@ IDE. Markdown is the durable authority. The SQLite search index under
 $XDG_STATE_HOME/autojournal (normally ~/.local/state/autojournal) is a
 disposable projection that **/autojournal sync** can rebuild.
 
-Hand-editing is safe for search integrity: an episode whose content changed
-serves stale_revision rather than silently different evidence, a manual copy
-sharing an episode identity is deduplicated (the first copy found stays
-searchable), and dot-directories such as .obsidian or .git are never read as
-episodes. After copying, moving, or deleting files yourself, run
-**/autojournal sync** to rebaseline the index.
+Copying, moving, deleting, and editing episode files is reflected after
+**/autojournal sync**. A manual copy sharing an episode identity is
+deduplicated (the first copy found stays searchable), and dot-directories such
+as `.obsidian` or `.git` are never read as episodes. Revision checking compares
+the requested digest with the digest recorded in frontmatter. Replacing an
+episode with a correctly regenerated revision therefore returns
+`stale_revision`, but an in-place body edit that leaves `payload_digest`
+unchanged is not detected in the current release.
 
 ## Worlds and scopes
 
@@ -169,8 +171,9 @@ AutoJournal registers:
 - memory_get(episode_id, revision, lines?) for exact source evidence.
 
 There is no automatic ambient injection. Search results include episode and
-revision identity; opening changed evidence returns stale_revision rather
-than silently substituting different content.
+revision identity; `memory_get` refuses a reference when the episode's recorded
+digest has changed. Direct body edits that retain the recorded digest are the
+known exception described above.
 
 ## Move or share the journal
 
@@ -248,11 +251,11 @@ to that path. Run **/autojournal sync** afterward.
 
 ## Other harnesses
 
-AutoJournal's default directory is host-neutral. Claude Code, Codex, Evoker,
-or another adapter that invokes the same completed-turn capture protocol will
-share the corpus when it resolves the same journal root, world, and scope.
-Pi and Evoker may provide richer first-class controls; simpler hooks can use
-owner-configured defaults.
+AutoJournal's default directory is host-neutral. Claude Code, Codex, or another
+adapter that invokes the same completed-turn capture protocol shares the
+corpus when it resolves the same journal root, world, and scope. The Go package
+also exposes the core operations to embedding hosts. Pi provides first-class
+session controls; simpler integrations can use owner-configured defaults.
 
 Markdown that AutoJournal did not write is never silently treated as an
 episode: only files matching its own naming and frontmatter contract are

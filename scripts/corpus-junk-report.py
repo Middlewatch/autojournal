@@ -88,7 +88,7 @@ def scan_episode(path: Path) -> dict | None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--root", default="~/memory/journals", help="journal root to scan")
+    ap.add_argument("--root", required=True, help="journal root to scan")
     ap.add_argument("--top", type=int, default=25, help="sessions to show")
     ap.add_argument("--min-bytes", type=int, default=4096,
                     help="ignore sessions smaller than this (too small to poison)")

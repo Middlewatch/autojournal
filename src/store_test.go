@@ -319,7 +319,7 @@ func TestPublishHardensPreexistingShardDirs(t *testing.T) {
 	}
 	defer root.Close()
 	// A pre-existing, group-readable corpus dir is hardened on descent,
-	// matching the reference's setPermissions on every open.
+	// matching the Zig oracle's setPermissions on every open.
 	if err := root.Mkdir("worlds", 0o755); err != nil {
 		t.Fatal(err)
 	}
