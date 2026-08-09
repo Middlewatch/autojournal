@@ -34,7 +34,9 @@ re-publishes existing episodes.
   the pending file.
 - The repository gate now fails when Node, Pi adapter dependencies, or Python
   are missing instead of reporting a misleading pass with skipped suites. Its
-  permission checks use the native `stat` syntax on both Linux and macOS.
+  permission checks use the native `stat` syntax on both Linux and macOS, and
+  package verification materializes its nested archive even when invoked by
+  an outer `npm publish --dry-run`.
 
 ### Changed
 

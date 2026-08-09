@@ -6,7 +6,10 @@ PACKAGE="$ROOT/adapters/pi"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-(cd "$PACKAGE" && npm pack --pack-destination "$TMP" >/dev/null)
+# `npm publish --dry-run` exports npm_config_dry_run=true to lifecycle
+# scripts. The outer publication must stay dry, but this nested pack has to
+# materialize an archive for the layout and executable-bit checks below.
+(cd "$PACKAGE" && npm_config_dry_run=false npm pack --pack-destination "$TMP" >/dev/null)
 TARBALL=$(find "$TMP" -maxdepth 1 -type f -name 'autojournal-*.tgz' -print -quit)
 [[ -n "$TARBALL" && -f "$TARBALL" ]]
 
