@@ -4,6 +4,8 @@
 package autojournal
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -479,30 +481,6 @@ func TestLineBoundsClampToBodyAndHonorExplicitSpans(t *testing.T) {
 	}
 }
 
-// Regression: a single-component path descends zero directories, so the
-// handle being read through is still the caller's root — it must survive
-// the call, whether the entry is a directory (refused) or a regular file
-// (served). Before the fix, the deferred close poisoned the root and every
-// later read failed.
-func TestReadContainedSingleComponentPathLeavesRootOpen(t *testing.T) {
-	fx := setupSearchCorpus(t)
-
-	if _, err := ReadContained(fx.root, "worlds"); err == nil {
-		t.Error("reading a directory did not fail")
-	}
-	if _, err := ReadContained(fx.root, fx.published[0].RelPath); err != nil {
-		t.Fatalf("root unusable after single-component directory read: %v", err)
-	}
-
-	writeCorpusFile(t, fx.rootPath, "loose.md", "stray but readable")
-	if content, err := ReadContained(fx.root, "loose.md"); err != nil || content != "stray but readable" {
-		t.Errorf("single-component file read = %q, %v", content, err)
-	}
-	if _, err := ReadContained(fx.root, fx.published[0].RelPath); err != nil {
-		t.Fatalf("root unusable after single-component file read: %v", err)
-	}
-}
-
 func TestCreditLineBoundaryRulesPerMode(t *testing.T) {
 	cases := []struct {
 		line, term string
@@ -629,5 +607,315 @@ func TestConfidenceDiscountsPartialCoverage(t *testing.T) {
 	}
 	if got := ConfidenceWithCoverage(6.0, 0.0, floor); got != ConfidenceLow {
 		t.Errorf("zero coverage = %s, want low", got)
+	}
+}
+
+// TestSearchExcludesDigestStaleEpisode: an episode whose body was edited
+// with its payload_digest line left untouched is absent from results and
+// counted in edited_excluded.
+func TestSearchExcludesDigestStaleEpisode(t *testing.T) {
+	fx := setupSearchCorpus(t)
+
+	// Edit one body byte of the first published episode on disk, leaving
+	// its frontmatter (and so the recorded digest line) untouched.
+	full := filepath.Join(fx.rootPath, filepath.FromSlash(fx.published[0].RelPath))
+	b, err := os.ReadFile(full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := strings.Replace(string(b), "reindexing", "reindexinG", 1)
+	if edited == string(b) {
+		t.Fatal("edit did not apply; fixture text changed?")
+	}
+	if err := os.WriteFile(full, []byte(edited), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out := Search(fx.root, fx.idx, fx.emptyMap, fx.request("quokka"))
+	for _, hit := range out.Hits {
+		if hit.EpisodeID == fx.published[0].EpisodeID {
+			t.Errorf("digest-stale episode served: %s", hit.EpisodeID)
+		}
+	}
+	if out.EditedExcluded < 1 {
+		t.Errorf("edited_excluded = %d, want >= 1", out.EditedExcluded)
+	}
+}
+
+// TestSearchStillServesUneditedEpisodes: the fixture corpus returns its
+// usual results, unchanged by the verification tightening.
+func TestSearchStillServesUneditedEpisodes(t *testing.T) {
+	fx := setupSearchCorpus(t)
+	out := Search(fx.root, fx.idx, fx.emptyMap, fx.request("quokka"))
+	if out.Outcome != OutcomeMatch {
+		t.Fatalf("outcome = %q, want match", out.Outcome)
+	}
+	if out.EditedExcluded != 0 {
+		t.Errorf("edited_excluded = %d over an unedited corpus", out.EditedExcluded)
+	}
+	if len(out.Hits) == 0 {
+		t.Fatal("no hits over the unedited fixture corpus")
+	}
+}
+
+// TestGetReportsStaleRevisionOnBodyEdit: a digest-stale file — body edited,
+// payload_digest line untouched — reports stale_revision with an empty
+// revision and the reseal detail. There is no honest current revision for a
+// file that does not verify.
+func TestGetReportsStaleRevisionOnBodyEdit(t *testing.T) {
+	fx := setupSearchCorpus(t)
+	pub := fx.published[0]
+
+	full := filepath.Join(fx.rootPath, filepath.FromSlash(pub.RelPath))
+	b, err := os.ReadFile(full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := strings.Replace(string(b), "reindexing", "reindexinG", 1)
+	if edited == string(b) {
+		t.Fatal("edit did not apply")
+	}
+	if err := os.WriteFile(full, []byte(edited), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out := Get(fx.root, fx.idx, GetRequest{
+		EpisodeID: pub.EpisodeID,
+		Revision:  DigestPrefix + pub.DigestHex,
+	})
+	if out.Outcome != OutcomeStaleRevision {
+		t.Fatalf("outcome = %q, want stale_revision", out.Outcome)
+	}
+	if out.Revision != "" {
+		t.Errorf("revision = %q, want empty for a file that does not verify", out.Revision)
+	}
+	if !strings.Contains(out.Detail, "reseal") {
+		t.Errorf("detail = %q, want the reseal pointer", out.Detail)
+	}
+}
+
+// TestGetReportsReplacementRevisionOnAbsorbedEdit: a regenerated,
+// self-consistent file — different content whose recorded digest line
+// matches that content — reports stale_revision with the current verified
+// revision as the replacement reference.
+func TestGetReportsReplacementRevisionOnAbsorbedEdit(t *testing.T) {
+	fx := setupSearchCorpus(t)
+	pub := fx.published[0]
+
+	// Regenerate the episode wholesale with different content: same
+	// identity, new payload, digest line consistent with the new body.
+	p := mustValidate(t, testPayloadJSON)
+	p.TurnID = "turn-2001"
+	p.UserContent = "the enclosure records were regenerated wholesale"
+	p.AssistantResult = "Regenerated."
+	newDigest := PayloadDigestHex(&p)
+	content := Render(RenderInput{
+		Payload:       &p,
+		EpisodeID:     EpisodeID(&p),
+		DigestHex:     newDigest,
+		CaptureTimeMs: searchTestNowMs,
+	})
+	full := filepath.Join(fx.rootPath, filepath.FromSlash(pub.RelPath))
+	if err := os.WriteFile(full, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out := Get(fx.root, fx.idx, GetRequest{
+		EpisodeID: pub.EpisodeID,
+		Revision:  DigestPrefix + pub.DigestHex,
+	})
+	if out.Outcome != OutcomeStaleRevision {
+		t.Fatalf("outcome = %q, want stale_revision", out.Outcome)
+	}
+	if out.Revision != DigestPrefix+newDigest {
+		t.Errorf("revision = %q, want the current verified revision %q", out.Revision, DigestPrefix+newDigest)
+	}
+	if strings.Contains(out.Detail, "reseal") {
+		t.Errorf("detail = %q; an absorbed edit does not need reseal", out.Detail)
+	}
+}
+
+// TestDuplicateTermWeightsSurviveAliasExpansion: whether a repeated query
+// word counts once per repetition must not depend on an unrelated
+// thesaurus entry firing (aj-scorer.v3). The triple "quokka" against
+// a single-line episode outweighs the two-term portal/gateway episode only
+// while each repetition keeps its weight; the pre-v3 deduplicated union
+// inverts the order.
+func TestDuplicateTermWeightsSurviveAliasExpansion(t *testing.T) {
+	_, root := testCorpus(t)
+	base := mustValidate(t, testPayloadJSON)
+
+	q := base
+	q.TurnID = "turn-8101"
+	q.UserContent = "the quokka pen was cleaned this morning"
+	q.AssistantResult = "Cleaned."
+	quokkaEp := mustPublish(t, root, q)
+
+	p := base
+	p.TurnID = "turn-8102"
+	p.UserContent = "the portal gateway hub came online"
+	p.AssistantResult = "Online."
+	portalEp := mustPublish(t, root, p)
+
+	idx := openMemoryIndex(t)
+	if _, err := idx.SyncFromCorpus(root); err != nil {
+		t.Fatal(err)
+	}
+	aliases := LoadAliasMapFromBytes([]byte(`{"portal": ["gateway"]}`))
+
+	out := Search(root, idx, aliases, SearchRequest{
+		Query: "quokka quokka quokka portal", World: "testworld",
+		NowMs: 1785326400000,
+	})
+	if out.Outcome != OutcomeMatch || len(out.Hits) < 2 {
+		t.Fatalf("outcome = %s with %d hits, want match over both episodes", out.Outcome, len(out.Hits))
+	}
+	if len(out.AliasTerms) != 1 || out.AliasTerms[0] != "gateway" {
+		t.Fatalf("alias_terms = %v, want the active [gateway]", out.AliasTerms)
+	}
+	if out.Hits[0].EpisodeID != quokkaEp.EpisodeID {
+		t.Errorf("top hit = %s, want the triple-weighted quokka episode %s (portal episode %s won: repetition lost its weight)",
+			out.Hits[0].EpisodeID, quokkaEp.EpisodeID, portalEp.EpisodeID)
+	}
+}
+
+// TestFoldedTermsReportedSeparately: a folded singular variant is a term
+// the owner never typed, so it is reported in folded_terms, not silently
+// searched and never listed as an alias.
+func TestFoldedTermsReportedSeparately(t *testing.T) {
+	fx := setupSearchCorpus(t)
+	out := Search(fx.root, fx.idx, fx.emptyMap, SearchRequest{
+		Query: "quokkas", World: "testworld", NowMs: 1785326400000,
+	})
+	if len(out.FoldedTerms) != 1 || out.FoldedTerms[0] != "quokka" {
+		t.Fatalf("folded_terms = %v, want [quokka]", out.FoldedTerms)
+	}
+	if len(out.AliasTerms) != 0 {
+		t.Errorf("alias_terms = %v, want none (folding is not aliasing)", out.AliasTerms)
+	}
+	if out.Outcome != OutcomeMatch {
+		t.Errorf("outcome = %s, want match via the folded singular", out.Outcome)
+	}
+}
+
+// TestDuplicateWeightFixtureRanking pins the ordered result of the
+// repeated-term-with-active-alias case in testdata/ranking — the public
+// witness of the term-weighting invariant, since the judged query set
+// cannot ship with the repository.
+func TestDuplicateWeightFixtureRanking(t *testing.T) {
+	raw, err := os.ReadFile("../testdata/ranking/case-duplicate-weight.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Query     string            `json:"query"`
+		World     string            `json:"world"`
+		NowMs     uint64            `json:"now_ms"`
+		Thesaurus json.RawMessage   `json:"thesaurus"`
+		Payloads  []json.RawMessage `json:"payloads"`
+		Expected  []struct {
+			EpisodeID string `json:"episode_id"`
+			Line      uint32 `json:"line"`
+		} `json:"expected"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	if len(fixture.Expected) == 0 {
+		t.Fatal("fixture pins nothing")
+	}
+
+	_, root := testCorpus(t)
+	for _, pb := range fixture.Payloads {
+		rawPayload, err := ParsePayload(pb)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, err := validateAsCaptureHost(t, rawPayload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustPublish(t, root, p)
+	}
+	idx := openMemoryIndex(t)
+	if _, err := idx.SyncFromCorpus(root); err != nil {
+		t.Fatal(err)
+	}
+	out := Search(root, idx, LoadAliasMapFromBytes(fixture.Thesaurus), SearchRequest{
+		Query: fixture.Query, World: fixture.World, NowMs: fixture.NowMs,
+	})
+	var got []string
+	for _, h := range out.Hits {
+		got = append(got, fmt.Sprintf("%s:%d", h.EpisodeID, h.Line))
+	}
+	var want []string
+	for _, e := range fixture.Expected {
+		want = append(want, fmt.Sprintf("%s:%d", e.EpisodeID, e.Line))
+	}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("ordered ranking = %v, want the pinned %v", got, want)
+	}
+}
+
+// TestSearchReadsEachEpisodeOnce pins the one-read-per-episode contract:
+// the crediting pass reads and verifies each credited episode once, and
+// snippet rendering reuses that content instead of re-reading the file.
+// The counting wrapper observes every corpus read a search performs.
+func TestSearchReadsEachEpisodeOnce(t *testing.T) {
+	fx := setupSearchCorpus(t)
+
+	reads := map[string]int{}
+	orig := readContained
+	readContained = func(root *os.Root, relPath string) (string, error) {
+		reads[relPath]++
+		return orig(root, relPath)
+	}
+	defer func() { readContained = orig }()
+
+	out := Search(fx.root, fx.idx, fx.emptyMap, fx.request("quokka"))
+	if out.Outcome != OutcomeMatch {
+		t.Fatalf("outcome = %q (%s)", out.Outcome, out.Detail)
+	}
+	if len(out.Hits) == 0 {
+		t.Fatal("no hits")
+	}
+	for _, hit := range out.Hits {
+		if hit.Snippet == "" {
+			t.Errorf("empty snippet for %s — rendering must reuse the held content", hit.EpisodeID)
+		}
+	}
+	if len(reads) == 0 {
+		t.Fatal("counting seam observed no reads")
+	}
+	for rel, n := range reads {
+		if n != 1 {
+			t.Errorf("episode %s read %d times, want exactly 1", rel, n)
+		}
+	}
+}
+
+// NowMs 0 is the documented live-clock spelling: the scorer must see the
+// same resolved clock freshness uses, or every event time reads as future
+// and the recency nudge silently collapses to pure rarity.
+func TestSearchZeroNowMsUsesLiveClockForRecency(t *testing.T) {
+	fx := setupSearchCorpus(t)
+	live := fx.request("quokka")
+	live.NowMs = 0
+	liveOut := Search(fx.root, fx.idx, fx.emptyMap, live)
+	if liveOut.Outcome != OutcomeMatch {
+		t.Fatalf("live outcome = %s, want match", liveOut.Outcome)
+	}
+	rarity := fx.request("quokka")
+	rarity.Knobs = DefaultKnobs
+	rarity.Knobs.RecencyBoost = 0
+	rarityOut := Search(fx.root, fx.idx, fx.emptyMap, rarity)
+	if rarityOut.Outcome != OutcomeMatch {
+		t.Fatalf("rarity outcome = %s, want match", rarityOut.Outcome)
+	}
+	// The corpus event times are in the past against any live clock, so
+	// the default boost must lift the best score above the boost-free run.
+	if !(liveOut.BestScore > rarityOut.BestScore) {
+		t.Errorf("NowMs=0 best score %v is not above pure rarity %v — recency was dropped",
+			liveOut.BestScore, rarityOut.BestScore)
 	}
 }

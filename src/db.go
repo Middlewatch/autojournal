@@ -1,17 +1,17 @@
 // SQLite substrate for the disposable index projection.
 //
-// The Zig reference wrapped the C sqlite3 API directly; in Go the
-// database/sql package with the pure-Go modernc.org/sqlite driver is that
-// layer (the only direct dependency: no cgo, static binaries keep
-// working). This file owns the two things that must not drift between call
+// database/sql with the pure-Go modernc.org/sqlite driver is that layer — the
+// package's only direct dependency, chosen because no cgo means the binary
+// stays static and dependency-free, which DESIGN.md treats as a product
+// property rather than a build detail. This file owns the two things that must not drift between call
 // sites: the connection configuration (WAL, bounded busy wait, immediate
 // transactions) and the driver-error → sentinel mapping the rest of the
 // package classifies with errors.Is.
 //
 // One connection per handle (SetMaxOpenConns(1)): the CLI is
 // single-threaded per invocation, and cross-process writers serialize
-// through SQLite itself (WAL plus the busy timeout), exactly the Zig
-// compatibility contract. An embedding host that shares an *Index across
+// through SQLite itself (WAL plus the busy timeout), which is what keeps a
+// separate advisory-lock layer out of the design. An embedding host that shares an *Index across
 // goroutines gets correct serialization from database/sql; write latency
 // under contention is bounded by the busy timeout.
 
@@ -21,13 +21,17 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"modernc.org/sqlite"
 )
 
-// Failure vocabulary for the SQLite layer, mirroring the Zig oracle's
-// db.zig error set. Search maps ErrSQLiteBusy to the timeout outcome and
-// every other database failure to unavailable.
+// Failure vocabulary for the SQLite layer. The set exists so callers can
+// classify with errors.Is instead of matching driver strings: Search maps
+// ErrSQLiteBusy to the timeout outcome and every other database failure to
+// unavailable, and those two need to stay distinguishable because they mean
+// different things to an owner — one is contention, the other is damage.
 var (
 	ErrSQLiteBusy     = errors.New("sqlite: busy or locked")
 	ErrSQLiteCorrupt  = errors.New("sqlite: corrupt or not a database")
@@ -88,16 +92,27 @@ func mapDBError(err error) error {
 // concurrent capture processes serialize without blocking readers; the
 // busy timeout bounds the wait instead of failing instantly; the index is
 // disposable, so NORMAL durability is enough. _txlock=immediate makes
-// every database/sql transaction BEGIN IMMEDIATE, matching the Zig
-// oracle's explicit transaction statements.
+// every database/sql transaction BEGIN IMMEDIATE, taking the write lock up
+// front rather than upgrading mid-transaction, which is where a deferred
+// transaction would deadlock into SQLITE_BUSY after already doing work.
 //
-// The DSN is plain concatenation: index paths are derived by paths.go
-// under the owner's state directory and never contain '?' or '#'.
+// The path rides in a SQLite URI, so sqliteURIPath escapes the characters
+// that would terminate it early: --index is a documented CLI override and
+// XDG_STATE_HOME is owner-supplied, and without the escaping a path
+// containing '?' would truncate the DSN and silently create a database at
+// a different path with none of the pragmas above.
+// busyTimeoutMs is the connection's bounded busy wait, priced for writes
+// that must succeed. One caller opts out per operation: the freshness memo
+// stamp zeroes it for its transaction and restores it before the
+// connection returns to the pool, because a cache write must never make a
+// search wait behind a writer.
+const busyTimeoutMs = 5000
+
 func openSQLite(path string) (*sql.DB, error) {
-	dsn := "file:" + path +
+	dsn := "file:" + sqliteURIPath(path) +
 		"?_pragma=journal_mode(WAL)" +
 		"&_pragma=synchronous(NORMAL)" +
-		"&_pragma=busy_timeout(5000)" +
+		"&_pragma=busy_timeout(" + strconv.Itoa(busyTimeoutMs) + ")" +
 		"&_pragma=foreign_keys(1)" +
 		"&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
@@ -116,4 +131,12 @@ func openSQLite(path string) (*sql.DB, error) {
 		return nil, mapDBError(err)
 	}
 	return db, nil
+}
+
+// sqliteURIPath escapes the characters that end a SQLite URI filename:
+// '%' first since it introduces escapes, then '?' (query string) and '#'
+// (fragment). Everything else passes through — SQLite percent-decodes the
+// whole path component, so escaped and literal spellings name one file.
+func sqliteURIPath(path string) string {
+	return strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23").Replace(path)
 }

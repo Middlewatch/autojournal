@@ -17,7 +17,14 @@ A search runs through five stages:
    Plural terms also fold: `quotas` additionally searches `quota`,
    `policies` searches `policy` — the one word-form direction the boundary
    rule below cannot cover, since a plural query term never occurs inside
-   its singular's text.
+   its singular's text. Folded variants are reported back as
+   `folded_terms`, so a term you never typed is never unexplained.
+   **Invariant (aj-scorer.v3): repeating a query word always weighs it
+   that many times.** Alias values and folded variants are appended to
+   your term list, never merged into it — so whether `deploy deploy logs`
+   counts `deploy` twice cannot depend on whether some unrelated thesaurus
+   entry happens to fire. `testdata/ranking/` pins this with an ordered
+   fixture ranking.
 3. **Discovery.** The index vocabulary is scanned for tokens containing any
    term as a substring, and the matching tokens' postings become the
    candidate lines. Needles shorter than 3 bytes are skipped when longer
@@ -54,7 +61,7 @@ Work through these in order; each has a fast check.
 3. **Is it a word-form mismatch?** You searched `deploy`, the journal says
    `deployment` — that still matches (prefix). But you searched `index` and
    the journal only says `reindexing` — that does not (infix). Diagnose
-   with v1-parity crediting:
+   by widening crediting to any occurrence:
 
    ```sh
    autojournal search <query...> --credit-mode substring
@@ -170,7 +177,7 @@ for diagnosis:
 | mode | rule | example |
 |---|---|---|
 | `word_start` (default) | occurrence starts at a word boundary | `hang` credits "hanging", not "changed" |
-| `substring` | any occurrence (v1 parity) | `index` credits "reindexing" |
+| `substring` | any occurrence, including infix | `index` credits "reindexing" |
 | `whole_word` | both edges bounded | `hang` credits only "hang" |
 
 `whole_word` was evaluated on a private journal corpus and rejected as the

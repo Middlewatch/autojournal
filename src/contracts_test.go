@@ -2,11 +2,12 @@ package autojournal
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
 
-// testPayloadJSON mirrors the Zig reference's contract fixture.
+// testPayloadJSON mirrors testdata/payloads/basic.json, the contract fixture.
 const testPayloadJSON = `{
   "schema_version": 1,
   "world": "testworld",
@@ -207,5 +208,99 @@ func TestPayloadOverBudget(t *testing.T) {
 	big := make([]byte, MaxPayloadBytes+1)
 	if _, err := ParsePayload(big); !errors.Is(err, ErrMalformed) {
 		t.Fatalf("ParsePayload error = %v, want ErrMalformed", err)
+	}
+}
+
+// TestCaptureErrorNameCoversEverySentinel asserts every sentinel in the
+// capture failure vocabulary maps to its own distinct CamelCase name, and an
+// error the vocabulary does not know maps to Unavailable.
+func TestCaptureErrorNameCoversEverySentinel(t *testing.T) {
+	sentinels := []error{
+		ErrMalformed, ErrUnsupportedSchemaVersion, ErrInvalidWorld,
+		ErrInvalidScope, ErrInvalidLane, ErrInvalidHarness,
+		ErrInvalidAdapterVersion, ErrInvalidSessionID, ErrInvalidTurnID,
+		ErrInvalidCapturePolicy, ErrInvalidTurnOutcome, ErrEmptyUserContent,
+		ErrEmptyAssistantResult, ErrOversizedContent, ErrInvalidUTF8,
+		ErrTooManyTools, ErrInvalidToolName, ErrInvalidWorkspaceRoot,
+		ErrInvalidBranchOf, ErrInvalidHost, ErrContainmentViolation,
+		ErrPermissionDenied, ErrStoreUnavailable,
+	}
+	seen := map[string]error{}
+	for _, s := range sentinels {
+		name := CaptureErrorName(s)
+		if name == "" {
+			t.Errorf("%v has no name", s)
+		}
+		if prev, dup := seen[name]; dup {
+			t.Errorf("%v and %v share the name %q", prev, s, name)
+		}
+		seen[name] = s
+		// A wrapped sentinel keeps its name: adapters match on the report,
+		// not on how deep the wrap is.
+		if got := CaptureErrorName(fmt.Errorf("context: %w", s)); got != name {
+			t.Errorf("wrapped %v = %q, want %q", s, got, name)
+		}
+	}
+	if got := CaptureErrorName(errors.New("never seen before")); got != "Unavailable" {
+		t.Errorf("unrecognized error = %q, want Unavailable", got)
+	}
+}
+
+func TestValidateRejectsImplausibleEventTime(t *testing.T) {
+	raw, err := ParsePayload([]byte(testPayloadJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw.EventTimeMs = MaxEventTimeMs + 1
+	if _, err := Validate(raw); !errors.Is(err, ErrImplausibleEventTime) {
+		t.Errorf("beyond the window: err = %v, want ErrImplausibleEventTime", err)
+	}
+	if CaptureErrorName(ErrImplausibleEventTime) != "ImplausibleEventTime" {
+		t.Errorf("error name = %q", CaptureErrorName(ErrImplausibleEventTime))
+	}
+	// The boundary itself is inside the window.
+	raw.EventTimeMs = MaxEventTimeMs
+	if _, err := Validate(raw); err != nil {
+		t.Errorf("at the boundary: err = %v", err)
+	}
+	raw.EventTimeMs = MinEventTimeMs
+	if _, err := Validate(raw); err != nil {
+		t.Errorf("at the epoch: err = %v", err)
+	}
+}
+
+func TestValidateRejectsUnknownLane(t *testing.T) {
+	raw, err := ParsePayload([]byte(testPayloadJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw.Lane = "scratch"
+	if _, err := Validate(raw); !errors.Is(err, ErrInvalidLane) {
+		t.Errorf("unknown lane: err = %v, want ErrInvalidLane", err)
+	}
+	for _, lane := range []Lane{LaneConversation, LaneDelegatedWork, LaneEvaluation, LaneImportedLegacy} {
+		if !ValidLane(lane) {
+			t.Errorf("ValidLane(%q) = false", lane)
+		}
+	}
+	if ValidLane("scratch") || ValidLane("") {
+		t.Error("ValidLane accepted a lane outside the contract")
+	}
+}
+
+func TestValidScopeRejectsDotLedAndPathScopes(t *testing.T) {
+	// A dot-led scope would publish into a directory WalkCorpus skips as
+	// foreign tooling state: captured fine, then invisible to sync,
+	// freshness, and reseal forever. Worlds already enforce this through
+	// their charset; scopes enforce it here.
+	for _, bad := range []string{"", ".", "..", ".hidden", ".work", "a/b"} {
+		if ValidScope(bad) {
+			t.Errorf("ValidScope(%q) = true, want false", bad)
+		}
+	}
+	for _, good := range []string{"default", "workspace:demo", "a.b", "x..y", "global"} {
+		if !ValidScope(good) {
+			t.Errorf("ValidScope(%q) = false, want true", good)
+		}
 	}
 }

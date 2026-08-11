@@ -1,0 +1,53 @@
+{
+  "comment": "Public witness of the aj-scorer.v3 term-weighting invariant: a repeated query word weighs once per repetition even while an alias is active. Under the pre-v3 behavior (alias fires, term list replaced by a deduplicated union) the repeated 'quokka' collapses to one weight and the ordering below inverts.",
+  "query": "quokka quokka quokka portal",
+  "world": "rankworld",
+  "now_ms": 1785326400000,
+  "thesaurus": {
+    "portal": [
+      "gateway"
+    ]
+  },
+  "payloads": [
+    {
+      "schema_version": 1,
+      "world": "rankworld",
+      "scope": "global",
+      "lane": "conversation",
+      "harness": "ranking-fixture",
+      "adapter_version": "0.0.0",
+      "session_id": "rank-s1",
+      "turn_id": "r1",
+      "event_time_ms": 1785240000000,
+      "capture_policy": "default-v1",
+      "turn_outcome": "completed",
+      "user_content": "the quokka pen was cleaned this morning",
+      "assistant_result": "Cleaned and logged."
+    },
+    {
+      "schema_version": 1,
+      "world": "rankworld",
+      "scope": "global",
+      "lane": "conversation",
+      "harness": "ranking-fixture",
+      "adapter_version": "0.0.0",
+      "session_id": "rank-s1",
+      "turn_id": "r2",
+      "event_time_ms": 1785240000000,
+      "capture_policy": "default-v1",
+      "turn_outcome": "completed",
+      "user_content": "the portal gateway hub came online",
+      "assistant_result": "Online and reachable."
+    }
+  ],
+  "expected": [
+    {
+      "episode_id": "aj1-bb721a26a421d6ac261e93a95a83fab4",
+      "line": 22
+    },
+    {
+      "episode_id": "aj1-ea0eaa79de68617570b92af67628c7ad",
+      "line": 22
+    }
+  ]
+}

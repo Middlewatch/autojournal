@@ -9,12 +9,18 @@ import (
 	"testing"
 )
 
-// Golden parity harness. testdata/payloads is the capture contract matrix;
-// testdata/golden/capture-vectors.json records what the archived Zig binary
-// (git tag zig-final) did with each payload — outcome, episode id, payload
-// digest, and published path — and testdata/golden/episodes holds the exact
-// episode bytes it wrote. The Go port is done when every module's output is
-// indistinguishable from that oracle.
+// Golden fixture harness — the enforcement of DESIGN.md's corpus-durable tier.
+//
+// testdata/payloads is the capture contract matrix. testdata/golden/capture-
+// vectors.json pins the required outcome, episode id, payload digest, and
+// published path for every payload in it, and testdata/golden/episodes holds
+// the exact episode bytes each must produce. These fixtures are the authority:
+// a corpus written by any build must stay readable and addressable by any
+// other, and that promise is only as good as this matrix.
+//
+// A diff here is a contract break, never a fixture to update. If a change makes
+// one of these fail, the change is wrong — or the contract is genuinely moving,
+// which is a major version and an owner decision, not a test edit.
 
 const (
 	payloadsDir = "../testdata/payloads"
@@ -67,12 +73,17 @@ func TestGoldenCaptureVectors(t *testing.T) {
 			if vec.Outcome == string(CaptureMalformed) {
 				if parseErr == nil {
 					if _, valErr := Validate(raw); valErr == nil {
-						t.Fatal("payload the oracle rejected validated cleanly")
+						t.Fatal("payload the contract rejects validated cleanly")
 					}
 				}
 				return
 			}
-			if vec.Outcome != string(CapturePublished) {
+			switch vec.Outcome {
+			case string(CapturePublished), string(CaptureSuperseded), string(CaptureConflict):
+				// Identity and digest derive from the payload alone in all
+				// three: a superseded or conflicting vector pins what the
+				// *incoming* delivery derives, independent of corpus state.
+			default:
 				t.Fatalf("unhandled vector outcome %q", vec.Outcome)
 			}
 			if parseErr != nil {
@@ -83,17 +94,17 @@ func TestGoldenCaptureVectors(t *testing.T) {
 				t.Fatalf("Validate: %v", err)
 			}
 			if got := EpisodeID(&p); got != *vec.EpisodeID {
-				t.Errorf("episode id = %q, oracle %q", got, *vec.EpisodeID)
+				t.Errorf("episode id = %q, golden %q", got, *vec.EpisodeID)
 			}
 			if got := DigestPrefix + PayloadDigestHex(&p); got != *vec.PayloadDigest {
-				t.Errorf("payload digest = %q, oracle %q", got, *vec.PayloadDigest)
+				t.Errorf("payload digest = %q, golden %q", got, *vec.PayloadDigest)
 			}
 		})
 	}
 }
 
-// TestGoldenEpisodeBytes re-renders every oracle episode with the capture
-// time read out of the oracle file itself and demands byte identity.
+// TestGoldenEpisodeBytes re-renders every pinned episode with the capture
+// time read out of the fixture itself and demands byte identity.
 func TestGoldenEpisodeBytes(t *testing.T) {
 	for name, vec := range loadVectors(t) {
 		if vec.Outcome != string(CapturePublished) {
@@ -106,7 +117,7 @@ func TestGoldenEpisodeBytes(t *testing.T) {
 			}
 			ep := ParseEpisode(string(golden))
 			if ep == nil {
-				t.Fatal("ParseEpisode rejected oracle episode")
+				t.Fatal("ParseEpisode rejected a pinned episode")
 			}
 			b, err := os.ReadFile(filepath.Join(payloadsDir, name+".json"))
 			if err != nil {
@@ -127,9 +138,9 @@ func TestGoldenEpisodeBytes(t *testing.T) {
 				CaptureTimeMs: ep.CaptureTimeMs,
 			})
 			if !bytes.Equal(rendered, golden) {
-				t.Fatalf("rendered episode differs from oracle\n--- oracle ---\n%s\n--- rendered ---\n%s", golden, rendered)
+				t.Fatalf("rendered episode differs from golden\n--- golden ---\n%s\n--- rendered ---\n%s", golden, rendered)
 			}
-			// The oracle's frontmatter facts must agree with the vectors.
+			// The pinned frontmatter facts must agree with the vectors.
 			if ep.EpisodeID != *vec.EpisodeID {
 				t.Errorf("frontmatter id = %q, vector %q", ep.EpisodeID, *vec.EpisodeID)
 			}
@@ -140,8 +151,8 @@ func TestGoldenEpisodeBytes(t *testing.T) {
 	}
 }
 
-// TestGoldenPublishPaths replays every oracle capture through Publish and
-// demands the same journal-relative path and episode bytes the oracle
+// TestGoldenPublishPaths replays every pinned capture through Publish and
+// demands the same journal-relative path and episode bytes the fixtures
 // wrote. The path is an index and evidence-reference key, so a layout
 // drift here would silently fork the corpus.
 func TestGoldenPublishPaths(t *testing.T) {
@@ -156,7 +167,7 @@ func TestGoldenPublishPaths(t *testing.T) {
 			}
 			ep := ParseEpisode(string(golden))
 			if ep == nil {
-				t.Fatal("ParseEpisode rejected oracle episode")
+				t.Fatal("ParseEpisode rejected a pinned episode")
 			}
 			b, err := os.ReadFile(filepath.Join(payloadsDir, name+".json"))
 			if err != nil {
@@ -183,10 +194,10 @@ func TestGoldenPublishPaths(t *testing.T) {
 				t.Errorf("outcome = %q", pub.Outcome)
 			}
 			if pub.RelPath != *vec.Path {
-				t.Errorf("rel path = %q, oracle %q", pub.RelPath, *vec.Path)
+				t.Errorf("rel path = %q, golden %q", pub.RelPath, *vec.Path)
 			}
 			if !bytes.Equal(pub.Content, golden) {
-				t.Error("published bytes differ from oracle episode")
+				t.Error("published bytes differ from the pinned episode")
 			}
 			info, err := root.Lstat(pub.RelPath)
 			if err != nil {
@@ -195,7 +206,7 @@ func TestGoldenPublishPaths(t *testing.T) {
 			if info.Mode().Perm() != 0o600 {
 				t.Errorf("episode mode = %o", info.Mode().Perm())
 			}
-			// Redelivery against the oracle-shaped corpus dedupes.
+			// Redelivery against the pinned corpus shape dedupes.
 			again, err := Publish(root, &p, ep.CaptureTimeMs+1)
 			if err != nil {
 				t.Fatalf("redeliver: %v", err)
@@ -207,7 +218,7 @@ func TestGoldenPublishPaths(t *testing.T) {
 	}
 }
 
-// configVector describes one oracle-pinned config rewrite: the before
+// configVector describes one pinned config rewrite: the before
 // bytes (absent for a creation), the default-command arguments, and the
 // expected outcome. after bytes live next to the before file.
 type configVector struct {
@@ -218,10 +229,11 @@ type configVector struct {
 }
 
 // TestGoldenConfigVectors replays SaveCaptureDefaults against the byte
-// fixtures the archived Zig binary produced for the same inputs
-// (testdata/golden/config/). The rewritten config file is a frozen
-// contract: key order, number normalization, escaping, and indentation
-// must be indistinguishable from the oracle's.
+// fixtures in testdata/golden/config/. The rewritten config file is a frozen
+// contract: an owner's hand-maintained file must survive a rewrite with its
+// key order, number normalization, escaping, and indentation intact, so that
+// the only thing a default-command run changes is the value it was asked to
+// change.
 func TestGoldenConfigVectors(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join(goldenDir, "config-vectors.json"))
 	if err != nil {
@@ -261,7 +273,7 @@ func TestGoldenConfigVectors(t *testing.T) {
 					t.Fatal(err)
 				}
 				if !bytes.Equal(got, want) {
-					t.Fatalf("rewritten config differs from oracle\n--- oracle ---\n%s\n--- got ---\n%s", want, got)
+					t.Fatalf("rewritten config differs from golden\n--- golden ---\n%s\n--- got ---\n%s", want, got)
 				}
 			case "malformed":
 				if !errors.Is(err, ErrConfigMalformed) {

@@ -2,7 +2,7 @@ package autojournal
 
 import (
 	"errors"
-	"math"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,8 +77,18 @@ func TestClosedConfigSchemaRejections(t *testing.T) {
 	}
 }
 
-// The Zig oracle's std.json typed parse is lenient about numeric shapes in
-// ways encoding/json is not; these acceptances are frozen behavior.
+// The config parser accepts numeric shapes encoding/json alone would reject —
+// a float literal that is exactly integral standing in for a uint, for
+// instance. These acceptances are frozen behavior: an owner's existing config
+// must keep loading across upgrades, and narrowing what a config file accepts
+// is an Interface-tier break. New leniency is not added here; these cases exist
+// so the existing set cannot be tightened by accident.
+//
+// One deliberate narrowing stands apart from the freeze: non-finite floats
+// (`1e999`, `"inf"`) were previously accepted and are now
+// malformed — an infinite boost produced NaN scores and made `search --json`
+// emit zero bytes with exit 0. TestConfigRejectsNonFiniteFloats pins the
+// rejection; the rows below pin only finite coercions.
 func TestConfigNumericCoercions(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -115,16 +125,13 @@ func TestConfigNumericCoercions(t *testing.T) {
 				t.Errorf("recency_boost = %v", c.RecencyBoost)
 			}
 		}},
-		{"float overflow is inf and accepted", `{"recency_boost": 1e999}`, func(t *testing.T, c Config) {
-			if !math.IsInf(c.RecencyBoost, 1) {
-				t.Errorf("recency_boost = %v", c.RecencyBoost)
-			}
-		}},
-		{"inf string accepted", `{"recency_boost": "inf"}`, func(t *testing.T, c Config) {
-			if !math.IsInf(c.RecencyBoost, 1) {
-				t.Errorf("recency_boost = %v", c.RecencyBoost)
-			}
-		}},
+	}
+	// Non-finite literals are the one deliberate narrowing: both routes to
+	// infinity are malformed now (see the function comment).
+	for _, doc := range []string{`{"recency_boost": 1e999}`, `{"recency_boost": "inf"}`} {
+		if _, err := ParseConfig([]byte(doc)); !errors.Is(err, ErrConfigMalformed) {
+			t.Errorf("%s: err = %v, want ErrConfigMalformed", doc, err)
+		}
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -170,12 +177,12 @@ func TestConfigWithoutJournalRootIsValid(t *testing.T) {
 }
 
 func TestRetrievalKnobsHonored(t *testing.T) {
-	cfg, err := ParseConfig([]byte(`{"journal_root": "/j", "default_world": "willow", "confidence_floor": 2.5,
+	cfg, err := ParseConfig([]byte(`{"journal_root": "/j", "default_world": "notebook", "confidence_floor": 2.5,
 "miss_log": true, "thesaurus_path": "/home/x/thesaurus.json"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.DefaultWorld != "willow" || cfg.ConfidenceFloor != 2.5 || !cfg.MissLog {
+	if cfg.DefaultWorld != "notebook" || cfg.ConfidenceFloor != 2.5 || !cfg.MissLog {
 		t.Errorf("cfg = %+v", cfg)
 	}
 	if cfg.ThesaurusPath != "/home/x/thesaurus.json" {
@@ -244,7 +251,7 @@ func TestSaveCaptureDefaultsSemantics(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"world_root": "/j", "default_world": "old", "miss_log": true}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := SaveCaptureDefaults(env, path, "willow", "global"); err != nil {
+	if _, err := SaveCaptureDefaults(env, path, "notebook", "global"); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err = LoadConfig(env, path)
@@ -252,8 +259,8 @@ func TestSaveCaptureDefaultsSemantics(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := loaded.Config
-	if c.JournalRoot != "/j" || c.DefaultWorld != "willow" ||
-		c.Capture.World != "willow" || c.Capture.Scope != "global" || !c.MissLog {
+	if c.JournalRoot != "/j" || c.DefaultWorld != "notebook" ||
+		c.Capture.World != "notebook" || c.Capture.Scope != "global" || !c.MissLog {
 		t.Errorf("migrated config = %+v", c)
 	}
 	raw, _ := os.ReadFile(path)
@@ -263,7 +270,7 @@ func TestSaveCaptureDefaultsSemantics(t *testing.T) {
 
 	// A scope-only update leaves a diverged recall-side override
 	// untouched.
-	if err := os.WriteFile(path, []byte(`{"default_world": "willow", "capture": {"world": "main", "scope": "default"}}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"default_world": "notebook", "capture": {"world": "main", "scope": "default"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := SaveCaptureDefaults(env, path, "main", "work"); err != nil {
@@ -273,7 +280,7 @@ func TestSaveCaptureDefaultsSemantics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Config.DefaultWorld != "willow" || loaded.Config.Capture.Scope != "work" {
+	if loaded.Config.DefaultWorld != "notebook" || loaded.Config.Capture.Scope != "work" {
 		t.Errorf("scope-only config = %+v", loaded.Config)
 	}
 
@@ -294,13 +301,14 @@ func TestSaveCaptureDefaultsSemantics(t *testing.T) {
 	}
 }
 
-// The save path validates the *rewritten* document, not the input — the
-// Zig oracle parses the existing file as a generic JSON value, mutates,
-// and only then applies the closed schema. Inputs whose malformed parts
-// are exactly the ones the mutation replaces are therefore repaired, not
-// rejected. (The CLI never reaches this: it loads the config, with the
-// closed schema, before dispatching `default`.) These cases pin the
-// Zig oracle's library semantics so they are not "fixed" into divergence.
+// The save path validates the *rewritten* document, not the input: the file is
+// parsed as a generic JSON value, mutated, and only then checked against the
+// Inputs whose malformed parts are exactly the ones the mutation replaces are
+// therefore repaired, not rejected. (The CLI never reaches this: it loads the
+// config, with the closed schema, before dispatching `default`.) These cases
+// pin that asymmetry deliberately — an owner running `default` against a config
+// with a stale bad value should get it fixed, not be told to hand-repair a file
+// the command was about to rewrite anyway.
 func TestSaveCaptureDefaultsRepairsWhatTheMutationReplaces(t *testing.T) {
 	env := mapEnviron()
 	cases := []struct {
@@ -365,5 +373,20 @@ func TestSaveCaptureDefaultsRepairsWhatTheMutationReplaces(t *testing.T) {
 	raw, _ := os.ReadFile(path)
 	if string(raw) != before {
 		t.Error("refused save modified the file")
+	}
+}
+
+func TestConfigRejectsNonFiniteFloats(t *testing.T) {
+	for _, knob := range []string{"recency_boost", "min_score", "confidence_floor"} {
+		for _, value := range []string{`"inf"`, `"+inf"`, `"infinity"`} {
+			doc := fmt.Sprintf(`{"journal_root":"/tmp/x","%s":%s}`, knob, value)
+			if _, err := ParseConfig([]byte(doc)); !errors.Is(err, ErrConfigMalformed) {
+				t.Errorf("%s=%s: err = %v, want ErrConfigMalformed", knob, value, err)
+			}
+		}
+	}
+	// Finite values keep loading.
+	if _, err := ParseConfig([]byte(`{"journal_root":"/tmp/x","recency_boost":0.25}`)); err != nil {
+		t.Errorf("finite boost rejected: %v", err)
 	}
 }

@@ -4,11 +4,12 @@
 // snippet extraction.
 //
 // The scoring behavior is settled evidence ported from the deployed
-// TypeScript v1 (legacy-ts/src/search.ts): sum(log(N/df)) rarity with
+// the proven TypeScript v1 extension: sum(log(N/df)) rarity with
 // exact-query duplicate term weights, day-quantized recency as a nudge
 // rather than an override, span deduplication, and deterministic
-// tie-breaking. Behavioral changes here require a version bump and a new
-// parity baseline.
+// tie-breaking. This scoring was kept because it retrieved better against a
+// judged query set, not because it came first; changing it requires a scorer
+// version bump and a fresh run against that set.
 
 package autojournal
 
@@ -36,9 +37,16 @@ import (
 // while ordering stays pure rarity×recency — coverage measurably
 // separates spurious partial matches from real hits but does not improve
 // ordering itself.
+//
+// aj-scorer.v3 is v2 with duplicate term weights made unconditional:
+// alias values and folded singular variants are appended to the
+// duplicate-preserving query term list instead of replacing it with a
+// deduplicated union, so a repeated query word weighs twice whether or not
+// an unrelated thesaurus entry fires. The invariant is stated in
+// docs/SEARCH_TUNING.md and pinned by testdata/ranking.
 const (
 	TokenizerVersion               = "aj-tok.v1"
-	ScorerVersion                  = "aj-scorer.v2"
+	ScorerVersion                  = "aj-scorer.v3"
 	ConfidencePolicyVersion        = "aj-conf.v2"
 	msPerDay                uint64 = 24 * 60 * 60 * 1000
 )
@@ -159,10 +167,10 @@ func ExtractTerms(query string) Terms {
 // stop-word list as the query side, plus a byte cap that keeps hash blobs
 // out of the vocabulary. The length floor is 2 here, one shorter than the
 // query side: curated alias values may legitimately be two bytes ("q8"),
-// and discovery happens against this vocabulary. Known gap, accepted for
-// parity purposes: a query term whose only occurrence on a line is inside
-// a stop word or an over-cap token is not discoverable, because such
-// tokens are never indexed.
+// and discovery happens against this vocabulary. Known gap, accepted with
+// reasons in DESIGN.md: a query term whose only occurrence on a line is inside
+// a stop word or an over-cap token is not discoverable, because such tokens
+// are never indexed.
 func TokenizeLine(line string) []string {
 	var out []string
 	i := 0
@@ -414,6 +422,12 @@ func CursorDecode(cursor string, inputs CursorInputs) (uint64, error) {
 	}
 	offset, err := strconv.ParseUint(rest[:dot], 10, 64)
 	if err != nil {
+		return 0, ErrCursorMalformed
+	}
+	// Only the canonical spelling this package mints decodes: "07" parses
+	// to the same offset as "7" but was never minted, and accepting it
+	// would make decode-then-re-mint lossy for tokens we did not issue.
+	if strconv.FormatUint(offset, 10) != rest[:dot] {
 		return 0, ErrCursorMalformed
 	}
 	if rest[dot+1:] != CursorGuardHex(inputs) {

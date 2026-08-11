@@ -10,8 +10,9 @@
 // so that a faithful re-delivery hashes identically regardless of when or
 // by which adapter build it arrives.
 //
-// Both derivations are frozen: the Go framing below is byte-identical to
-// the Zig reference and is verified against testdata/golden vectors.
+// Both derivations are corpus-durable contracts, pinned in both directions by
+// testdata/golden. Changing either re-identifies every existing episode and
+// invalidates every outstanding evidence reference, which is a major version.
 
 package autojournal
 
@@ -76,8 +77,8 @@ func PayloadDigestHex(p *Payload) string {
 }
 
 // hashField frames one field as 0x00, decimal byte length, 0x00, bytes.
-// The length is the UTF-8 byte length, matching the Zig reference's
-// bytes.len.
+// The length is the UTF-8 byte length, not the rune count: framing counts the
+// bytes actually hashed, so no content can be confused with its own framing.
 func hashField(h hash.Hash, s string) {
 	h.Write([]byte{0})
 	io.WriteString(h, strconv.Itoa(len(s)))

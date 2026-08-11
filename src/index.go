@@ -20,11 +20,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -34,9 +34,20 @@ import (
 // the SQL literals below hard-code the prefix's 12-byte length.
 const syncHashKeyPrefix = "sync_sha256:"
 
+// MaxVocabMatches caps the vocabulary terms one query's discovery may
+// match; beyond it discovery is truncated and the caller reports it. The
+// cap lives beside the vocabulary lookup primitives that enforce it;
+// which needles to build, when the short-query fallback applies, and what
+// a truncated discovery means for outcome and confidence stay discovery
+// policy in the search capability. VocabTerms and VocabCandidates iterate
+// in ORDER BY term order, so the surviving matches are a stable prefix of
+// the sorted vocabulary — which 1024 terms a capped query keeps is
+// defined, not a scan-order accident.
+const MaxVocabMatches = 1024
+
 // IndexSchemaVersion is the projection's schema identity; a database
 // stamped with anything else is disposed and recreated.
-const IndexSchemaVersion = 2
+const IndexSchemaVersion = 3
 
 const createIndexSQL = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -73,6 +84,12 @@ CREATE TABLE IF NOT EXISTS term_stats (
   df INTEGER NOT NULL,
   eval_df INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (world, term)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS term_trigrams (
+  world TEXT NOT NULL,
+  trigram TEXT NOT NULL,
+  term TEXT NOT NULL,
+  PRIMARY KEY (world, trigram, term)
 ) WITHOUT ROWID;
 `
 
@@ -132,6 +149,23 @@ func OpenIndex(path string, rootDigest *string) (*Index, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The foreign-root gate runs before any disposal decision: the meta
+	// table (and its root_digest key) exists in every schema this product
+	// has shipped, so a database recording another root's identity is
+	// rejected whatever its schema version — disposing it first would
+	// silently destroy another root's index, the exact event this check
+	// exists to prevent. A nil rootDigest (sync's deliberate repoint path)
+	// skips the gate and may dispose freely.
+	stored := ""
+	if rootDigest != nil {
+		stored, err = idx.metaGet("root_digest")
+		if err != nil {
+			return nil, err
+		}
+		if stored != "" && stored != *rootDigest {
+			return nil, ErrForeignIndex
+		}
+	}
 	if version != IndexSchemaVersion || tokenizer != TokenizerVersion {
 		if err := idx.disposeAllTables(); err != nil {
 			return nil, err
@@ -142,19 +176,12 @@ func OpenIndex(path string, rootDigest *string) (*Index, error) {
 		if err := idx.writeIdentity(); err != nil {
 			return nil, err
 		}
+		stored = "" // disposal dropped meta; re-stamp below
 	}
 
-	if rootDigest != nil {
-		stored, err := idx.metaGet("root_digest")
-		if err != nil {
+	if rootDigest != nil && stored == "" {
+		if err := idx.metaSet("root_digest", *rootDigest); err != nil {
 			return nil, err
-		}
-		if stored == "" {
-			if err := idx.metaSet("root_digest", *rootDigest); err != nil {
-				return nil, err
-			}
-		} else if stored != *rootDigest {
-			return nil, ErrForeignIndex
 		}
 	}
 	ok = true
@@ -211,8 +238,11 @@ func HardenIndexFiles(path string) error {
 
 // metaGet reads one meta value; "" when absent. A missing meta table
 // (fresh or foreign database) reads as absence too — the generic driver
-// error for "no such table" — while busy/corrupt failures still
-// propagate, matching the Zig oracle's error split.
+// error for "no such table" — while busy/corrupt failures still propagate.
+// Reading absence routes to dispose-and-rebuild, which is safe by doctrine:
+// the projection is disposable and sync rebuilds it from Markdown. Note the
+// swallow is wider than that reasoning strictly licenses — an unmapped driver
+// error also reads as absence.
 func (idx *Index) metaGet(key string) (string, error) {
 	var value string
 	err := idx.db.QueryRow("SELECT value FROM meta WHERE key = ?1;", key).Scan(&value)
@@ -282,37 +312,14 @@ func (idx *Index) CorpusMatches(root *os.Root) (uint64, bool, error) {
 	}
 	rows.Close()
 
+	// The walk is WalkCorpus's visibility rule; this visitor only hashes.
+	// An unreadable root is returned as the walk error; an unreadable
+	// subtree is skipped without a verdict here, as before the conversion.
 	var total uint64
 	current := true
 	seen := map[string]struct{}{}
-	walkErr := fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			if path == "." {
-				return err
-			}
-			if d != nil && d.IsDir() {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if d.IsDir() {
-			if path == "." {
-				return nil
-			}
-			name := d.Name()
-			if name == "" || name[0] == '.' {
-				return fs.SkipDir
-			}
-			if strings.Count(path, "/")+1 > CorpusWalkDepth {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
-		name := d.Name()
-		if !strings.HasPrefix(name, IDPrefix) || !strings.HasSuffix(name, ".md") {
+	walkErr := WalkCorpus(root, func(path string, kind WalkKind, info fs.FileInfo) error {
+		if kind != WalkEpisode {
 			return nil
 		}
 		total++
@@ -410,8 +417,12 @@ type EpisodeRow struct {
 	BodyLine      uint32
 }
 
-// clampMillis bounds a stored millisecond timestamp the way the Zig oracle
-// does: negative reads as 0, above int64 on write clamps to int64.
+// clampMillis bounds a millisecond timestamp into the projection's signed
+// column: anything above int64 saturates rather than wrapping to a negative
+// instant. Saturation is deliberate — a wrapped timestamp would sort a turn
+// before every real one and corrupt recency ordering, whereas a saturated one
+// is merely wrong in a visible direction. Values this large are rejected at
+// Validate; this is the projection's own guard, not a substitute for it.
 func clampMillis(v uint64) int64 {
 	return int64(min(v, math.MaxInt64))
 }
@@ -535,6 +546,33 @@ func (idx *Index) indexEpisodeInTx(tx *sql.Tx, relPath, content string) error {
 	// required: SQLite refuses INSERT ... SELECT ... ON CONFLICT without
 	// a WHERE clause on the SELECT (documented upsert parsing ambiguity),
 	// so removing it is a syntax error.
+	// Terms this world has not seen before, read BEFORE the stats upsert:
+	// any term already in term_stats carries its trigram rows from the
+	// write that introduced it, so only genuinely new vocabulary pays the
+	// trigram expansion.
+	newTermRows, err := tx.QueryContext(context.Background(),
+		`SELECT DISTINCT p.term FROM postings p WHERE p.episode_id = ?2
+		   AND NOT EXISTS (SELECT 1 FROM term_stats ts
+		                   WHERE ts.world = ?1 AND ts.term = p.term);`,
+		ep.World, ep.EpisodeID)
+	if err != nil {
+		return mapDBError(err)
+	}
+	var newTerms []string
+	for newTermRows.Next() {
+		var term string
+		if err := newTermRows.Scan(&term); err != nil {
+			newTermRows.Close()
+			return mapDBError(err)
+		}
+		newTerms = append(newTerms, term)
+	}
+	if err := newTermRows.Err(); err != nil {
+		newTermRows.Close()
+		return mapDBError(err)
+	}
+	newTermRows.Close()
+
 	statsSQL := `INSERT INTO term_stats (world, term, df, eval_df)
 	  SELECT ?1, term, 1, 0
 	  FROM (SELECT DISTINCT term FROM postings WHERE episode_id = ?2)
@@ -547,8 +585,49 @@ func (idx *Index) indexEpisodeInTx(tx *sql.Tx, relPath, content string) error {
 		  WHERE true
 		  ON CONFLICT(world, term) DO UPDATE SET eval_df = eval_df + 1;`
 	}
-	_, err = tx.ExecContext(context.Background(), statsSQL, ep.World, ep.EpisodeID)
-	return mapDBError(err)
+	if _, err := tx.ExecContext(context.Background(), statsSQL, ep.World, ep.EpisodeID); err != nil {
+		return mapDBError(err)
+	}
+
+	if len(newTerms) == 0 {
+		return nil
+	}
+	trigramStmt, err := tx.PrepareContext(context.Background(),
+		"INSERT OR IGNORE INTO term_trigrams (world, trigram, term) VALUES (?1, ?2, ?3);")
+	if err != nil {
+		return mapDBError(err)
+	}
+	defer trigramStmt.Close()
+	for _, term := range newTerms {
+		for _, tri := range trigramsOf(term) {
+			if _, err := trigramStmt.ExecContext(context.Background(), ep.World, tri, term); err != nil {
+				return mapDBError(err)
+			}
+		}
+	}
+	return nil
+}
+
+// trigramsOf returns the distinct three-byte substrings of term — the
+// unit term_trigrams posts. Bytes, not runes: terms and needles come out
+// of the same tokenizer, so byte-level agreement is exact, and a term
+// under three bytes simply has no trigram (it stays reachable through
+// the wholly-short linear-scan fallback).
+func trigramsOf(term string) []string {
+	if len(term) < 3 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(term)-2)
+	out := make([]string, 0, len(term)-2)
+	for i := 0; i+3 <= len(term); i++ {
+		tri := term[i : i+3]
+		if _, dup := seen[tri]; dup {
+			continue
+		}
+		seen[tri] = struct{}{}
+		out = append(out, tri)
+	}
+	return out
 }
 
 // deindexEpisodeInTx removes an episode's postings and decrements its
@@ -579,6 +658,39 @@ func (idx *Index) deindexEpisodeInTx(tx *sql.Tx, episodeID string) error {
 	if _, err := tx.ExecContext(context.Background(), statsSQL, oldWorld, episodeID); err != nil {
 		return mapDBError(err)
 	}
+	// Terms about to leave the vocabulary take their trigram rows with
+	// them, read before the stats delete so the list still exists. The
+	// per-trigram delete walks the (world, trigram, term) primary key;
+	// no second index is needed for a path this rare.
+	dyingRows, err := tx.QueryContext(context.Background(),
+		"SELECT term FROM term_stats WHERE world = ?1 AND df <= 0 AND eval_df <= 0;",
+		oldWorld)
+	if err != nil {
+		return mapDBError(err)
+	}
+	var dying []string
+	for dyingRows.Next() {
+		var term string
+		if err := dyingRows.Scan(&term); err != nil {
+			dyingRows.Close()
+			return mapDBError(err)
+		}
+		dying = append(dying, term)
+	}
+	if err := dyingRows.Err(); err != nil {
+		dyingRows.Close()
+		return mapDBError(err)
+	}
+	dyingRows.Close()
+	for _, term := range dying {
+		for _, tri := range trigramsOf(term) {
+			if _, err := tx.ExecContext(context.Background(),
+				"DELETE FROM term_trigrams WHERE world = ?1 AND trigram = ?2 AND term = ?3;",
+				oldWorld, tri, term); err != nil {
+				return mapDBError(err)
+			}
+		}
+	}
 	if _, err := tx.ExecContext(context.Background(),
 		"DELETE FROM term_stats WHERE world = ?1 AND df <= 0 AND eval_df <= 0;",
 		oldWorld); err != nil {
@@ -606,9 +718,15 @@ func (idx *Index) StatsEpisodeCount(world string) (uint64, error) {
 	return nonNeg(n), mapDBError(err)
 }
 
-// VocabTerms iterates the world's vocabulary for substring discovery.
+// VocabTerms iterates the world's vocabulary for substring discovery, in
+// ORDER BY term order. The order is a contract, not tidiness: discovery
+// caps matches at MaxVocabMatches, and a stated order makes the cap
+// truncate a stable prefix. Without the ORDER BY the scan happens to walk
+// the (world, term) primary key of this WITHOUT ROWID table in the same
+// order today — but that is a query-planner accident SQL semantics do not
+// promise, and ranking must not rest on it.
 func (idx *Index) VocabTerms(world string) ([]string, error) {
-	rows, err := idx.db.Query("SELECT term FROM term_stats WHERE world = ?1;", world)
+	rows, err := idx.db.Query("SELECT term FROM term_stats WHERE world = ?1 ORDER BY term;", world)
 	if err != nil {
 		return nil, mapDBError(err)
 	}
@@ -622,6 +740,68 @@ func (idx *Index) VocabTerms(world string) ([]string, error) {
 		terms = append(terms, term)
 	}
 	return terms, mapDBError(rows.Err())
+}
+
+// VocabCandidates is the index's vocabulary lookup primitive for
+// trigram-eligible queries: the terms containing any needle, in ORDER BY
+// term order, capped at MaxVocabMatches, with the truncation flag
+// alongside. Trigram postings narrow the candidates (a term containing a
+// needle necessarily posts every one of the needle's trigrams), a
+// strings.Contains verification then makes the survivor set exactly the
+// linear scan's, and the join against term_stats keeps any orphaned
+// trigram row invisible. Trigrams are over vocabulary terms only, never
+// episode bodies. A needle under three bytes has no trigram and matches
+// nothing here; the caller routes wholly-short queries through the
+// VocabTerms linear scan instead.
+func (idx *Index) VocabCandidates(world string, needles []string) ([]string, bool, error) {
+	matched := map[string]struct{}{}
+	for _, needle := range needles {
+		tris := trigramsOf(needle)
+		if len(tris) == 0 {
+			continue
+		}
+		placeholders := make([]string, len(tris))
+		args := make([]any, 0, len(tris)+2)
+		args = append(args, world)
+		for i, tri := range tris {
+			placeholders[i] = fmt.Sprintf("?%d", i+2)
+			args = append(args, tri)
+		}
+		args = append(args, len(tris))
+		rows, err := idx.db.Query(
+			`SELECT tg.term FROM term_trigrams tg
+			   JOIN term_stats ts ON ts.world = tg.world AND ts.term = tg.term
+			   WHERE tg.world = ?1 AND tg.trigram IN (`+strings.Join(placeholders, ", ")+`)
+			   GROUP BY tg.term HAVING COUNT(*) = ?`+strconv.Itoa(len(tris)+2)+`;`,
+			args...)
+		if err != nil {
+			return nil, false, mapDBError(err)
+		}
+		for rows.Next() {
+			var term string
+			if err := rows.Scan(&term); err != nil {
+				rows.Close()
+				return nil, false, mapDBError(err)
+			}
+			if strings.Contains(term, needle) {
+				matched[term] = struct{}{}
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, false, mapDBError(err)
+		}
+		rows.Close()
+	}
+	candidates := make([]string, 0, len(matched))
+	for term := range matched {
+		candidates = append(candidates, term)
+	}
+	slices.Sort(candidates)
+	if len(candidates) > MaxVocabMatches {
+		return candidates[:MaxVocabMatches], true, nil
+	}
+	return candidates, false, nil
 }
 
 // PostingRow is one posting joined with its episode metadata.
@@ -700,11 +880,26 @@ func (idx *Index) postingPairsChunk(terms []string, out *[]PostingPair) error {
 	return mapDBError(rows.Err())
 }
 
-// SearchEpisodes returns the metadata Search needs for every episode in
-// the world under the scope/lane filters — the in-memory side of the
-// join PostingPairs avoids. Lane tags come from the closed enum, so
-// baking them into the SQL text is injection-safe.
-func (idx *Index) SearchEpisodes(world string, scope *string, lanes []Lane) ([]PostingRow, error) {
+// EpisodeMetadata returns the metadata Search needs for exactly the
+// referenced episode ids — the in-memory side of the join PostingPairs
+// avoids, at a cost proportional to the match set rather than the world
+// (this replaces the whole-world SearchEpisodes load). The world, scope,
+// and lane filters ride in the query, so a posting outside them simply
+// misses the result. Chunked IN clauses follow PostingPairs' pattern;
+// lane tags come from the closed enum, so baking them into the SQL text
+// is injection-safe.
+func (idx *Index) EpisodeMetadata(ids []string, world string, scope *string, lanes []Lane) ([]PostingRow, error) {
+	var out []PostingRow
+	for start := 0; start < len(ids); start += postingsTermChunk {
+		chunk := ids[start:min(start+postingsTermChunk, len(ids))]
+		if err := idx.episodeMetadataChunk(chunk, world, scope, lanes, &out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func (idx *Index) episodeMetadataChunk(ids []string, world string, scope *string, lanes []Lane, out *[]PostingRow) error {
 	var sqlText strings.Builder
 	sqlText.WriteString(
 		`SELECT episode_id, digest_hex, rel_path, scope, lane, capture_policy,
@@ -722,13 +917,20 @@ func (idx *Index) SearchEpisodes(world string, scope *string, lanes []Lane) ([]P
 		}
 		fmt.Fprintf(&sqlText, "'%s'", string(lane))
 	}
+	sqlText.WriteString(") AND episode_id IN (")
+	for i, id := range ids {
+		if i > 0 {
+			sqlText.WriteByte(',')
+		}
+		sqlText.WriteByte('?')
+		args = append(args, id)
+	}
 	sqlText.WriteString(");")
 	rows, err := idx.db.Query(sqlText.String(), args...)
 	if err != nil {
-		return nil, mapDBError(err)
+		return mapDBError(err)
 	}
 	defer rows.Close()
-	var out []PostingRow
 	for rows.Next() {
 		var (
 			row      PostingRow
@@ -738,22 +940,22 @@ func (idx *Index) SearchEpisodes(world string, scope *string, lanes []Lane) ([]P
 		)
 		if err := rows.Scan(&row.EpisodeID, &row.DigestHex, &row.RelPath,
 			&row.Scope, &lane, &row.CapturePolicy, &eventMs, &bodyLine); err != nil {
-			return nil, mapDBError(err)
+			return mapDBError(err)
 		}
 		if bodyLine < 0 || bodyLine > math.MaxUint32 {
-			return nil, fmt.Errorf("body line out of range: %w", ErrSQLiteCorrupt)
+			return fmt.Errorf("body line out of range: %w", ErrSQLiteCorrupt)
 		}
 		row.BodyLine = uint32(bodyLine)
 		row.Lane = Lane(lane)
 		switch row.Lane {
 		case LaneConversation, LaneDelegatedWork, LaneEvaluation, LaneImportedLegacy:
 		default:
-			return nil, fmt.Errorf("episode lane %q: %w", lane, ErrSQLiteCorrupt)
+			return fmt.Errorf("episode lane %q: %w", lane, ErrSQLiteCorrupt)
 		}
 		row.EventTimeMs = nonNeg(eventMs)
-		out = append(out, row)
+		*out = append(*out, row)
 	}
-	return out, mapDBError(rows.Err())
+	return mapDBError(rows.Err())
 }
 
 // PostingsForTerm returns all postings for one vocabulary token, filtered
@@ -888,6 +1090,16 @@ type SyncReport struct {
 	Removed          uint64
 	SkippedMalformed uint64
 	DuplicateIDs     uint64
+	// DigestMismatch counts files that parse as episodes but whose recorded
+	// digest disagrees with their content. They are indexed and excluded
+	// from recall, and reseal is the way back: the projection stays a
+	// complete map of the corpus, so the freshness arithmetic is untouched.
+	DigestMismatch uint64
+	// Unreadable counts subtrees the walk could not read and skipped. Sync
+	// still succeeds — one foreign-owned directory must not make sync
+	// unusable — but the count joins the deliberate-exclusion total so
+	// freshness cannot report fresh over content nobody can see.
+	Unreadable uint64
 }
 
 // SyncFromCorpus brings the projection up to date with the corpus.
@@ -901,6 +1113,176 @@ type SyncReport struct {
 // half-updated hash map.
 func (idx *Index) SyncFromCorpus(root *os.Root) (SyncReport, error) {
 	return idx.syncFromCorpus(root, "")
+}
+
+// Freshness memo meta keys: the verdict beside the exact stat-only
+// signature that produced it, plus the counts the verdict was computed with,
+// so a reused verdict reports the same arithmetic an authoritative run would.
+const (
+	metaFreshnessVerdict  = "freshness_verdict"
+	metaFreshnessEpisodes = "freshness_episodes"
+	metaFreshnessMaxMtime = "freshness_max_mtime_ms"
+	metaFreshnessIndexed  = "freshness_indexed"
+	metaFreshnessExcluded = "freshness_excluded"
+)
+
+// FreshnessResult is the one health signal. Every reporter derives its
+// freshness from this and nothing else.
+type FreshnessResult struct {
+	Freshness IndexFreshness
+	Indexed   uint64
+	Source    uint64
+	Excluded  uint64
+}
+
+// Freshness answers the one health question: does the projection cover the
+// corpus? The authoritative check reads and hashes every episode file, which
+// is too expensive to repeat per query, so the verdict is memoized in index
+// meta beside the signature that produced it. A call takes the stat-only
+// signature; when it matches the stored one the stored verdict is reused,
+// and otherwise the authoritative check runs and re-stamps both.
+//
+// Memoizing in the projection rather than in process is what makes status
+// and search agree: the binary runs once per operation, so two invocations
+// share nothing else. The residual risk is any change that preserves both
+// halves of the signature — episode count and newest mtime — which a plain
+// mv of an episode between shard directories reachably does, not only the
+// mtime-forging edit the narrower reading suggests. Such a corpus serves a
+// memoized fresh until the next capture or sync moves the signature —
+// bounded, because the per-episode digest verification on the search path
+// is independent of this and excludes edited evidence whatever freshness
+// says.
+//
+// nowMs is the settled-corpus guard. A memo is reused or written only while
+// the newest episode mtime is strictly older than the current millisecond:
+// a write landing in the same millisecond as the signature's newest mtime
+// would leave the signature unchanged, so a verdict stamped against a
+// still-hot corpus could outlive a change it never saw. While the corpus is
+// hot the call degrades to the authoritative check, never to a wrong reuse.
+//
+// The memo write is best-effort: a read-only or busy projection computes
+// without memoizing rather than failing the caller. Every projection write
+// elsewhere either changes the corpus signature (capture and supersede both
+// touch episode files) or clears the memo in its own transaction (sync), so
+// a stored verdict can never describe a projection state that no longer
+// exists.
+func (idx *Index) Freshness(root *os.Root, nowMs uint64) (FreshnessResult, error) {
+	sig, err := CorpusSignatureOf(root)
+	if err != nil {
+		return FreshnessResult{}, err
+	}
+	settled := sig.MaxMtimeMs < nowMs
+	if settled {
+		if res, ok := idx.freshnessMemo(sig); ok {
+			return res, nil
+		}
+	}
+	episodes, matches, err := idx.CorpusMatches(root)
+	if err != nil {
+		return FreshnessResult{}, err
+	}
+	indexed, err := idx.EpisodeCount()
+	if err != nil {
+		return FreshnessResult{}, err
+	}
+	excluded, err := idx.excludedCount()
+	if err != nil {
+		return FreshnessResult{}, err
+	}
+	verdict := IndexStale
+	if matches && indexed+excluded == episodes {
+		verdict = IndexFresh
+	}
+	res := FreshnessResult{Freshness: verdict, Indexed: indexed, Source: episodes, Excluded: excluded}
+	if settled {
+		_ = idx.stampFreshness(sig, res)
+	}
+	return res, nil
+}
+
+// freshnessMemo returns the stored verdict when every memo key is present,
+// well-formed, and stamped against exactly this signature. Anything less —
+// missing keys, an unknown verdict, a signature mismatch — reads as no
+// memo, which degrades to the authoritative check.
+func (idx *Index) freshnessMemo(sig CorpusSignature) (FreshnessResult, bool) {
+	verdict, err := idx.metaGet(metaFreshnessVerdict)
+	if err != nil || (verdict != string(IndexFresh) && verdict != string(IndexStale)) {
+		return FreshnessResult{}, false
+	}
+	nums := map[string]uint64{}
+	for _, key := range []string{
+		metaFreshnessEpisodes, metaFreshnessMaxMtime,
+		metaFreshnessIndexed, metaFreshnessExcluded,
+	} {
+		text, err := idx.metaGet(key)
+		if err != nil {
+			return FreshnessResult{}, false
+		}
+		n, err := strconv.ParseUint(text, 10, 64)
+		if err != nil {
+			return FreshnessResult{}, false
+		}
+		nums[key] = n
+	}
+	if nums[metaFreshnessEpisodes] != sig.Episodes || nums[metaFreshnessMaxMtime] != sig.MaxMtimeMs {
+		return FreshnessResult{}, false
+	}
+	return FreshnessResult{
+		Freshness: IndexFreshness(verdict),
+		Indexed:   nums[metaFreshnessIndexed],
+		Source:    sig.Episodes,
+		Excluded:  nums[metaFreshnessExcluded],
+	}, true
+}
+
+// stampFreshness writes verdict, signature, and counts in one transaction,
+// so a torn stamp can never pair a verdict with a signature it was not
+// computed against.
+//
+// The stamp opts out of the connection's busy wait: it is a cache write on
+// the read path, and stalling a search behind a concurrent writer for the
+// full busy_timeout inverts the memo's purpose — a busy projection costs an
+// immediate skip, and losing one stamp costs exactly one recompute. The
+// zero timeout must be set before Begin, because the DSN's
+// txlock=immediate takes the write lock (and so waits) at BEGIN itself —
+// hence the pinned connection, with the timeout restored before it
+// returns to the pool.
+func (idx *Index) stampFreshness(sig CorpusSignature, res FreshnessResult) error {
+	ctx := context.Background()
+	conn, err := idx.db.Conn(ctx)
+	if err != nil {
+		return mapDBError(err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "PRAGMA busy_timeout(0);"); err != nil {
+		return mapDBError(err)
+	}
+	defer conn.ExecContext(ctx, "PRAGMA busy_timeout("+strconv.Itoa(busyTimeoutMs)+");")
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return mapDBError(err)
+	}
+	defer tx.Rollback()
+	for _, kv := range [][2]string{
+		{metaFreshnessVerdict, string(res.Freshness)},
+		{metaFreshnessEpisodes, strconv.FormatUint(sig.Episodes, 10)},
+		{metaFreshnessMaxMtime, strconv.FormatUint(sig.MaxMtimeMs, 10)},
+		{metaFreshnessIndexed, strconv.FormatUint(res.Indexed, 10)},
+		{metaFreshnessExcluded, strconv.FormatUint(res.Excluded, 10)},
+	} {
+		if _, err := tx.ExecContext(ctx,
+			"INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2);", kv[0], kv[1]); err != nil {
+			return mapDBError(err)
+		}
+	}
+	return mapDBError(tx.Commit())
+}
+
+// repairShardDir is sync's per-directory permission repair, indirected so a
+// test can simulate a foreign-owned directory whose chmod does not take
+// without needing a second uid; owner-owned directories self-heal through it.
+var repairShardDir = func(root *os.Root, path string) error {
+	return root.Chmod(path, 0o700)
 }
 
 // syncFromCorpus optionally stamps the owner root identity in the same
@@ -959,10 +1341,21 @@ func (idx *Index) syncFromCorpus(root *os.Root, rootDigest string) (SyncReport, 
 	}
 	hashRows.Close()
 
+	// Sync changes the projection without touching the corpus, which is the
+	// one write the freshness signature cannot see: a memoized verdict left
+	// standing here would describe a projection state that no longer exists
+	// (a repaired index still reading stale, forever). Clearing it in the
+	// same transaction forces the next Freshness call to the authoritative
+	// check.
+	if _, err := tx.ExecContext(context.Background(),
+		"DELETE FROM meta WHERE substr(key, 1, 10) = 'freshness_';"); err != nil {
+		return report, mapDBError(err)
+	}
+
 	// A vanished corpus (deleted between root open and sync) is an empty
 	// corpus: the whole projection becomes empty too.
 	if _, err := fs.Stat(root.FS(), "."); errors.Is(err, fs.ErrNotExist) {
-		for _, table := range []string{"postings", "term_stats", "episodes"} {
+		for _, table := range []string{"postings", "term_stats", "term_trigrams", "episodes"} {
 			if _, err := tx.ExecContext(context.Background(), "DELETE FROM "+table+";"); err != nil {
 				return report, mapDBError(err)
 			}
@@ -985,44 +1378,24 @@ func (idx *Index) syncFromCorpus(root *os.Root, rootDigest string) (SyncReport, 
 		return report, mapDBError(tx.Commit())
 	}
 
+	// The walk is WalkCorpus's visibility rule; this visitor owns chmod
+	// repair and indexing. An unreadable corpus root aborts the sync and
+	// rolls back (the walk error), because indexing nothing is not the same
+	// answer as an empty corpus. An unreadable subdirectory is skipped
+	// instead — the WalkShardDir visit chmods each directory before its
+	// read, so an owner-owned one self-heals, and only a foreign-owned tree
+	// stays WalkUnreadableDir.
 	seen := map[string]struct{}{}
 	seenPaths := map[string]struct{}{}
-	walkErr := fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			// The Zig oracle aborts the sync (rolled back) when the corpus
-			// root itself cannot be read; an unreadable subdirectory is
-			// just skipped, like its openDir-failure continue.
-			if path == "." {
-				return err
-			}
-			if d != nil && d.IsDir() {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if d.IsDir() {
-			if path == "." {
-				return nil
-			}
-			name := d.Name()
-			// Dot-directories (.git, .obsidian, …) are foreign tooling
-			// state, never episode shards: skip them.
-			if name == "" || name[0] == '.' {
-				return fs.SkipDir
-			}
-			if strings.Count(path, "/")+1 > CorpusWalkDepth {
-				return fs.SkipDir
-			}
+	walkErr := WalkCorpus(root, func(path string, kind WalkKind, info fs.FileInfo) error {
+		switch kind {
+		case WalkShardDir:
 			// Permission repair is best effort: a foreign-owned entry
 			// that cannot be hardened is still valid memory.
-			_ = root.Chmod(path, 0o700)
+			_ = repairShardDir(root, path)
 			return nil
-		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
-		name := d.Name()
-		if !strings.HasPrefix(name, IDPrefix) || !strings.HasSuffix(name, ".md") {
+		case WalkUnreadableDir:
+			report.Unreadable++
 			return nil
 		}
 		seenPaths[path] = struct{}{}
@@ -1042,6 +1415,12 @@ func (idx *Index) syncFromCorpus(root *os.Root, rootDigest string) (SyncReport, 
 		// postings stale. A byte hash catches every edit; requiring the
 		// episode row too keeps a hand-mangled database self-healing
 		// (the row is missing -> no skip -> full reindex).
+		// Content verification is per file and per run, not only for
+		// changed files: the count reads as corpus health, so an edit that
+		// predates the previous sync must still be reported by this one.
+		if _, verr := VerifyEpisode(string(content)); errors.Is(verr, ErrDigestMismatch) {
+			report.DigestMismatch++
+		}
 		sum := sha256.Sum256(content)
 		hexSum := hex.EncodeToString(sum[:])
 		if syncedHashes[path] != hexSum {
@@ -1137,7 +1516,7 @@ func (idx *Index) syncFromCorpus(root *os.Root, rootDigest string) (SyncReport, 
 			return report, mapDBError(err)
 		}
 	}
-	excluded := report.DuplicateIDs + report.SkippedMalformed
+	excluded := report.DuplicateIDs + report.SkippedMalformed + report.Unreadable
 	if _, err := tx.ExecContext(context.Background(),
 		"INSERT OR REPLACE INTO meta (key, value) VALUES ('sync_excluded', ?1);",
 		strconv.FormatUint(excluded, 10)); err != nil {
@@ -1152,22 +1531,4 @@ func (idx *Index) syncFromCorpus(root *os.Root, rootDigest string) (SyncReport, 
 	}
 
 	return report, mapDBError(tx.Commit())
-}
-
-// readRootFile reads one confined file with a byte budget; over-budget is
-// an error, never a truncation.
-func readRootFile(root *os.Root, path string, maxBytes int64) ([]byte, error) {
-	f, err := root.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	content, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(content)) > maxBytes {
-		return nil, fmt.Errorf("exceeds %d bytes", maxBytes)
-	}
-	return content, nil
 }

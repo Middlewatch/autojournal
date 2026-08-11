@@ -3,11 +3,13 @@
 // the standalone binary use the same published import path:
 // github.com/Middlewatch/autojournal/src.
 //
-// The archived Zig implementation at git tag zig-final is the compatibility
-// oracle. Golden fixtures verify that Go preserves its frozen on-disk formats,
-// identity rules, and CLI output.
+// The golden fixtures under testdata are the behavioral authority for this
+// package: they pin the on-disk formats, identity derivation, and CLI output
+// that DESIGN.md places in the corpus-durable tier. Where the fixtures and the
+// tests are silent, decide what is correct and add a fixture — there is no
+// second authority to appeal to.
 package autojournal
 
 // PackageVersion is the product release version. It is separate from the
 // immutable wire schema versions and must match the CLI and adapter manifests.
-const PackageVersion = "1.0.4"
+const PackageVersion = "1.1.0"

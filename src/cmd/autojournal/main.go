@@ -4,8 +4,6 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -29,6 +27,7 @@ commands:
   status    report journal root, corpus, and index health
   catalog   list discovered worlds and scopes
   sync      rebuild/repair the index projection from the Markdown corpus
+  reseal    re-attest owner-edited episodes (--preview to only list them)
   version   print version and schema identities
 
 options:
@@ -58,20 +57,6 @@ const (
 	exitConflict  = 3
 )
 
-func outcomeExit(outcome aj.Outcome) int {
-	switch outcome {
-	// A typed empty result is a successful answer, not an error.
-	case aj.OutcomeMatch, aj.OutcomeNoMatch:
-		return exitOK
-	case aj.OutcomeMalformed:
-		return exitMalformed
-	case aj.OutcomeConflict:
-		return exitConflict
-	default:
-		return exitFailure
-	}
-}
-
 type opts struct {
 	config      *string
 	root        *string
@@ -88,6 +73,7 @@ type opts struct {
 	lines       *string
 	creditMode  *string
 	json        bool
+	preview     bool
 	positionals []string
 }
 
@@ -107,9 +93,25 @@ func main() {
 		stdin:  os.Stdin,
 		stdout: os.Stdout,
 		stderr: os.Stderr,
-		nowMs:  func() uint64 { return uint64(max(0, time.Now().UnixMilli())) },
+		nowMs:  clockFromEnv(os.LookupEnv),
 	}
 	os.Exit(c.run(os.Args[1:]))
+}
+
+// clockFromEnv resolves the process clock: AUTOJOURNAL_NOW_MS pinned to a
+// decimal millisecond timestamp wins, else the wall clock. The override
+// exists because search's recency boost reads this clock, so two otherwise
+// identical invocations minutes apart reorder near-tied hits — a ranking
+// parity run is only reproducible with the clock pinned. Same env-seam
+// category as AUTOJOURNAL_THESAURUS and AUTOJOURNAL_MISS_LOG; an unset,
+// empty, or malformed value is ignored and the wall clock wins.
+func clockFromEnv(env aj.Environ) func() uint64 {
+	if v, ok := env("AUTOJOURNAL_NOW_MS"); ok && v != "" {
+		if ms, err := strconv.ParseUint(v, 10, 64); err == nil {
+			return func() uint64 { return ms }
+		}
+	}
+	return func() uint64 { return uint64(max(0, time.Now().UnixMilli())) }
 }
 
 func (c *cli) run(args []string) int {
@@ -124,6 +126,10 @@ func (c *cli) run(args []string) int {
 		arg := rest[i]
 		if arg == "--json" {
 			o.json = true
+			continue
+		}
+		if arg == "--preview" {
+			o.preview = true
 			continue
 		}
 		if !strings.HasPrefix(arg, "--") {
@@ -198,9 +204,10 @@ func (c *cli) run(args []string) int {
 	}
 	explicitConfigPath := ""
 	if o.config != nil {
-		// An explicitly named empty path can never load (the Zig oracle
-		// opens "" and fails); refuse it rather than letting the empty
-		// string read as "no explicit path" and fall back silently.
+		// An explicitly named empty path can never load. Refuse it rather
+		// than letting the empty string read as "no explicit path" and fall
+		// back silently — that would search a corpus the caller did not ask
+		// for, which is worse than an error.
 		if *o.config == "" {
 			return c.fail(exitFailure, "explicit AutoJournal config was not found\n")
 		}
@@ -276,7 +283,9 @@ func (c *cli) run(args []string) int {
 	case "catalog":
 		return c.catalogCommand(cfg, rootPath, indexPath)
 	case "sync":
-		return c.syncCommand(rootPath, indexPath)
+		return c.syncCommand(&o, rootPath, indexPath)
+	case "reseal":
+		return c.resealCommand(&o, rootPath, indexPath)
 	case "search":
 		return c.searchCommand(cfg, rootPath, indexPath, &o)
 	case "get":
@@ -290,37 +299,6 @@ func (c *cli) run(args []string) int {
 // The derivations themselves live in the library's paths module so this
 // CLI and an embedding host cannot drift apart on where the journal and
 // its index are.
-
-// thesaurusPath resolves the thesaurus: owner config first, the legacy
-// environment override second, the XDG default last. The file is
-// hand-editable and hot-loads on every invocation.
-func (c *cli) thesaurusPath(cfg aj.Config) (string, error) {
-	if cfg.ThesaurusPath != "" {
-		return cfg.ThesaurusPath, nil
-	}
-	if p, ok := c.env("AUTOJOURNAL_THESAURUS"); ok && p != "" {
-		return p, nil
-	}
-	if xdg, ok := c.env("XDG_CONFIG_HOME"); ok && xdg != "" {
-		return xdg + "/autojournal/thesaurus.json", nil
-	}
-	home, ok := c.env("HOME")
-	if !ok {
-		return "", aj.ErrMissingHome
-	}
-	return home + "/.config/autojournal/thesaurus.json", nil
-}
-
-func (c *cli) missLogPath() (string, error) {
-	if p, ok := c.env("AUTOJOURNAL_MISS_LOG"); ok && p != "" {
-		return p, nil
-	}
-	state, err := aj.StateDir(c.env)
-	if err != nil {
-		return "", err
-	}
-	return state + "/autojournal/thesaurus-candidates.jsonl", nil
-}
 
 // openIndex opens the projection, creating its parent directory
 // owner-only on the first run. Never touches the journal root. When
@@ -412,7 +390,7 @@ func (c *cli) searchCommand(cfg aj.Config, rootPath, indexPath string, o *opts) 
 	}
 	defer idx.Close()
 
-	thesaurus, err := c.thesaurusPath(cfg)
+	thesaurus, err := aj.ThesaurusPath(c.env, cfg)
 	if err != nil {
 		return c.fail(exitFailure, "cannot resolve the thesaurus path (no HOME)\n")
 	}
@@ -432,12 +410,12 @@ func (c *cli) searchCommand(cfg aj.Config, rootPath, indexPath string, o *opts) 
 	if o.limit != nil {
 		chosen = *o.limit
 	}
-	// The Zig oracle request clamps 0 to one result; the Go library's zero
-	// value means "default page size", so resolve here.
+	// An explicit --limit 0 resolves to the default page size — the
+	// library's zero value means exactly that — while the config's
+	// max_results: 0 stays malformed. The asymmetry is deliberate: a
+	// persisted config stating a meaningless page size is an error worth
+	// surfacing, and a one-off flag resolves to what the user meant.
 	limit := min(chosen, aj.MaxResultsLimit)
-	if limit == 0 {
-		limit = 1
-	}
 
 	nowMs := c.nowMs()
 	req := aj.SearchRequest{
@@ -458,184 +436,16 @@ func (c *cli) searchCommand(cfg aj.Config, rootPath, indexPath string, o *opts) 
 	}
 	out := aj.Search(root, idx, aliasMap, req)
 
-	// Weak-query miss logging: opt-in, bounded, best-effort, and only for
-	// real (non-error) recall outcomes.
-	if cfg.MissLog && (out.Outcome == aj.OutcomeMatch || out.Outcome == aj.OutcomeNoMatch) &&
-		out.BestScore < cfg.ConfidenceFloor {
-		if logPath, err := c.missLogPath(); err == nil {
-			var top *string
-			if len(out.Hits) > 0 {
-				top = &out.Hits[0].EpisodeID
-			}
-			aj.AppendMiss(logPath, aj.MissRecord{
-				TS:    aj.ISOFromMs(nowMs),
-				Query: query,
-				Terms: out.QueryTerms,
-				Best:  out.BestScore,
-				Top:   top,
-			}, cfg.MissLogMaxBytes)
-		}
-	}
+	aj.LogSearchMiss(c.env, cfg, query, nowMs, &out)
 
 	if o.json {
-		c.renderSearchJSON(world, query, &out)
+		if c.renderSearchJSON(world, query, &out) != nil {
+			return exitFailure
+		}
 	} else {
 		c.renderSearchText(query, &out)
 	}
 	return outcomeExit(out.Outcome)
-}
-
-type hitJSON struct {
-	EpisodeID     string   `json:"episode_id"`
-	Revision      string   `json:"revision"`
-	Path          string   `json:"path"`
-	World         string   `json:"world"`
-	Scope         string   `json:"scope"`
-	Lane          string   `json:"lane"`
-	CapturePolicy string   `json:"capture_policy"`
-	EventTime     string   `json:"event_time"`
-	Line          uint32   `json:"line"`
-	SnippetStart  uint32   `json:"snippet_start"`
-	SnippetEnd    uint32   `json:"snippet_end"`
-	Snippet       string   `json:"snippet"`
-	MatchedTerms  []string `json:"matched_terms"`
-	Score         float64  `json:"score"`
-	Confidence    string   `json:"confidence"`
-}
-
-type searchIdentitiesJSON struct {
-	Scorer           string `json:"scorer"`
-	Tokenizer        string `json:"tokenizer"`
-	ConfidencePolicy string `json:"confidence_policy"`
-	AliasDigest      string `json:"alias_digest"`
-	IndexSchema      uint32 `json:"index_schema"`
-}
-
-type searchIndexJSON struct {
-	Freshness      string `json:"freshness"`
-	Indexed        uint64 `json:"indexed"`
-	Source         uint64 `json:"source"`
-	EditedExcluded uint64 `json:"edited_excluded"`
-}
-
-type searchReportJSON struct {
-	Outcome    string               `json:"outcome"`
-	Query      string               `json:"query"`
-	QueryTerms []string             `json:"query_terms"`
-	AliasTerms []string             `json:"alias_terms"`
-	Results    []hitJSON            `json:"results"`
-	Total      uint64               `json:"total"`
-	Cursor     *string              `json:"cursor"`
-	Identities searchIdentitiesJSON `json:"identities"`
-	Index      searchIndexJSON      `json:"index"`
-	Detail     *string              `json:"detail"`
-}
-
-func (c *cli) renderSearchJSON(world, query string, out *aj.SearchOutput) {
-	results := make([]hitJSON, len(out.Hits))
-	for i, hit := range out.Hits {
-		results[i] = hitJSON{
-			EpisodeID:     hit.EpisodeID,
-			Revision:      hit.Revision,
-			Path:          hit.Path,
-			World:         world,
-			Scope:         hit.Scope,
-			Lane:          string(hit.Lane),
-			CapturePolicy: hit.CapturePolicy,
-			EventTime:     aj.ISOFromMs(hit.EventTimeMs),
-			Line:          hit.Line,
-			SnippetStart:  hit.SnippetStart,
-			SnippetEnd:    hit.SnippetEnd,
-			Snippet:       hit.Snippet,
-			MatchedTerms:  nonNil(hit.MatchedTerms),
-			Score:         hit.Score,
-			Confidence:    string(hit.Confidence),
-		}
-	}
-	c.printJSON(searchReportJSON{
-		Outcome:    string(out.Outcome),
-		Query:      query,
-		QueryTerms: nonNil(out.QueryTerms),
-		AliasTerms: nonNil(out.AliasTerms),
-		Results:    results,
-		Total:      out.Total,
-		Cursor:     optString(out.NextCursor),
-		Identities: searchIdentitiesJSON{
-			Scorer:           aj.ScorerVersion,
-			Tokenizer:        aj.TokenizerVersion,
-			ConfidencePolicy: aj.ConfidencePolicyVersion,
-			AliasDigest:      out.AliasDigest,
-			IndexSchema:      aj.IndexSchemaVersion,
-		},
-		Index: searchIndexJSON{
-			Freshness:      string(out.Freshness),
-			Indexed:        out.Indexed,
-			Source:         out.Source,
-			EditedExcluded: out.EditedExcluded,
-		},
-		Detail: optString(out.Detail),
-	})
-}
-
-func (c *cli) renderSearchText(query string, out *aj.SearchOutput) {
-	var buf strings.Builder
-	switch out.Outcome {
-	case aj.OutcomeMatch: // fall through to results
-	case aj.OutcomeNoMatch:
-		fmt.Fprintf(&buf, "no match for \"%s\" (index %s, %d indexed)\n", query, out.Freshness, out.Indexed)
-		if out.EditedExcluded > 0 {
-			fmt.Fprintf(&buf, "note: %d candidate(s) excluded as edited since indexing; run sync\n", out.EditedExcluded)
-		}
-		io.WriteString(c.stdout, buf.String())
-		return
-	default:
-		fmt.Fprintf(&buf, "search failed: %s", out.Outcome)
-		if out.Detail != "" {
-			fmt.Fprintf(&buf, " (%s)", out.Detail)
-		}
-		buf.WriteByte('\n')
-		io.WriteString(c.stdout, buf.String())
-		return
-	}
-
-	fmt.Fprintf(&buf, "%d of %d result(s) for \"%s\" — index %s\n", len(out.Hits), out.Total, query, out.Freshness)
-	if len(out.AliasTerms) > 0 {
-		buf.WriteString("aliases applied:")
-		for _, t := range out.AliasTerms {
-			buf.WriteByte(' ')
-			buf.WriteString(t)
-		}
-		buf.WriteByte('\n')
-	}
-	for i, hit := range out.Hits {
-		fmt.Fprintf(&buf, "%2d. [%.2f %s] %s:%d (%s)\n",
-			i+1, hit.Score, hit.Confidence, hit.Path, hit.Line, aj.ISOFromMs(hit.EventTimeMs)[:10])
-		fmt.Fprintf(&buf, "    %s\n", matchLine(hit))
-		fmt.Fprintf(&buf, "    id %s rev %s\n", hit.EpisodeID, hit.Revision)
-	}
-	if out.NextCursor != "" {
-		fmt.Fprintf(&buf, "more: add --cursor %s\n", out.NextCursor)
-	}
-	if out.Detail != "" {
-		fmt.Fprintf(&buf, "note: %s\n", out.Detail)
-	}
-	io.WriteString(c.stdout, buf.String())
-}
-
-// matchLine extracts the matched line from a hit's snippet (the snippet
-// spans context lines; the hit's own line is the evidence).
-func matchLine(hit aj.Hit) string {
-	if hit.Snippet == "" {
-		return "(source changed since indexing)"
-	}
-	lineNo := hit.SnippetStart
-	for _, line := range strings.Split(hit.Snippet, "\n") {
-		if lineNo == hit.Line {
-			return line
-		}
-		lineNo++
-	}
-	return hit.Snippet
 }
 
 // --- get ---
@@ -662,22 +472,6 @@ func parseLineSpan(text string) *lineSpan {
 		return nil
 	}
 	return &lineSpan{start: line, end: line}
-}
-
-type getReportJSON struct {
-	Outcome       string  `json:"outcome"`
-	EpisodeID     string  `json:"episode_id"`
-	Revision      *string `json:"revision"`
-	Path          *string `json:"path"`
-	World         *string `json:"world"`
-	Scope         *string `json:"scope"`
-	Lane          *string `json:"lane"`
-	CapturePolicy *string `json:"capture_policy"`
-	LineStart     uint32  `json:"line_start"`
-	LineEnd       uint32  `json:"line_end"`
-	Content       string  `json:"content"`
-	Trust         string  `json:"trust"`
-	Detail        *string `json:"detail"`
 }
 
 func (c *cli) getCommand(rootPath, indexPath string, o *opts) int {
@@ -738,7 +532,9 @@ func (c *cli) getCommand(rootPath, indexPath string, o *opts) int {
 			report.Lane = &lane
 			report.CapturePolicy = &out.CapturePolicy
 		}
-		c.printJSON(report)
+		if c.printJSON(report) != nil {
+			return exitFailure
+		}
 	} else {
 		switch out.Outcome {
 		case aj.OutcomeMatch:
@@ -760,18 +556,13 @@ func (c *cli) getCommand(rootPath, indexPath string, o *opts) int {
 
 // --- alias ---
 
-type aliasEntryJSON struct {
-	Key    string   `json:"key"`
-	Values []string `json:"values"`
-}
-
 func (c *cli) aliasCommand(cfg aj.Config, o *opts) int {
 	pos := o.positionals
 	if len(pos) == 0 {
 		return c.fail(exitMalformed, "alias needs a subcommand: list | add <term> <canonical...> | remove <term> [canonical] | candidates\n")
 	}
 	sub := pos[0]
-	thesaurus, err := c.thesaurusPath(cfg)
+	thesaurus, err := aj.ThesaurusPath(c.env, cfg)
 	if err != nil {
 		return c.fail(exitFailure, "cannot resolve the thesaurus path (no HOME)\n")
 	}
@@ -784,12 +575,12 @@ func (c *cli) aliasCommand(cfg aj.Config, o *opts) int {
 			for i, e := range m.Entries() {
 				entries[i] = aliasEntryJSON{Key: e.Key, Values: nonNil(e.Values)}
 			}
-			c.printJSON(struct {
-				Path        string           `json:"path"`
-				AliasDigest string           `json:"alias_digest"`
-				Entries     []aliasEntryJSON `json:"entries"`
-			}{Path: thesaurus, AliasDigest: m.DigestHex(), Entries: entries})
-			return exitOK
+			return c.emitJSON(aliasListReportJSON{
+				Path:        thesaurus,
+				AliasDigest: m.DigestHex(),
+				MergedKeys:  m.MergedKeys(),
+				Entries:     entries,
+			})
 		}
 		var buf strings.Builder
 		fmt.Fprintf(&buf, "%d alias(es) in %s\n", len(m.Entries()), thesaurus)
@@ -847,7 +638,7 @@ func (c *cli) aliasCommand(cfg aj.Config, o *opts) int {
 		return exitOK
 
 	case "candidates":
-		logPath, err := c.missLogPath()
+		logPath, err := aj.MissLogPath(c.env)
 		if err != nil {
 			return c.fail(exitFailure, "cannot resolve the miss-log path (no HOME)\n")
 		}
@@ -886,23 +677,6 @@ func (c *cli) aliasCommand(cfg aj.Config, o *opts) int {
 
 // --- capture / status / catalog / sync (write slice) ---
 
-type captureReportJSON struct {
-	Outcome       string  `json:"outcome"`
-	EpisodeID     *string `json:"episode_id"`
-	PayloadDigest *string `json:"payload_digest"`
-	Path          *string `json:"path"`
-	Index         string  `json:"index"`
-	Detail        *string `json:"detail"`
-}
-
-func (c *cli) reportCapture(exit int, report captureReportJSON) int {
-	if report.Index == "" {
-		report.Index = string(aj.IndexNotBuilt)
-	}
-	c.printJSON(report)
-	return exit
-}
-
 func (c *cli) captureCommand(cfg aj.Config, rootPath, indexPath string) int {
 	payloadBytes, err := io.ReadAll(io.LimitReader(c.stdin, aj.MaxPayloadBytes+2))
 	if err != nil {
@@ -915,125 +689,27 @@ func (c *cli) captureCommand(cfg aj.Config, rootPath, indexPath string) int {
 
 	raw, err := aj.ParsePayload(payloadBytes)
 	if err != nil {
-		detail := zigErrorName(err)
-		return c.reportCapture(exitMalformed, captureReportJSON{Outcome: "malformed", Detail: &detail})
-	}
-	// An omitted world/scope falls back to owner capture defaults. A host may
-	// provide explicit values only when transporting an owner session choice.
-	if raw.World == nil {
-		raw.World = &cfg.Capture.World
-	}
-	if raw.Scope == nil {
-		raw.Scope = &cfg.Capture.Scope
-	}
-	payload, err := aj.Validate(raw)
-	if err != nil {
-		detail := zigErrorName(err)
+		detail := aj.CaptureErrorName(err)
 		return c.reportCapture(exitMalformed, captureReportJSON{Outcome: "malformed", Detail: &detail})
 	}
 
-	if aj.RootInSharedDirectory(rootPath) {
-		detail := "journal root sits under a shared (group- or world-writable) directory; chmod g-w,o-w the parent or configure journal_root to a private location"
-		return c.reportCapture(exitFailure, captureReportJSON{Outcome: "permission_denied", Detail: &detail})
-	}
-	root, err := aj.OpenJournalRoot(rootPath)
-	if err != nil {
-		detail := "cannot open journal root"
-		return c.reportCapture(exitFailure, captureReportJSON{Outcome: "unavailable", Detail: &detail})
-	}
-	defer root.Close()
-
-	// Identity is corpus-wide, but the store's duplicate detection is
-	// path-local; consult the index first so a redelivery whose event time
-	// shards to another date is still recognized. Best-effort: an absent or
-	// unhelpful index falls through to publication as before.
-	if idx, err := openIndex(indexPath, rootPath); err == nil {
-		existing := aj.CheckRedelivery(root, idx, &payload)
-		idx.Close()
-		if existing != nil {
-			episodeID := aj.EpisodeID(&payload)
-			digest := aj.DigestPrefix + aj.PayloadDigestHex(&payload)
-			exit := exitOK
-			indexState := "fresh"
-			if existing.Outcome != aj.CaptureDuplicate {
-				exit = exitConflict
-				indexState = "stale"
-			}
-			return c.reportCapture(exit, captureReportJSON{
-				Outcome:       string(existing.Outcome),
-				EpisodeID:     &episodeID,
-				PayloadDigest: &digest,
-				Path:          &existing.RelPath,
-				Index:         indexState,
-			})
-		}
-	}
-
-	published, err := aj.Publish(root, &payload, c.nowMs())
-	if err != nil {
-		outcome := aj.CaptureUnavailable
-		switch {
-		case errors.Is(err, aj.ErrContainmentViolation):
-			outcome = aj.CaptureInternalError
-		case errors.Is(err, aj.ErrPermissionDenied):
-			outcome = aj.CapturePermissionDenied
-		}
-		detail := zigErrorName(err)
-		return c.reportCapture(exitFailure, captureReportJSON{Outcome: string(outcome), Detail: &detail})
-	}
-
-	// Source publication is already durable; the index is best-effort here
-	// and repairable via sync, so its failure downgrades freshness only.
-	indexState := aj.IndexStale
-	switch published.Outcome {
-	case aj.CaptureConflict:
-	case aj.CapturePublished, aj.CaptureDuplicate:
-		if idx, err := openIndex(indexPath, rootPath); err != nil {
-			if errors.Is(err, aj.ErrForeignIndex) {
-				indexState = aj.IndexUnavailable
-			}
-		} else {
-			indexed := idx.IndexEpisode(published.RelPath, string(published.Content)) == nil
-			idx.Close()
-			if indexed && aj.HardenIndexFiles(indexPath) == nil {
-				indexState = aj.IndexFresh
-			}
-		}
-	}
-
-	exit := exitOK
-	if published.Outcome == aj.CaptureConflict {
-		exit = exitConflict
-	}
-	digest := aj.DigestPrefix + published.DigestHex
-	return c.reportCapture(exit, captureReportJSON{
-		Outcome:       string(published.Outcome),
-		EpisodeID:     &published.EpisodeID,
-		PayloadDigest: &digest,
-		Path:          &published.RelPath,
-		Index:         string(indexState),
+	// The whole transaction — defaults fill, validation, refusal ordering,
+	// redelivery classification, publication, index policy — is the
+	// library's. This command only reads stdin, parses, and renders.
+	result := aj.Capture(aj.CaptureRequest{
+		RootPath:      rootPath,
+		IndexPath:     indexPath,
+		Raw:           raw,
+		Defaults:      cfg.Capture,
+		CaptureTimeMs: c.nowMs(),
 	})
-}
-
-type statusIndexJSON struct {
-	Freshness string `json:"freshness"`
-	Indexed   uint64 `json:"indexed"`
-	Path      string `json:"path"`
-}
-
-type statusReportJSON struct {
-	JournalRoot    string          `json:"journal_root"`
-	RootSource     string          `json:"root_source"`
-	RootSourcePath *string         `json:"root_source_path"`
-	RootOK         bool            `json:"root_ok"`
-	Episodes       uint64          `json:"episodes"`
-	Index          statusIndexJSON `json:"index"`
+	return c.renderCapture(result)
 }
 
 func (c *cli) statusCommand(rootPath, indexPath, rootSource, rootSourcePath string, asJSON bool) int {
 	report := aj.StatusOf(rootPath, indexPath)
 	if asJSON {
-		c.printJSON(statusReportJSON{
+		if c.printJSON(statusReportJSON{
 			JournalRoot:    rootPath,
 			RootSource:     rootSource,
 			RootSourcePath: optString(rootSourcePath),
@@ -1044,7 +720,9 @@ func (c *cli) statusCommand(rootPath, indexPath, rootSource, rootSourcePath stri
 				Indexed:   report.Indexed,
 				Path:      indexPath,
 			},
-		})
+		}) != nil {
+			return exitFailure
+		}
 	} else if !report.RootOK {
 		fmt.Fprintf(c.stdout, "journal_root: %s (missing)\nepisodes: 0\nindex: not_built\n", rootPath)
 	} else {
@@ -1057,38 +735,13 @@ func (c *cli) statusCommand(rootPath, indexPath, rootSource, rootSourcePath stri
 	return exitOK
 }
 
-type catalogPairJSON struct {
-	World string `json:"world"`
-	Scope string `json:"scope"`
-}
-
 func (c *cli) catalogCommand(cfg aj.Config, rootPath, indexPath string) int {
-	pairs := []catalogPairJSON{{World: cfg.Capture.World, Scope: cfg.Capture.Scope}}
-
-	if _, err := os.Stat(indexPath); err == nil {
-		if idx, err := openIndex(indexPath, rootPath); err == nil {
-			if rows, err := idx.WorldScopePairs(); err == nil {
-				for _, row := range rows {
-					exists := false
-					for _, pair := range pairs {
-						if pair.World == row.World && pair.Scope == row.Scope {
-							exists = true
-							break
-						}
-					}
-					if !exists {
-						pairs = append(pairs, catalogPairJSON{World: row.World, Scope: row.Scope})
-					}
-				}
-			}
-			idx.Close()
-		}
+	var pairs []catalogPairJSON
+	for _, pair := range aj.Catalog(rootPath, indexPath, cfg.Capture) {
+		pairs = append(pairs, catalogPairJSON{World: pair.World, Scope: pair.Scope})
 	}
 
-	c.printJSON(struct {
-		Pairs []catalogPairJSON `json:"pairs"`
-	}{Pairs: pairs})
-	return exitOK
+	return c.emitJSON(catalogReportJSON{Pairs: pairs})
 }
 
 // defaultCommand shows or persists the owner's default world/scope. With
@@ -1121,28 +774,19 @@ func (c *cli) defaultCommand(cfg aj.Config, o *opts) int {
 			}
 		}
 		if o.json {
-			c.printJSON(struct {
-				World  string `json:"world"`
-				Scope  string `json:"scope"`
-				Config string `json:"config"`
-			}{World: world, Scope: scope, Config: written})
-		} else {
-			fmt.Fprintf(c.stdout, "default set: %s / %s\nconfig: %s\n", world, scope, written)
+			return c.emitJSON(defaultSetReportJSON{World: world, Scope: scope, Config: written})
 		}
+		fmt.Fprintf(c.stdout, "default set: %s / %s\nconfig: %s\n", world, scope, written)
 		return exitOK
 	}
 	if o.json {
-		c.printJSON(struct {
-			World string `json:"world"`
-			Scope string `json:"scope"`
-		}{World: world, Scope: scope})
-	} else {
-		fmt.Fprintf(c.stdout, "default world: %s\ndefault scope: %s\n", world, scope)
+		return c.emitJSON(defaultShowReportJSON{World: world, Scope: scope})
 	}
+	fmt.Fprintf(c.stdout, "default world: %s\ndefault scope: %s\n", world, scope)
 	return exitOK
 }
 
-func (c *cli) syncCommand(rootPath, indexPath string) int {
+func (c *cli) syncCommand(o *opts, rootPath, indexPath string) int {
 	report, err := aj.Sync(rootPath, indexPath)
 	if err != nil {
 		switch {
@@ -1156,9 +800,63 @@ func (c *cli) syncCommand(rootPath, indexPath string) int {
 			return c.fail(exitFailure, "cannot open index database\n")
 		}
 	}
-	fmt.Fprintf(c.stdout, "indexed: %d\nunchanged: %d\nremoved: %d\nskipped_malformed: %d\nduplicate_ids: %d\n",
-		report.Indexed, report.Unchanged, report.Removed, report.SkippedMalformed, report.DuplicateIDs)
+	if o.json {
+		return c.emitJSON(syncReportJSON{
+			Indexed:          report.Indexed,
+			Unchanged:        report.Unchanged,
+			Removed:          report.Removed,
+			SkippedMalformed: report.SkippedMalformed,
+			DuplicateIDs:     report.DuplicateIDs,
+			DigestMismatch:   report.DigestMismatch,
+			Unreadable:       report.Unreadable,
+		})
+	}
+	fmt.Fprintf(c.stdout, "indexed: %d\nunchanged: %d\nremoved: %d\nskipped_malformed: %d\nduplicate_ids: %d\ndigest_mismatch: %d\nunreadable: %d\n",
+		report.Indexed, report.Unchanged, report.Removed, report.SkippedMalformed, report.DuplicateIDs, report.DigestMismatch, report.Unreadable)
 	return exitOK
+}
+
+func (c *cli) resealCommand(o *opts, rootPath, indexPath string) int {
+	report, err := aj.Reseal(rootPath, indexPath, o.preview)
+	if err != nil {
+		switch {
+		case errors.Is(err, aj.ErrSharedDirectory):
+			return c.fail(exitFailure, "journal root sits under a shared (group- or world-writable) directory; chmod g-w,o-w the parent or configure journal_root to a private location\n")
+		case errors.Is(err, aj.ErrRootMissing):
+			return c.fail(exitFailure, "journal root missing; nothing to reseal\n")
+		case errors.Is(err, aj.ErrSyncFailed):
+			return c.fail(exitFailure, "resealed, but the projection rebuild failed and was rolled back; run sync\n")
+		default:
+			return c.fail(exitFailure, "reseal failed; the corpus keeps every episode it had\n")
+		}
+	}
+	// A write failure is exit 1, but only after the sweep finished and the
+	// sync rebaselined what did reseal: the failure exit reports incomplete
+	// work, never work undone.
+	exit := exitOK
+	if report.WriteFailures > 0 {
+		fmt.Fprintf(c.stderr, "%d file(s) could not be rewritten; everything resealed was synced — fix permissions and rerun reseal\n",
+			report.WriteFailures)
+		exit = exitFailure
+	}
+	if o.json {
+		if c.printJSON(resealReportJSON{
+			Scanned:       report.Scanned,
+			Resealed:      report.Resealed,
+			Refused:       report.Refused,
+			WriteFailures: report.WriteFailures,
+			Paths:         nonNil(report.Paths),
+		}) != nil {
+			return exitFailure
+		}
+		return exit
+	}
+	fmt.Fprintf(c.stdout, "scanned: %d\nresealed: %d\nrefused: %d\nwrite_failures: %d\n",
+		report.Scanned, report.Resealed, report.Refused, report.WriteFailures)
+	for _, p := range report.Paths {
+		fmt.Fprintf(c.stdout, "  %s\n", p)
+	}
+	return exit
 }
 
 // --- output helpers ---
@@ -1166,35 +864,6 @@ func (c *cli) syncCommand(rootPath, indexPath string) int {
 func (c *cli) fail(exit int, message string) int {
 	io.WriteString(c.stderr, message)
 	return exit
-}
-
-// printJSON renders like the Zig oracle's std.json.Stringify: declaration
-// field order, raw UTF-8, and no HTML escaping.
-func (c *cli) printJSON(v any) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(v); err != nil {
-		fmt.Fprintf(c.stderr, "internal error rendering JSON: %v\n", err)
-		return
-	}
-	c.stdout.Write(buf.Bytes()) // Encode appends the trailing newline
-}
-
-func optString(s string) *string {
-	if s == "" {
-		return nil
-	}
-	return &s
-}
-
-// nonNil keeps empty slices rendering as [] — the Zig oracle never emits
-// null for a list field.
-func nonNil(s []string) []string {
-	if s == nil {
-		return []string{}
-	}
-	return s
 }
 
 func readLimited(path string, budget int64) ([]byte, error) {
@@ -1211,42 +880,4 @@ func readLimited(path string, budget int64) ([]byte, error) {
 		return nil, errors.New("over budget")
 	}
 	return data, nil
-}
-
-// zigErrorName renders the Zig oracle CLI's failure vocabulary
-// (@errorName strings) for capture report details.
-func zigErrorName(err error) string {
-	for _, m := range []struct {
-		err  error
-		name string
-	}{
-		{aj.ErrMalformed, "Malformed"},
-		{aj.ErrUnsupportedSchemaVersion, "UnsupportedSchemaVersion"},
-		{aj.ErrInvalidWorld, "InvalidWorld"},
-		{aj.ErrInvalidScope, "InvalidScope"},
-		{aj.ErrInvalidLane, "InvalidLane"},
-		{aj.ErrInvalidHarness, "InvalidHarness"},
-		{aj.ErrInvalidAdapterVersion, "InvalidAdapterVersion"},
-		{aj.ErrInvalidSessionID, "InvalidSessionId"},
-		{aj.ErrInvalidTurnID, "InvalidTurnId"},
-		{aj.ErrInvalidCapturePolicy, "InvalidCapturePolicy"},
-		{aj.ErrInvalidTurnOutcome, "InvalidTurnOutcome"},
-		{aj.ErrEmptyUserContent, "EmptyUserContent"},
-		{aj.ErrEmptyAssistantResult, "EmptyAssistantResult"},
-		{aj.ErrOversizedContent, "OversizedContent"},
-		{aj.ErrInvalidUTF8, "InvalidUtf8"},
-		{aj.ErrTooManyTools, "TooManyTools"},
-		{aj.ErrInvalidToolName, "InvalidToolName"},
-		{aj.ErrInvalidWorkspaceRoot, "InvalidWorkspaceRoot"},
-		{aj.ErrInvalidBranchOf, "InvalidBranchOf"},
-		{aj.ErrInvalidHost, "InvalidHost"},
-		{aj.ErrContainmentViolation, "ContainmentViolation"},
-		{aj.ErrPermissionDenied, "PermissionDenied"},
-		{aj.ErrStoreUnavailable, "Unavailable"},
-	} {
-		if errors.Is(err, m.err) {
-			return m.name
-		}
-	}
-	return "Unavailable"
 }

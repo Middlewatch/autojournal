@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "world": "testworld",
+  "scope": "workspace:demo",
+  "lane": "scratch",
+  "harness": "claude-code",
+  "adapter_version": "0.1.0",
+  "session_id": "sess-08",
+  "turn_id": "turn-8001",
+  "event_time_ms": 1785200000123,
+  "capture_policy": "default-v1",
+  "turn_outcome": "completed",
+  "user_content": "Which lane is this?",
+  "assistant_result": "Not one the contract knows.",
+  "tools": []
+}

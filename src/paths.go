@@ -5,9 +5,10 @@
 // address different corpora: the host captures into a journal the CLI never
 // reports, or opens a projection keyed to another root.
 //
-// Every path returned is absolute. Behavior is byte-parity with the Zig
-// reference (src/paths.zig at tag zig-final), including its unset-vs-empty
-// environment distinctions.
+// Every path returned is absolute. The unset-versus-empty distinction in the
+// environment is load-bearing and deliberate: XDG says an empty XDG_* value
+// means absent, while a missing HOME is a broken environment that must fail
+// loudly rather than resolve to somewhere plausible-looking.
 
 package autojournal
 
@@ -21,14 +22,27 @@ import (
 
 // Environ looks up one environment variable, shaped like os.LookupEnv:
 // the CLI passes os.LookupEnv directly and tests pass fixtures. The bool
-// matters — the Zig reference treats an unset HOME as an error but a
-// set-but-empty XDG value as absent, so "empty" and "unset" must stay
-// distinguishable.
+// matters: an unset HOME is an error, while a set-but-empty XDG value is
+// merely absent and falls through to its default. Collapsing "empty" and
+// "unset" into one signal would lose that difference.
 type Environ func(key string) (string, bool)
 
 // ErrMissingHome is returned when a derivation needs $HOME and it is not
-// set. A set-but-empty HOME is used as-is, matching the Zig oracle.
+// set — or is set but empty, which is the same broken environment wearing
+// a different shell idiom. The check matches xdgBase's treatment of
+// an empty XDG value.
 var ErrMissingHome = errors.New("HOME is not set")
+
+// homeDir returns a usable $HOME, or ErrMissingHome for unset and empty
+// alike: "" + "/.local/state" would resolve to a root-owned absolute path
+// nobody means.
+func homeDir(env Environ) (string, error) {
+	home, ok := env("HOME")
+	if !ok || home == "" {
+		return "", ErrMissingHome
+	}
+	return home, nil
+}
 
 // xdgBase returns a usable XDG base directory, or false. Per the XDG Base
 // Directory spec, a value that is empty *or relative* is invalid and must
@@ -47,9 +61,9 @@ func StateDir(env Environ) (string, error) {
 	if xdg, ok := xdgBase(env, "XDG_STATE_HOME"); ok {
 		return xdg, nil
 	}
-	home, ok := env("HOME")
-	if !ok {
-		return "", ErrMissingHome
+	home, err := homeDir(env)
+	if err != nil {
+		return "", err
 	}
 	return home + "/.local/state", nil
 }
@@ -65,9 +79,9 @@ func DefaultJournalRoot(env Environ) (string, error) {
 	if xdg, ok := xdgBase(env, "XDG_DATA_HOME"); ok {
 		return xdg + "/autojournal/journals", nil
 	}
-	home, ok := env("HOME")
-	if !ok {
-		return "", ErrMissingHome
+	home, err := homeDir(env)
+	if err != nil {
+		return "", err
 	}
 	return home + "/.local/share/autojournal/journals", nil
 }
@@ -78,9 +92,12 @@ func DefaultJournalRoot(env Environ) (string, error) {
 const IndexDigestNameLen = 16
 
 // RootDigestHex is the full SHA-256 hex of the journal root path. The
-// index projection is keyed by it so distinct roots never share one.
+// index projection is keyed by it so distinct roots never share one. The
+// path is canonicalized first, so two spellings of one root — a
+// trailing slash, a doubled separator — derive one digest and therefore
+// one index, whoever the caller is.
 func RootDigestHex(rootPath string) string {
-	sum := sha256.Sum256([]byte(rootPath))
+	sum := sha256.Sum256([]byte(ResolveJournalRoot(rootPath)))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -107,9 +124,10 @@ func RootInSharedDirectory(rootPath string) bool {
 	candidate := filepath.Dir(rootPath)
 	for {
 		info, err := os.Stat(candidate)
-		// A non-directory ancestor answers nothing either: the Zig oracle
-		// opens each candidate as a directory, so a file in the way sends
-		// the walk upward just like a missing path does.
+		// A non-directory ancestor answers nothing: the question is who else
+		// can create entries alongside the root, and a plain file in the way
+		// has no answer, so the walk continues upward exactly as it does for
+		// a path that does not exist.
 		if err != nil || !info.IsDir() {
 			parent := filepath.Dir(candidate)
 			if parent == candidate {
@@ -120,4 +138,51 @@ func RootInSharedDirectory(rootPath string) bool {
 		}
 		return info.Mode().Perm()&0o022 != 0
 	}
+}
+
+// ThesaurusPath resolves the hand-editable thesaurus: owner config first,
+// the legacy environment override second, the XDG default last. A product
+// rule, not a CLI convenience: an embedding host that resolved this
+// differently would silently read another owner's thesaurus.
+func ThesaurusPath(env Environ, cfg Config) (string, error) {
+	if cfg.ThesaurusPath != "" {
+		return cfg.ThesaurusPath, nil
+	}
+	if p, ok := env("AUTOJOURNAL_THESAURUS"); ok && p != "" {
+		return p, nil
+	}
+	// xdgBase, not a raw read: an empty or relative XDG_CONFIG_HOME is
+	// invalid per the XDG spec and must fall through, or this function
+	// would hand back a CWD-dependent path the file header forbids.
+	if xdg, ok := xdgBase(env, "XDG_CONFIG_HOME"); ok {
+		return xdg + "/autojournal/thesaurus.json", nil
+	}
+	home, err := homeDir(env)
+	if err != nil {
+		return "", err
+	}
+	return home + "/.config/autojournal/thesaurus.json", nil
+}
+
+// MissLogPath resolves the weak-query miss log: the environment override,
+// else the state directory. The same product-rule reasoning as
+// ThesaurusPath applies.
+func MissLogPath(env Environ) (string, error) {
+	if p, ok := env("AUTOJOURNAL_MISS_LOG"); ok && p != "" {
+		return p, nil
+	}
+	state, err := StateDir(env)
+	if err != nil {
+		return "", err
+	}
+	return state + "/autojournal/thesaurus-candidates.jsonl", nil
+}
+
+// ResolveJournalRoot applies filepath.Clean to a root before anything
+// derives from it, so two spellings of one root never get two indexes.
+// Lexical only, deliberately: it must work for a root that does not
+// exist yet, which the first-capture path needs, so EvalSymlinks is not an
+// option here.
+func ResolveJournalRoot(path string) string {
+	return filepath.Clean(path)
 }

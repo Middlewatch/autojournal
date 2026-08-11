@@ -8,29 +8,9 @@
 // fsync. An existing target is validated by digest: exact duplicate is
 // success, mismatch is a typed conflict.
 //
-// Containment: every component below the root is either a validated token
-// or generated here, and every operation goes through os.Root with a
-// symlink-refusing Lstat check per descent step, so a link planted inside
-// the corpus cannot redirect writes outside it.
-//
-// Two notes on the mechanics versus the Zig oracle (behavior is
-// identical; the primitives differ because the Go stdlib exposes no
-// no-replace rename):
-//
-//   - The Zig implementation publishes with renameat2(RENAME_NOREPLACE). Go's
-//     os.Rename always replaces, so publication here uses link(2), which
-//     fails atomically with EEXIST when the target exists — the same
-//     no-replace guarantee from a different syscall. A crash between link
-//     and unlink can leave an orphan temp file; it is invisible to
-//     CountEpisodes and to readers, and the next publish retries a fresh
-//     temp name.
-//   - The Zig implementation refuses to follow symlinks per descent step with
-//     openat(O_NOFOLLOW). os.Root confines resolution to the tree but
-//     would follow an in-corpus link, so each descent step first Lstats
-//     and refuses anything that is not a real directory. A planted link
-//     is rejected exactly as the Zig implementation rejects it; the residual
-//     check-then-open race window requires an attacker who already holds
-//     write access inside the owner-only corpus.
+// The descent, temp-write, and fsync mechanics publication relies on live in
+// corpus.go with the rest of the containment discipline; this file owns the
+// publication decision itself.
 
 package autojournal
 
@@ -41,44 +21,29 @@ import (
 	"io/fs"
 	"os"
 	"strings"
-	"time"
 )
 
-const (
-	// storeDirPermissions is enforced on every directory descent.
-	storeDirPermissions = 0o700
-	// storeFilePermissions is the episode file mode.
-	storeFilePermissions = 0o600
-)
-
-// Store publish failures. The CLI maps each to its contract outcome.
+// publishWriteTemp and publishSyncDir are Publish's two durability points —
+// the temp-file fsync and the parent-directory fsync — held as package
+// variables so the supersede durability witness can observe that the rename
+// path exercises exactly the fsyncs the link path does. Production never
+// rebinds them.
 var (
-	// ErrContainmentViolation means a path component inside the corpus is
-	// a symlink or not a directory.
-	ErrContainmentViolation = errors.New("containment violation")
-	// ErrPermissionDenied maps to the permission_denied outcome.
-	ErrPermissionDenied = errors.New("permission denied")
-	// ErrStoreUnavailable is any other I/O failure or sync uncertainty;
-	// the caller may retry — idempotency makes redelivery safe.
-	ErrStoreUnavailable = errors.New("store unavailable")
-	// errTempCollision retries with the next temp name suffix.
-	errTempCollision = errors.New("temp name collision")
-)
-
-// storeError classifies an I/O error into the store's failure vocabulary,
-// keeping the OS detail in the message.
-func storeError(context string, err error) error {
-	switch {
-	case errors.Is(err, fs.ErrPermission):
-		return fmt.Errorf("%s: %w: %v", context, ErrPermissionDenied, err)
-	default:
-		return fmt.Errorf("%s: %w: %v", context, ErrStoreUnavailable, err)
+	publishWriteTemp = writeTemp
+	publishSyncDir   = syncDir
+	// publishRename is the supersede replacement step, indirected with the
+	// fsync points so the witness can assert ordering: the directory fsync
+	// is only worth having if it lands after the entry change it makes
+	// durable.
+	publishRename = func(dir *os.Root, oldname, newname string) error {
+		return dir.Rename(oldname, newname)
 	}
-}
+)
 
 // Published is the result of one Publish call.
 type Published struct {
-	// Outcome is CapturePublished, CaptureDuplicate, or CaptureConflict.
+	// Outcome is CapturePublished, CaptureDuplicate, CaptureSuperseded,
+	// or CaptureConflict.
 	Outcome   CaptureOutcome
 	EpisodeID string
 	DigestHex string
@@ -88,29 +53,6 @@ type Published struct {
 	// Content is the rendered episode bytes, so the capture path can
 	// index without re-reading the file it just wrote.
 	Content []byte
-}
-
-// OpenJournalRoot opens the journal root for publishing, creating it if
-// absent and enforcing owner-only permissions — the Zig oracle CLI's
-// openOrCreateRoot. Intermediate directories of a freshly created root
-// get default permissions (0o755 before umask), as in the Zig oracle; only
-// the root itself is hardened.
-func OpenJournalRoot(path string) (*os.Root, error) {
-	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
-		if err := os.MkdirAll(path, 0o755); err != nil {
-			return nil, storeError("create journal root", err)
-		}
-	} else if err != nil {
-		return nil, storeError("open journal root", err)
-	}
-	if err := os.Chmod(path, storeDirPermissions); err != nil {
-		return nil, storeError("harden journal root", err)
-	}
-	root, err := os.OpenRoot(path)
-	if err != nil {
-		return nil, storeError("open journal root", err)
-	}
-	return root, nil
 }
 
 // Publish publishes one validated payload into the journal root. The
@@ -139,7 +81,7 @@ func Publish(root *os.Root, payload *Payload, captureTimeMs uint64) (*Published,
 	written := false
 	for attempt := 0; attempt < 64 && !written; attempt++ {
 		tmpName = fmt.Sprintf(".%s.%d.%d.tmp", episodeID, captureTimeMs, attempt)
-		err := writeTemp(episodeDir, tmpName, content)
+		err := publishWriteTemp(episodeDir, tmpName, content)
 		switch {
 		case errors.Is(err, errTempCollision):
 			continue
@@ -161,17 +103,27 @@ func Publish(root *os.Root, payload *Payload, captureTimeMs uint64) (*Published,
 	case linkErr == nil:
 		// published
 	case errors.Is(linkErr, fs.ErrExist):
-		outcome, err = classifyExisting(episodeDir, finalName, digestHex)
+		outcome, err = classifyExisting(episodeDir, finalName, payload, digestHex)
 		if err != nil {
 			return nil, err
 		}
+		if outcome == CaptureSuperseded {
+			// The redelivery proved it contains the stored content:
+			// replace in place at the episode's own path. The temp is
+			// already fsynced, and the directory fsync below makes the
+			// replacement entry durable; the superseded bytes are not
+			// retained anywhere.
+			if err := publishRename(episodeDir, tmpName, finalName); err != nil {
+				return nil, corpusError("supersede episode", err)
+			}
+		}
 	default:
-		return nil, storeError("link episode", linkErr)
+		return nil, corpusError("link episode", linkErr)
 	}
 
 	// Make the directory entry durable before reporting success.
-	if err := syncDir(episodeDir); err != nil {
-		return nil, storeError("sync episode dir", err)
+	if err := publishSyncDir(episodeDir); err != nil {
+		return nil, corpusError("sync episode dir", err)
 	}
 
 	relPath := strings.Join(append(components, finalName), "/")
@@ -184,191 +136,288 @@ func Publish(root *os.Root, payload *Payload, captureTimeMs uint64) (*Published,
 	}, nil
 }
 
-// layoutComponents builds the directory components below the journal
-// root: reserved classification directories for non-default world, scope,
-// and lane, then the YYYY/MM/DD shard from the source event time.
-func layoutComponents(payload *Payload) []string {
-	var components []string
-	if payload.World != "main" {
-		components = append(components, "worlds", payload.World)
-	}
-	if payload.Scope != "default" {
-		components = append(components, "scopes", payload.Scope)
-	}
-	if payload.Lane != LaneConversation {
-		components = append(components, "lanes", string(payload.Lane))
-	}
-	// Input is unsigned, so pre-epoch times cannot occur by construction.
-	t := time.UnixMilli(int64(payload.EventTimeMs)).UTC()
-	components = append(components,
-		fmt.Sprintf("%04d", t.Year()),
-		fmt.Sprintf("%02d", int(t.Month())),
-		fmt.Sprintf("%02d", t.Day()),
-	)
-	return components
-}
-
-// openComponents descends the component list from root, creating and
-// hardening each level, and returns the final directory. Intermediate
-// directories are closed on the way down.
-func openComponents(root *os.Root, components []string) (*os.Root, error) {
-	current := root
-	ownsCurrent := false // the caller's root is never closed here
-	for _, component := range components {
-		next, err := openOrCreateChild(current, component)
-		if err != nil {
-			if ownsCurrent {
-				current.Close()
-			}
-			return nil, err
-		}
-		if ownsCurrent {
-			current.Close()
-		}
-		current = next
-		ownsCurrent = true
-	}
-	return current, nil
-}
-
-// openOrCreateChild opens a direct child directory, creating it
-// owner-only if absent. A symlink or non-directory component is a
-// containment violation. Concurrent creators are tolerated.
-func openOrCreateChild(parent *os.Root, name string) (*os.Root, error) {
-	info, err := parent.Lstat(name)
-	if errors.Is(err, fs.ErrNotExist) {
-		if err := parent.Mkdir(name, storeDirPermissions); err != nil && !errors.Is(err, fs.ErrExist) {
-			return nil, storeError("create corpus dir "+name, err)
-		}
-		// Re-check: a concurrent creator may have made a non-directory.
-		info, err = parent.Lstat(name)
-	}
-	if err != nil {
-		return nil, storeError("inspect corpus dir "+name, err)
-	}
-	if !info.IsDir() {
-		// Lstat does not follow links, so a symlink reports !IsDir and
-		// is refused here — equivalent to the Zig oracle's O_NOFOLLOW descent.
-		return nil, fmt.Errorf("corpus component %s: %w", name, ErrContainmentViolation)
-	}
-	child, err := parent.OpenRoot(name)
-	if err != nil {
-		return nil, storeError("open corpus dir "+name, err)
-	}
-	if err := child.Chmod(".", storeDirPermissions); err != nil {
-		child.Close()
-		return nil, storeError("harden corpus dir "+name, err)
-	}
-	return child, nil
-}
-
-// writeTemp creates the temp file exclusively with owner-only
-// permissions, writes the content, and fsyncs. A failed write removes the
-// temp it created: the name embeds the capture time, so an orphan would
-// make an identical redelivery fail its exclusive create until the
-// attempt suffix moves on.
-func writeTemp(dir *os.Root, tmpName string, content []byte) error {
-	f, err := dir.OpenFile(tmpName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, storeFilePermissions)
-	if err != nil {
-		if errors.Is(err, fs.ErrExist) {
-			return errTempCollision
-		}
-		return storeError("create temp", err)
-	}
-	ok := false
-	defer func() {
-		f.Close()
-		if !ok {
-			dir.Remove(tmpName)
-		}
-	}()
-	if _, err := f.Write(content); err != nil {
-		return storeError("write temp", err)
-	}
-	if err := f.Sync(); err != nil {
-		return storeError("sync temp", err)
-	}
-	ok = true
-	return nil
-}
-
-// classifyExisting decides duplicate versus conflict by comparing the
-// stored episode's frontmatter digest against the incoming payload
-// digest. The existing file's permissions are repaired to owner-only on
-// the way, matching the Zig oracle.
-func classifyExisting(dir *os.Root, finalName, digestHex string) (CaptureOutcome, error) {
+// classifyExisting decides duplicate, superseded, or conflict for a target
+// that already exists at the derived path: it verifies the stored file and,
+// when it verifies, tests containment against the incoming payload.
+//
+// This is where the supersede decision lives, and it deliberately does not
+// consult the index. Supersede requires every path-determining field to match, so a
+// genuine supersede candidate always lands on the stored episode's own path,
+// and the link collision Publish already detects is the only signal needed.
+// Supersede therefore works against a missing, stale, or foreign projection —
+// which matters, because the alternative would make correcting a settled turn
+// depend on index health.
+//
+// The order of its three tests is part of the contract, because two of them
+// can be true of one file and they return different exit codes:
+//
+//  1. The stored file's *recorded* digest equals digestHex -> duplicate.
+//     Deliberately first: an exact redelivery of an episode the owner has
+//     since hand-edited stays a duplicate, which is the answer that keeps
+//     redelivery idempotent.
+//  2. Otherwise verify the stored file. If it verifies and supersedes holds ->
+//     superseded.
+//  3. Otherwise conflict. This covers a stored file that does not verify,
+//     which is never superseded on any path.
+//
+// The existing file's permissions are repaired to owner-only on the way:
+// owner-only is a standing invariant, and a redelivery is a free opportunity
+// to fix a file that lost it.
+func classifyExisting(dir *os.Root, finalName string, incoming *Payload, digestHex string) (CaptureOutcome, error) {
 	f, err := dir.Open(finalName)
 	if err != nil {
-		return "", storeError("open existing episode", err)
+		return "", corpusError("open existing episode", err)
 	}
 	defer f.Close()
-	if err := f.Chmod(storeFilePermissions); err != nil {
-		return "", storeError("harden existing episode", err)
+	if err := f.Chmod(corpusFilePermissions); err != nil {
+		return "", corpusError("harden existing episode", err)
 	}
 	existing, err := io.ReadAll(io.LimitReader(f, MaxEpisodeFileBytes+1))
 	if err != nil {
-		return "", storeError("read existing episode", err)
+		return "", corpusError("read existing episode", err)
 	}
 	if len(existing) > MaxEpisodeFileBytes {
-		return "", storeError("read existing episode", fmt.Errorf("exceeds %d bytes", MaxEpisodeFileBytes))
+		return "", corpusError("read existing episode", fmt.Errorf("exceeds %d bytes", MaxEpisodeFileBytes))
 	}
 	existingDigest, ok := FrontmatterDigestHex(string(existing))
-	if !ok {
-		return CaptureConflict, nil
-	}
-	if existingDigest == digestHex {
+	if ok && existingDigest == digestHex {
 		return CaptureDuplicate, nil
+	}
+	stored, verifyErr := VerifyEpisode(string(existing))
+	if verifyErr == nil && supersedes(incoming, stored) {
+		return CaptureSuperseded, nil
 	}
 	return CaptureConflict, nil
 }
 
-// syncDir fsyncs a directory, making the entry changes inside it durable.
-func syncDir(dir *os.Root) error {
-	f, err := dir.Open(".")
-	if err != nil {
-		return err
+// supersedes reports whether incoming is the same turn as stored at a later
+// stage of completion. Every field the payload digest covers must be
+// identical — world, scope, lane, harness, session id, turn id, event time,
+// capture policy, turn outcome, user content — except the two that are
+// allowed to grow: stored's assistant result must be a strict prefix of
+// incoming's, and stored's tool-name list a prefix of incoming's.
+//
+// Requiring the event time, scope and lane to match is not belt-and-braces:
+// they determine the layout path. A redelivery with a different event time
+// shards to another date, publication succeeds rather than colliding, and the
+// corpus gains a second file claiming one episode id — the outcome the one-file-per-identity rule rejects,
+// reached by accident. A redelivery that shards elsewhere is a conflict.
+//
+// Anything else is divergence and stays a conflict. Length is not evidence of
+// sameness and recency is not evidence of quality; this function is the whole
+// of the store's judgment and it is mechanical.
+func supersedes(incoming *Payload, stored *VerifiedEpisode) bool {
+	if incoming.World != stored.World ||
+		incoming.Scope != stored.Scope ||
+		incoming.Lane != stored.Lane ||
+		incoming.Harness != stored.Harness ||
+		incoming.SessionID != stored.SessionID ||
+		incoming.TurnID != stored.TurnID ||
+		incoming.EventTimeMs != stored.EventTimeMs ||
+		incoming.CapturePolicy != stored.CapturePolicy ||
+		incoming.TurnOutcome != stored.TurnOutcome ||
+		incoming.UserContent != stored.UserContent {
+		return false
 	}
-	defer f.Close()
-	return f.Sync()
+	if len(incoming.AssistantResult) <= len(stored.AssistantResult) ||
+		!strings.HasPrefix(incoming.AssistantResult, stored.AssistantResult) {
+		return false
+	}
+	if len(stored.Tools) > len(incoming.Tools) {
+		return false
+	}
+	for i, tool := range stored.Tools {
+		if incoming.Tools[i].Name != tool.Name {
+			return false
+		}
+	}
+	return true
 }
 
-// CountEpisodes counts authoritative-looking episode files under the
-// journal root. Diagnostics only; malformed candidates are excluded by
-// sync. The walk follows the index's visibility rules: dot-directories
-// are foreign tooling state, never episode shards; symlinks are not
-// followed; descent stops CorpusWalkDepth components below the root.
-func CountEpisodes(root *os.Root) uint64 {
-	var total uint64
-	// The walk is diagnostics-best-effort: any read failure skips that
-	// subtree, matching the Zig oracle's error-swallowing iterator.
-	fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			if d != nil && d.IsDir() {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if d.IsDir() {
-			if path == "." {
-				return nil
-			}
-			name := d.Name()
-			if name == "" || name[0] == '.' {
-				return fs.SkipDir
-			}
-			if strings.Count(path, "/")+1 > CorpusWalkDepth {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
-		name := d.Name()
-		if strings.HasPrefix(name, IDPrefix) && strings.HasSuffix(name, ".md") {
-			total++
-		}
+// Redelivery is a prior capture of the same episode identity.
+type Redelivery struct {
+	// Outcome is CaptureDuplicate when the stored digest matches the
+	// payload, CaptureConflict when the identity was redelivered with
+	// different content.
+	Outcome CaptureOutcome
+	// RelPath is where the existing episode lives.
+	RelPath string
+}
+
+// CheckRedelivery is the corpus-wide existence check for capture. It exists
+// because the store detects a redelivered identity only when it lands on the
+// same event-date path, so an identity redelivered with a different event
+// time would otherwise shard elsewhere and store twice. The index knows
+// every shard, so it answers "does this episode id exist anywhere" — but
+// the file it names stays the authority: the outcome is classified from
+// that file's own frontmatter, and any index miss, stale row, unreadable
+// file, or identity mismatch returns nil so the caller proceeds to
+// publish (the store's own same-path check still applies).
+//
+// It returns nil — proceed to publish — in one more case: the stored episode
+// is at the very path this payload derives, and its digest differs. That is
+// the supersede candidate, and only Publish's own same-path classification
+// can rule on it. Without this, a strict extension would be reported
+// conflict before Publish is ever called, because an extended assistant
+// result changes the digest by construction; supersede would be unreachable.
+// Everything else is unchanged: an exact digest match anywhere is duplicate,
+// and a differing digest at a *different* path is a conflict, because supersede
+// requires every path-determining field to match.
+func CheckRedelivery(root *os.Root, idx *Index, payload *Payload) *Redelivery {
+	episodeID := EpisodeID(payload)
+	digestHex := PayloadDigestHex(payload)
+	row, err := idx.LookupEpisode(episodeID)
+	if err != nil || row == nil {
 		return nil
-	})
-	return total
+	}
+	content, err := ReadContained(root, row.RelPath)
+	if err != nil {
+		return nil
+	}
+	ep := ParseEpisode(content)
+	if ep == nil || ep.EpisodeID != episodeID {
+		return nil
+	}
+	if ep.DigestHex == digestHex {
+		return &Redelivery{Outcome: CaptureDuplicate, RelPath: row.RelPath}
+	}
+	derived := strings.Join(append(layoutComponents(payload), episodeID+".md"), "/")
+	if row.RelPath == derived {
+		return nil
+	}
+	return &Redelivery{Outcome: CaptureConflict, RelPath: row.RelPath}
+}
+
+// CaptureRequest is one whole capture transaction's input.
+//
+// Note Defaults' type: config.go's CaptureDefaults (renamed from `type
+// Capture`, because src/ is one package and the entry point below
+// needs the name Capture).
+type CaptureRequest struct {
+	RootPath      string
+	IndexPath     string
+	Raw           RawPayload
+	Defaults      CaptureDefaults // owner capture defaults, for world/scope fill
+	CaptureTimeMs uint64
+}
+
+// CaptureResult is the transaction's typed outcome. Err is nil for every
+// success outcome; Detail carries CaptureErrorName(Err) when it is not.
+type CaptureResult struct {
+	Outcome    CaptureOutcome
+	EpisodeID  string
+	DigestHex  string
+	RelPath    string
+	IndexState IndexFreshness
+	Err        error
+	Detail     string
+}
+
+// Capture composes the whole transaction so the imported module form and the
+// binary run the same code rather than the same intent: defaults fill,
+// Validate, root canonicalization, shared-directory refusal, corpus-wide
+// redelivery classification, atomic publication, index update, and the
+// index-failure freshness downgrade. Source publication succeeding while
+// indexing fails is a success with a downgraded IndexState, never a failure.
+//
+// The order is part of the contract, not an implementation detail: an
+// embedding host that reordered it would report different failures for the
+// same input. Shared-directory refusal is decided before the root is opened
+// (a refused root is never created), and Validate before either.
+func Capture(req CaptureRequest) CaptureResult {
+	// Owner-default world/scope fill: a host provides explicit values only
+	// when transporting an owner session choice.
+	raw := req.Raw
+	if raw.World == nil {
+		world := req.Defaults.World
+		raw.World = &world
+	}
+	if raw.Scope == nil {
+		scope := req.Defaults.Scope
+		raw.Scope = &scope
+	}
+	payload, err := Validate(raw)
+	if err != nil {
+		return CaptureResult{Outcome: CaptureMalformed, IndexState: IndexNotBuilt,
+			Err: err, Detail: CaptureErrorName(err)}
+	}
+
+	rootPath := ResolveJournalRoot(req.RootPath)
+	if RootInSharedDirectory(rootPath) {
+		err := fmt.Errorf("journal root under a shared directory: %w: %w",
+			ErrPermissionDenied, ErrSharedDirectory)
+		return CaptureResult{Outcome: CapturePermissionDenied, IndexState: IndexNotBuilt,
+			Err: err, Detail: CaptureErrorName(err)}
+	}
+	root, err := OpenJournalRoot(rootPath)
+	if err != nil {
+		return CaptureResult{Outcome: CaptureUnavailable, IndexState: IndexNotBuilt,
+			Err: err, Detail: CaptureErrorName(err)}
+	}
+	defer root.Close()
+
+	// The index is opened once, with the foreign-root gate, and reused for
+	// the redelivery check and the post-publish update. Best-effort
+	// throughout: an absent or unhelpful index skips the corpus-wide check
+	// (the store's own same-path classification still applies) and
+	// downgrades freshness after publication.
+	digest := RootDigestHex(rootPath)
+	idx, indexErr := OpenIndexHardened(req.IndexPath, &digest)
+	if idx != nil {
+		defer idx.Close()
+		if existing := CheckRedelivery(root, idx, &payload); existing != nil {
+			state := IndexFresh
+			if existing.Outcome != CaptureDuplicate {
+				state = IndexStale
+			}
+			return CaptureResult{
+				Outcome:    existing.Outcome,
+				EpisodeID:  EpisodeID(&payload),
+				DigestHex:  PayloadDigestHex(&payload),
+				RelPath:    existing.RelPath,
+				IndexState: state,
+			}
+		}
+	}
+
+	published, err := Publish(root, &payload, req.CaptureTimeMs)
+	if err != nil {
+		outcome := CaptureUnavailable
+		switch {
+		case errors.Is(err, ErrContainmentViolation):
+			outcome = CaptureInternalError
+		case errors.Is(err, ErrPermissionDenied):
+			outcome = CapturePermissionDenied
+		}
+		return CaptureResult{Outcome: outcome, IndexState: IndexNotBuilt,
+			Err: err, Detail: CaptureErrorName(err)}
+	}
+
+	// Source publication is already durable; the index is best-effort here
+	// and repairable via sync, so its failure downgrades freshness only and
+	// never changes Outcome.
+	indexState := IndexStale
+	switch published.Outcome {
+	case CaptureConflict:
+		// A conflict wrote nothing; there is nothing to index.
+	case CapturePublished, CaptureDuplicate, CaptureSuperseded:
+		switch {
+		case idx == nil && errors.Is(indexErr, ErrForeignIndex):
+			indexState = IndexUnavailable
+		case idx == nil:
+			// Unopenable index: publication stands, projection stays stale.
+		default:
+			if idx.IndexEpisode(published.RelPath, string(published.Content)) == nil &&
+				HardenIndexFiles(req.IndexPath) == nil {
+				indexState = IndexFresh
+			}
+		}
+	}
+	return CaptureResult{
+		Outcome:    published.Outcome,
+		EpisodeID:  published.EpisodeID,
+		DigestHex:  published.DigestHex,
+		RelPath:    published.RelPath,
+		IndexState: indexState,
+	}
 }

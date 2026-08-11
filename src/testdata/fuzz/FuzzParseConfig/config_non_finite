@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"recency_boost\": 1e999}")

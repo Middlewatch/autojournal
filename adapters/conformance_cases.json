@@ -1,0 +1,369 @@
+{
+  "_contract": [
+    "Shared edge-case corpus for the payload contract's token,",
+    "workspace-root and origin-host rules. adapters/test_conformance.py",
+    "feeds every case to every implementation listed for its rule and",
+    "asserts the decision matches `expect` - identically everywhere.",
+    "The `implementations` lists are pinned again inside the test, so",
+    "an adapter dropping out of a rule fails loudly in both places.",
+    "Values are data, never rendered on failure: the runner reports",
+    "rule, case id and implementation only."
+  ],
+  "rules": {
+    "token": {
+      "implementations": [
+        "claude-code",
+        "pi"
+      ],
+      "cases": [
+        {
+          "id": "empty",
+          "value": "",
+          "expect": "reject"
+        },
+        {
+          "id": "single-letter",
+          "value": "a",
+          "expect": "accept"
+        },
+        {
+          "id": "plain-name",
+          "value": "Bash",
+          "expect": "accept"
+        },
+        {
+          "id": "exactly-128-bytes",
+          "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "expect": "accept"
+        },
+        {
+          "id": "over-128-bytes",
+          "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "expect": "reject"
+        },
+        {
+          "id": "inner-space",
+          "value": "bad name",
+          "expect": "reject"
+        },
+        {
+          "id": "leading-space",
+          "value": " Bash",
+          "expect": "reject"
+        },
+        {
+          "id": "every-allowed-punct",
+          "value": "a.b_c-d:e+f/g@h",
+          "expect": "accept"
+        },
+        {
+          "id": "leading-dot",
+          "value": ".hidden",
+          "expect": "accept"
+        },
+        {
+          "id": "trailing-dot",
+          "value": "hidden.",
+          "expect": "accept"
+        },
+        {
+          "id": "leading-slash",
+          "value": "/lead",
+          "expect": "accept"
+        },
+        {
+          "id": "trailing-slash",
+          "value": "trail/",
+          "expect": "accept"
+        },
+        {
+          "id": "slash-below-digit-zero",
+          "value": "/",
+          "expect": "accept"
+        },
+        {
+          "id": "colon-above-digit-nine",
+          "value": ":",
+          "expect": "accept"
+        },
+        {
+          "id": "at-below-upper-a",
+          "value": "@",
+          "expect": "accept"
+        },
+        {
+          "id": "bracket-above-upper-z",
+          "value": "[",
+          "expect": "reject"
+        },
+        {
+          "id": "backtick-below-lower-a",
+          "value": "`",
+          "expect": "reject"
+        },
+        {
+          "id": "brace-above-lower-z",
+          "value": "{",
+          "expect": "reject"
+        },
+        {
+          "id": "comma",
+          "value": "x,y",
+          "expect": "reject"
+        },
+        {
+          "id": "equals",
+          "value": "a=b",
+          "expect": "reject"
+        },
+        {
+          "id": "tilde",
+          "value": "~",
+          "expect": "reject"
+        },
+        {
+          "id": "semicolon-above-colon",
+          "value": ";",
+          "expect": "reject"
+        },
+        {
+          "id": "asterisk-below-plus",
+          "value": "*",
+          "expect": "reject"
+        },
+        {
+          "id": "question-below-at",
+          "value": "?",
+          "expect": "reject"
+        },
+        {
+          "id": "caret-below-underscore",
+          "value": "^",
+          "expect": "reject"
+        },
+        {
+          "id": "non-ascii-letter",
+          "value": "na\u00efve",
+          "expect": "reject"
+        },
+        {
+          "id": "emoji",
+          "value": "\ud83d\ude80",
+          "expect": "reject"
+        },
+        {
+          "id": "control-char",
+          "value": "a\u0001b",
+          "expect": "reject"
+        },
+        {
+          "id": "delete-char",
+          "value": "a\u007fb",
+          "expect": "reject"
+        },
+        {
+          "id": "multibyte-over-128",
+          "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u00e9",
+          "expect": "reject"
+        }
+      ]
+    },
+    "workspace_root": {
+      "implementations": [
+        "claude-code",
+        "codex"
+      ],
+      "cases": [
+        {
+          "id": "empty",
+          "value": "",
+          "expect": "reject"
+        },
+        {
+          "id": "absolute",
+          "value": "/home/ada/projects",
+          "expect": "accept"
+        },
+        {
+          "id": "relative",
+          "value": "projects/x",
+          "expect": "accept"
+        },
+        {
+          "id": "exactly-512-bytes",
+          "value": "/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "expect": "accept"
+        },
+        {
+          "id": "over-512-bytes",
+          "value": "/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "expect": "reject"
+        },
+        {
+          "id": "multibyte-exactly-512",
+          "value": "/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u00e9",
+          "expect": "accept"
+        },
+        {
+          "id": "multibyte-over-512",
+          "value": "/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u00e9",
+          "expect": "reject"
+        },
+        {
+          "id": "non-ascii",
+          "value": "/p\u00e4th/\u00fcn\u00efcode",
+          "expect": "accept"
+        },
+        {
+          "id": "inner-space",
+          "value": "/with space/dir",
+          "expect": "accept"
+        },
+        {
+          "id": "padded-with-spaces",
+          "value": " /padded ",
+          "expect": "accept"
+        },
+        {
+          "id": "trailing-separator",
+          "value": "/home/",
+          "expect": "accept"
+        },
+        {
+          "id": "newline",
+          "value": "/bad\npath",
+          "expect": "reject"
+        },
+        {
+          "id": "tab",
+          "value": "/bad\tpath",
+          "expect": "reject"
+        },
+        {
+          "id": "control-char",
+          "value": "/bad\u0001path",
+          "expect": "reject"
+        },
+        {
+          "id": "delete-char",
+          "value": "/bad\u007fpath",
+          "expect": "reject"
+        }
+      ]
+    },
+    "origin_host": {
+      "implementations": [
+        "claude-code",
+        "codex",
+        "pi"
+      ],
+      "cases": [
+        {
+          "id": "empty",
+          "value": "",
+          "expect": "reject"
+        },
+        {
+          "id": "short-name",
+          "value": "willow",
+          "expect": "accept"
+        },
+        {
+          "id": "fqdn-shortens",
+          "value": "willow.example.com",
+          "expect": "accept"
+        },
+        {
+          "id": "leading-dot-empty-short",
+          "value": ".local",
+          "expect": "reject"
+        },
+        {
+          "id": "dot-only",
+          "value": ".",
+          "expect": "reject"
+        },
+        {
+          "id": "whitespace-then-dot",
+          "value": "  .x",
+          "expect": "reject"
+        },
+        {
+          "id": "inner-space",
+          "value": "host name",
+          "expect": "reject"
+        },
+        {
+          "id": "hyphenated",
+          "value": "build-server-01",
+          "expect": "accept"
+        },
+        {
+          "id": "underscored",
+          "value": "host_1",
+          "expect": "accept"
+        },
+        {
+          "id": "colon",
+          "value": "node:1",
+          "expect": "accept"
+        },
+        {
+          "id": "padded-short-name",
+          "value": "  willow  ",
+          "expect": "accept"
+        },
+        {
+          "id": "comma",
+          "value": "bad,host",
+          "expect": "reject"
+        },
+        {
+          "id": "semicolon",
+          "value": "bad;host",
+          "expect": "reject"
+        },
+        {
+          "id": "asterisk",
+          "value": "bad*host",
+          "expect": "reject"
+        },
+        {
+          "id": "question-mark",
+          "value": "bad?host",
+          "expect": "reject"
+        },
+        {
+          "id": "caret",
+          "value": "bad^host",
+          "expect": "reject"
+        },
+        {
+          "id": "non-ascii",
+          "value": "w\u00edllow",
+          "expect": "reject"
+        },
+        {
+          "id": "exactly-128",
+          "value": "hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh",
+          "expect": "accept"
+        },
+        {
+          "id": "over-128",
+          "value": "hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh",
+          "expect": "reject"
+        },
+        {
+          "id": "fqdn-oversize-short",
+          "value": "hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh.local",
+          "expect": "reject"
+        },
+        {
+          "id": "control-char",
+          "value": "bad\u0001host",
+          "expect": "reject"
+        }
+      ]
+    }
+  }
+}

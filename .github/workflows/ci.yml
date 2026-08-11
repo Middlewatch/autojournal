@@ -10,9 +10,13 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  schedule:
+    # Weekly long fuzz (see the fuzz job); every other job skips this event.
+    - cron: "17 6 * * 1"
 
 jobs:
   build:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,32 +25,26 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Format check
-        run: |
-          UNFORMATTED=$(gofmt -l src)
-          if [ -n "$UNFORMATTED" ]; then
-            printf 'gofmt needed:\n%s\n' "$UNFORMATTED" >&2
-            exit 1
-          fi
-
-      - name: Vet
-        run: go vet ./...
-
-      - name: Unit tests (linux-x64 native, race)
-        run: go test -race ./...
-
-      - name: Cross-compile release binaries
-        run: ./scripts/build-adapter-binaries.sh
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
 
-      - name: Adapter typecheck
+      - name: Install adapter dependencies
         working-directory: adapters/pi
-        run: |
-          npm ci
-          npx tsc --noEmit
+        run: npm ci
+
+      # The repository gate is the definition of green, and CI runs it rather
+      # than a re-listed subset: gofmt, vet, race tests, the host binary build,
+      # the adapter typecheck and tests, the Python hook suite, the
+      # design-contract greps, and the end-to-end capture/search/get smoke. One
+      # command reproduces this locally. The jobs below add only what a single
+      # machine cannot do — cross-compilation and the multi-target binary
+      # matrix.
+      - name: Repository gate
+        run: ./scripts/verify.sh
+
+      - name: Cross-compile release binaries
+        run: ./scripts/build-adapter-binaries.sh
 
       - name: Verify npm package layout
         run: ./scripts/verify-package.sh
@@ -58,6 +56,7 @@ jobs:
           if-no-files-found: error
 
   e2e:
+    if: github.event_name != 'schedule'
     needs: build
     strategy:
       fail-fast: false
@@ -126,3 +125,41 @@ jobs:
         run: |
           npm ci
           npm test
+
+  # The gate's fuzz steps are bounded at ten seconds so green stays a
+  # fixed-cost command; this job is where the budget actually hunts. A
+  # crasher Go discovers is written into the package's seed corpus and
+  # committed back, so the failure becomes a permanent regression seed the
+  # bounded gate replays forever after.
+  fuzz:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Long fuzz, ten minutes per target
+        run: |
+          status=0
+          for target in FuzzParsePayload FuzzParseConfig FuzzParseEpisode \
+            FuzzLoadAliasMapFromBytes FuzzCursorDecode; do
+            go test -count=1 -run "^${target}\$" -fuzz "^${target}\$" \
+              -fuzztime=10m ./src/ || status=1
+          done
+          exit "$status"
+
+      - name: Commit any new crasher as a regression seed
+        if: failure()
+        run: |
+          if [ -n "$(git status --porcelain src/testdata/fuzz)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add src/testdata/fuzz
+            git commit -m "fuzz: scheduled run found a crasher; pinned as a regression seed"
+            git push
+          fi

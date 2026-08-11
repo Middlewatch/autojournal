@@ -18,7 +18,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-export const ADAPTER_VERSION = "1.0.4";
+export const ADAPTER_VERSION = "1.1.0";
 const HARNESS = "pi";
 const CAPTURE_POLICY = "pi-default-v1";
 const CAPTURE_TIMEOUT_MS = 10_000;
@@ -192,11 +192,13 @@ export function validWorld(value: string): boolean {
 }
 
 export function validScope(value: string): boolean {
+  // No leading dot: the core walk skips dot-directories as foreign tooling
+  // state, so a dot-led scope would publish episodes sync and freshness
+  // could never see. Matches the core's ValidScope rule.
   return (
     value.length > 0 &&
     value.length <= 128 &&
-    value !== "." &&
-    value !== ".." &&
+    !value.startsWith(".") &&
     /^[A-Za-z0-9._:+@-]+$/.test(value)
   );
 }
@@ -261,6 +263,19 @@ export function summarizeRun(messages: unknown[]): RunSummary {
   }
   return { userText: userParts.join("\n\n"), assistantText, toolNames };
 }
+
+// The capture outcome vocabulary is an interface-tier contract that grows by
+// minor version, and consumers must tolerate values they do not know.
+// Failure is therefore the enumerated set below; an outcome this adapter has
+// never heard of is a success it cannot name, never a failure.
+const CAPTURE_FAILURE_OUTCOMES = new Set([
+  "conflict",
+  "malformed",
+  "permission_denied",
+  "unavailable",
+  "internal_error",
+  "unreadable-report",
+]);
 
 // --- Capture payload ---
 
@@ -548,6 +563,9 @@ export interface ImportCounts {
   published: number;
   existing: number;
   skippedTurns: number;
+  // Successes reported with an outcome this adapter does not know: the
+  // vocabulary grows by minor version, and unknown is not failure.
+  unrecognized: number;
   failed: number;
   firstFailure: string | null;
 }
@@ -563,6 +581,7 @@ export async function importPiHistory(options: {
     published: 0,
     existing: 0,
     skippedTurns: 0,
+    unrecognized: 0,
     failed: 0,
     firstFailure: null,
   };
@@ -597,13 +616,15 @@ export async function importPiHistory(options: {
       });
       const report = parseJsonOutput(run);
       const outcome = typeof report?.outcome === "string" ? report.outcome : "unreadable-report";
-      if (outcome === "published") counts.published += 1;
+      if (outcome === "published" || outcome === "superseded") counts.published += 1;
       else if (outcome === "duplicate" || outcome === "conflict") counts.existing += 1;
-      else {
+      else if (run.timedOut || CAPTURE_FAILURE_OUTCOMES.has(outcome)) {
         counts.failed += 1;
         if (counts.firstFailure === null) {
           counts.firstFailure = run.timedOut ? "timeout" : outcome;
         }
+      } else {
+        counts.unrecognized += 1;
       }
     }
   }
@@ -616,6 +637,9 @@ export function formatImportSummary(counts: ImportCounts): string {
     `${counts.existing} already present`,
     `${counts.skippedTurns} skipped`,
   ];
+  if (counts.unrecognized > 0) {
+    parts.push(`${counts.unrecognized} stored with an outcome this adapter does not know`);
+  }
   if (counts.failed > 0) parts.push(`${counts.failed} failed (first: ${counts.firstFailure})`);
   const files =
     `${counts.files} session file(s)` +
@@ -754,7 +778,14 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
   let pendingRun: unknown[] | null = null;
   let activeSelection: SessionSelection = DEFAULT_SELECTION;
   let captureEnabled = true;
-  const counters = { published: 0, duplicate: 0, skipped: 0, failed: 0 };
+  const counters = {
+    published: 0,
+    duplicate: 0,
+    superseded: 0,
+    unrecognized: 0,
+    skipped: 0,
+    failed: 0,
+  };
   let degradationNotified = false;
   let legacyNotified = false;
   let importNoticeShown = false;
@@ -901,7 +932,12 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
     const outcome = typeof report?.outcome === "string" ? report.outcome : "unreadable-report";
     if (outcome === "published") counters.published += 1;
     else if (outcome === "duplicate") counters.duplicate += 1;
-    else noteFailure(ctx, run_.timedOut ? "timeout" : outcome);
+    else if (outcome === "superseded") counters.superseded += 1;
+    else if (run_.timedOut || CAPTURE_FAILURE_OUTCOMES.has(outcome)) {
+      noteFailure(ctx, run_.timedOut ? "timeout" : outcome);
+    } else {
+      counters.unrecognized += 1;
+    }
   });
 
   const searchExecute = async (_id: string, params: { query: string; limit?: number }) => {
@@ -994,7 +1030,11 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
       }
       const adapterLine =
         `adapter: ${counters.published} published, ${counters.duplicate} duplicate, ` +
-        `${counters.skipped} skipped, ${counters.failed} failed this session`;
+        `${counters.superseded} superseded, ${counters.skipped} skipped, ` +
+        `${counters.failed} failed this session` +
+        (counters.unrecognized > 0
+          ? ` (+${counters.unrecognized} with an outcome this adapter does not know)`
+          : "");
       if (binary === null) {
         ctx.ui.notify(`autojournal binary not found\n${adapterLine}`, "warning");
         return;
@@ -1027,6 +1067,7 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
           `Capture: ${captureEnabled ? "on" : "off"} (this session)`,
           "Save as default for new sessions",
           "Sync index",
+          "Reseal edited episodes",
           "Import Pi session history",
           "Show diagnostics",
           "Close",
@@ -1067,6 +1108,16 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
           } finally {
             endStatus();
           }
+          continue;
+        }
+        if (choice === "Reseal edited episodes") {
+          // Owner operation only: this menu is the sole adapter path to
+          // reseal — no tool, hook, or agent-reachable surface shells it.
+          // Reseal rewrites corpus files and then syncs, so it runs on the
+          // maintenance budget, not the query budget.
+          const run = await runBinary(binary, ["reseal"], { timeoutMs: SYNC_TIMEOUT_MS });
+          const body = run.stdout.trim() || run.stderr.trim() || "(reseal produced no output)";
+          ctx.ui.notify(body, run.code === 0 && !run.timedOut ? "info" : "warning");
           continue;
         }
         if (choice === "Import Pi session history") {
@@ -1174,7 +1225,7 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
             if (entered === undefined || entered === "") continue;
             if (!validScope(entered)) {
               ctx.ui.notify(
-                "Scopes use 1–128 letters, digits, '.', '_', ':', '+', '@', or '-'.",
+                "Scopes use 1–128 letters, digits, '.', '_', ':', '+', '@', or '-', and cannot start with '.'.",
                 "warning",
               );
               continue;

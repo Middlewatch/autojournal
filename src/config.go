@@ -6,26 +6,29 @@
 // The config file is a frozen on-disk contract. Two behaviors carry the
 // weight of that freeze:
 //
-//   - ParseConfig is a closed schema with the Zig reference's exact
-//     acceptance rules, including std.json's numeric coercions: integer
-//     fields also accept strings and integral floats ("5", 3.0, 3e0), and
-//     float fields accept strings ("1.5", "inf"). Unknown keys, duplicate
-//     keys, and wrong shapes are malformed.
-//   - SaveCaptureDefaults rewrites the file byte-identically to the
-//     Zig oracle: key order preserved, `world_root` migrated to
-//     `journal_root` (removed from its old position, appended at the
-//     end), numbers re-emitted with std.json's normalization (1.0 -> 1,
-//     1e-10 -> 0.0000000001, over-i64 integers verbatim), and std.json's
-//     escaping table (only control bytes, '"' and '\' escaped; UTF-8,
-//     DEL and HTML-significant characters raw). This is the house
-//     encoding/json deviation the Go guide carves out: the bytes on disk
-//     are themselves the contract, so an explicit writer replaces struct
-//     tags. Golden proof: testdata/golden/config-vectors.json.
+//   - ParseConfig is a closed schema. Its acceptance is wider than
+//     encoding/json's: integer fields also accept strings and integral floats
+//     ("5", 3.0, 3e0), and float fields accept strings ("1.5"). That width is
+//     frozen because an owner's existing file must keep loading across
+//     upgrades — narrowing it is an Interface-tier break. Unknown keys,
+//     duplicate keys, and wrong shapes are malformed. Underscore separators
+//     inside string numbers ("1_0") are rejected: fail closed on a literal
+//     nobody writes rather than guess at it.
+//   - SaveCaptureDefaults rewrites the file in place without disturbing
+//     anything it was not asked to change: key order preserved, `world_root`
+//     migrated to `journal_root` (removed from its old position, appended at
+//     the end), numbers re-emitted in a stable normalization (1.0 -> 1,
+//     1e-10 -> 0.0000000001, over-i64 integers verbatim), and a minimal
+//     escaping table (only control bytes, '"' and '\' escaped; UTF-8, DEL and
+//     HTML-significant characters raw) so a hand-maintained file stays
+//     human-readable. This is the house encoding/json deviation the Go guide
+//     carves out: the bytes on disk are themselves the contract, so an
+//     explicit writer replaces struct tags. Golden proof:
+//     testdata/golden/config-vectors.json.
 //
-// One deliberate deviation: std.json's numeric coercion also accepts
-// Zig-style underscore separators inside string values ("1_0"); the Go
-// port rejects them (fail closed). No real config carries them and no
-// frozen byte sequence is affected.
+// Non-finite float knobs ("inf", overflow to infinity) are rejected at
+// load alongside the NaN guard: an infinite boost or floor cannot express a
+// meaningful value.
 
 package autojournal
 
@@ -67,13 +70,13 @@ type Config struct {
 	ConfidenceFloor float64
 	MissLog         bool
 	MissLogMaxBytes uint64
-	Capture         Capture
+	Capture         CaptureDefaults
 }
 
-// Capture holds completed-turn defaults. A host adapter may override
+// CaptureDefaults holds completed-turn defaults. A host adapter may override
 // world/scope only when transporting an explicit per-session owner
 // selection.
-type Capture struct {
+type CaptureDefaults struct {
 	World string // world that completed-turn capture publishes into
 	Scope string // scope token recorded on captured episodes
 }
@@ -88,7 +91,7 @@ func DefaultConfig() Config {
 		ConfidenceFloor: 3.0,
 		MissLog:         false,
 		MissLogMaxBytes: 1024 * 1024,
-		Capture:         Capture{World: "main", Scope: "default"},
+		Capture:         CaptureDefaults{World: "main", Scope: "default"},
 	}
 }
 
@@ -119,6 +122,12 @@ func ResolvePath(env Environ, explicitPath string) (string, error) {
 	if !ok {
 		return "", ErrConfigNotFound
 	}
+	if home == "" {
+		// A set-but-empty HOME is a broken environment, not a
+		// missing config: "" + "/.config/..." would resolve to a
+		// root-owned absolute path nobody means.
+		return "", ErrMissingHome
+	}
 	return home + "/.config/autojournal/config.json", nil
 }
 
@@ -146,7 +155,8 @@ func LoadConfig(env Environ, explicitPath string) (*LoadedConfig, error) {
 }
 
 // readConfigFile reads up to MaxConfigBytes; an over-budget file is
-// Unavailable, matching the Zig oracle's limited-read error mapping.
+// Unavailable rather than malformed. The distinction is the owner's remedy:
+// a malformed config needs editing, an oversized one needs a different file.
 func readConfigFile(path string) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -166,10 +176,9 @@ func readConfigFile(path string) ([]byte, error) {
 	return data, nil
 }
 
-// ParseConfig validates config bytes against the closed schema and
-// returns the resolved Config. The acceptance rules mirror the Zig
-// reference's std.json typed parse exactly, including its lenient
-// numeric coercions for integer and float fields.
+// ParseConfig validates config bytes against the closed schema and returns
+// the resolved Config. See the package comment for why the numeric coercions
+// are wider than encoding/json's and why that width is frozen.
 func ParseConfig(data []byte) (Config, error) {
 	cfg := DefaultConfig()
 	v, err := parseOrderedJSON(data)
@@ -256,9 +265,10 @@ func ParseConfig(data []byte) (Config, error) {
 		cfg.Capture = cap
 	}
 
-	// Validation, mirroring the Zig oracle's check order. Presence is
-	// tracked separately from the value: an explicit empty string is
-	// present, and fails the absolute-path and world-token checks.
+	// The check order is fixed so a config with several problems always
+	// reports the same first failure, which keeps the diagnosis reproducible.
+	// Presence is tracked separately from the value: an explicit empty string
+	// is present, and fails the absolute-path and world-token checks.
 	if rootSet && !filepath.IsAbs(cfg.JournalRoot) {
 		return cfg, ErrConfigMalformed
 	}
@@ -276,9 +286,13 @@ func ParseConfig(data []byte) (Config, error) {
 	if cfg.MaxResults == 0 {
 		return cfg, ErrConfigMalformed
 	}
-	// The !(x >= 0) shape is deliberate: it rejects NaN, like the
-	// Zig oracle. (+Inf passes, as it did there.)
+	// The !(x >= 0) shape rejects NaN, which a plain x < 0 would let through.
+	// Non-finite values are rejected alongside: an infinite boost or floor
+	// cannot express a meaningful value, and would make every score NaN.
 	if !(cfg.RecencyBoost >= 0) || !(cfg.MinScore >= 0) || !(cfg.ConfidenceFloor >= 0) {
+		return cfg, ErrConfigMalformed
+	}
+	if math.IsInf(cfg.RecencyBoost, 0) || math.IsInf(cfg.MinScore, 0) || math.IsInf(cfg.ConfidenceFloor, 0) {
 		return cfg, ErrConfigMalformed
 	}
 	if !ValidWorld(cfg.Capture.World) {
@@ -292,8 +306,8 @@ func ParseConfig(data []byte) (Config, error) {
 
 // parseCapture parses the nested capture object: world/scope strings with
 // defaults, closed key set, null and non-strings rejected.
-func parseCapture(v configValue) (Capture, error) {
-	cap := Capture{World: "main", Scope: "default"}
+func parseCapture(v configValue) (CaptureDefaults, error) {
+	cap := CaptureDefaults{World: "main", Scope: "default"}
 	if v.kind != kindObject {
 		return cap, ErrConfigMalformed
 	}
@@ -326,10 +340,10 @@ func optStringField(get func(string) (configValue, bool), key string) (string, b
 	return v.s, true, nil
 }
 
-// optUintField extracts an unsigned integer field with the Zig oracle's
-// sliceToInt coercions: integer-shaped literals parse directly; strings
-// and float-shaped literals are accepted when they are exactly integral
-// and in range.
+// optUintField extracts an unsigned integer field under the widened numeric
+// acceptance the package comment describes: integer-shaped literals parse
+// directly; strings and float-shaped literals are accepted when they are
+// exactly integral and in range.
 func optUintField(get func(string) (configValue, bool), key string, bitSize int, def uint64) (uint64, error) {
 	v, ok := get(key)
 	if !ok {
@@ -342,7 +356,7 @@ func optUintField(get func(string) (configValue, bool), key string, bitSize int,
 	default:
 		return 0, ErrConfigMalformed
 	}
-	n, ok := zigCoerceUint(lit, bitSize)
+	n, ok := coerceConfigUint(lit, bitSize)
 	if !ok {
 		return 0, ErrConfigMalformed
 	}
@@ -350,8 +364,10 @@ func optUintField(get func(string) (configValue, bool), key string, bitSize int,
 }
 
 // optFloatField extracts a float field: number or string literals,
-// strconv grammar. Overflow to ±Inf is accepted (ErrRange tolerated),
-// matching the Zig oracle's parseFloat, which returns inf for "1e999".
+// strconv grammar. Overflow to ±Inf is tolerated here (ErrRange) because
+// ParseConfig's IsInf guards reject non-finite knob values after
+// extraction — the rejection lives with the other value checks so a
+// config with several problems reports its first failure in field order.
 func optFloatField(get func(string) (configValue, bool), key string, def float64) (float64, error) {
 	v, ok := get(key)
 	if !ok {
@@ -383,36 +399,44 @@ func optBoolField(get func(string) (configValue, bool), key string, def bool) (b
 	return v.b, nil
 }
 
-// isIntegerShaped reports whether a JSON number literal has no fraction
-// or exponent and is not "-0" — the Zig oracle's
-// isNumberFormattedLikeAnInteger.
+// isIntegerShaped reports whether a JSON number literal has no fraction or
+// exponent and is not "-0". Integer-shaped literals take the strict parsing
+// path; everything else goes through the float coercion below.
 func isIntegerShaped(lit string) bool {
 	return lit != "-0" && !strings.ContainsAny(lit, ".eE")
 }
 
-// zigCoerceUint mirrors std.json's sliceToInt for unsigned targets:
-// integer-shaped input goes through strict decimal parsing; anything else
-// (strings, float-shaped literals) is parsed at f128 precision and
-// accepted only when exactly integral and in range. Zig's parseFloat also
-// accepts "inf"/"nan" strings; those are out of range here and rejected.
-func zigCoerceUint(lit string, bitSize int) (uint64, bool) {
+// coerceConfigUint resolves a literal to an unsigned value: integer-shaped
+// input goes through strict decimal parsing; anything else (strings,
+// float-shaped literals) must be finite, integral, in range, and exactly
+// representable in float64. The exactness clause is load-bearing: the
+// rewrite path re-emits float-shaped literals through float64
+// (formatConfigNumber), so a literal accepted beyond what float64 carries —
+// 184467440737095510e2, or u64-max-as-float — would drift on re-emission
+// and publish a config this package then refuses to load, which is exactly
+// what the P10 fuzz harness caught. Acceptance is bounded by emission.
+// "inf" and "nan" are out of range for an unsigned target and rejected
+// here — unlike the float path, which still accepts them as strings.
+func coerceConfigUint(lit string, bitSize int) (uint64, bool) {
 	if isIntegerShaped(lit) {
 		n, err := strconv.ParseUint(lit, 10, bitSize)
 		return n, err == nil
 	}
-	// f128 has a 113-bit mantissa; parsing at that precision reproduces
-	// the Zig oracle's coercion boundary (e.g. 18446744073709551615.0 is
-	// exactly u64 max and accepted, ...616.0 overflows and is rejected).
-	f, _, err := big.ParseFloat(lit, 10, 113, big.ToNearestEven)
-	if err != nil || !f.IsInt() || f.Sign() < 0 {
+	f, err := strconv.ParseFloat(lit, 64)
+	if err != nil || math.IsInf(f, 0) || math.IsNaN(f) || f < 0 || f != math.Trunc(f) {
 		return 0, false
 	}
-	max := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), uint(bitSize)), big.NewInt(1))
-	i, _ := f.Int(nil)
-	if i.Cmp(max) > 0 {
+	// The literal must BE the float64 value, not merely round to it: a
+	// 113-bit comparison detects the drift a double-rounded acceptance
+	// would hide until the rewrite.
+	exact, _, err := big.ParseFloat(lit, 10, 113, big.ToNearestEven)
+	if err != nil || exact.Cmp(new(big.Float).SetPrec(113).SetFloat64(f)) != 0 {
 		return 0, false
 	}
-	return i.Uint64(), true
+	if limit := math.Ldexp(1, bitSize); f >= limit {
+		return 0, false
+	}
+	return uint64(f), true
 }
 
 // SaveCaptureDefaults persists new capture defaults into the owner config
@@ -423,9 +447,10 @@ func zigCoerceUint(lit string, bitSize int) (uint64, bool) {
 // default exists. A file that fails closed-schema validation is left
 // untouched. Returns the path written.
 //
-// The output bytes are a frozen contract: key order, number
-// normalization, escaping, and indentation match the Zig reference
-// exactly, pinned by testdata/golden/config-vectors.json.
+// The output bytes are a frozen contract: key order, number normalization,
+// escaping, and indentation are all preserved so that setting one default
+// produces a one-line diff in a file the owner hand-maintains. Pinned by
+// testdata/golden/config-vectors.json.
 func SaveCaptureDefaults(env Environ, explicitPath, world, scope string) (string, error) {
 	if !ValidWorld(world) || !ValidScope(scope) {
 		return "", ErrConfigMalformed
@@ -474,7 +499,7 @@ func SaveCaptureDefaults(env Environ, explicitPath, world, scope string) (string
 	}
 
 	var b strings.Builder
-	writeZigJSON(&b, root, 0)
+	writeCanonicalJSON(&b, root, 0)
 	text := b.String()
 	// Never publish a config this package would refuse to load.
 	if _, err := ParseConfig([]byte(text)); err != nil {
@@ -523,12 +548,11 @@ func writeAtomicConfig(path, text string) error {
 
 // --- Ordered JSON model -------------------------------------------------
 //
-// The config rewrite must preserve the owner's key order and re-emit
-// numbers with the Zig oracle's normalization, neither of which
-// encoding/json's map-based decoding can do. This is a minimal ordered
-// document model: parsing rejects duplicate keys, trailing garbage, and
-// invalid UTF-8 in strings (all malformed in the Zig oracle), and writing
-// reproduces std.json's indent_2 byte format.
+// The config rewrite must preserve the owner's key order and re-emit numbers
+// in a stable normalization, neither of which encoding/json's map-based
+// decoding can do. This is a minimal ordered document model: parsing rejects
+// duplicate keys, trailing garbage, and invalid UTF-8 in strings, and writing
+// reproduces the two-space canonical byte format.
 
 type valueKind int
 
@@ -547,8 +571,9 @@ type pair struct {
 }
 
 // orderedObject is a key-ordered JSON object. set replaces in place when
-// the key exists and appends otherwise — the exact semantics of the
-// Zig oracle's array hash map, which the frozen byte order depends on.
+// the key exists and appends otherwise. Replace-in-place is what keeps an
+// existing key from migrating to the end of the file on every rewrite, and the
+// frozen byte order depends on it.
 type orderedObject struct {
 	pairs []pair
 }
@@ -586,9 +611,9 @@ func (o *orderedObject) remove(key string) {
 	}
 }
 
-// configValue is one JSON value. Numbers keep their raw literal; the
-// Zig oracle's normalization is applied at write time, and typed
-// extraction (zigCoerceUint) needs the literal for its coercions.
+// configValue is one JSON value. Numbers keep their raw literal: normalization
+// is a write-time concern, and typed extraction (coerceConfigUint) needs the
+// original text to decide its coercions.
 type configValue struct {
 	kind valueKind
 	b    bool
@@ -602,8 +627,9 @@ type configValue struct {
 func parseOrderedJSON(data []byte) (configValue, error) {
 	// The decoder silently replaces invalid UTF-8 with U+FFFD, so the
 	// check has to happen on the raw document: outside strings JSON is
-	// all-ASCII, and invalid bytes anywhere mean a corrupt string —
-	// malformed in the Zig oracle (its scanner validates UTF-8).
+	// all-ASCII, and invalid bytes anywhere mean a corrupt string. Letting
+	// U+FFFD through would persist the substitution on the next rewrite,
+	// turning a transient corruption into a permanent one.
 	if !utf8.Valid(data) {
 		return configValue{}, ErrConfigMalformed
 	}
@@ -681,9 +707,9 @@ func parseOrderedValue(dec *json.Decoder) (configValue, error) {
 	return configValue{}, ErrConfigMalformed
 }
 
-// writeZigJSON serializes v in std.json's indent_2 format: two spaces per
+// writeCanonicalJSON serializes v in std.json's indent_2 format: two spaces per
 // level, `"key": value`, empty containers as `{}`/`[]`.
-func writeZigJSON(b *strings.Builder, v configValue, indent int) {
+func writeCanonicalJSON(b *strings.Builder, v configValue, indent int) {
 	switch v.kind {
 	case kindNull:
 		b.WriteString("null")
@@ -694,7 +720,7 @@ func writeZigJSON(b *strings.Builder, v configValue, indent int) {
 			b.WriteString("false")
 		}
 	case kindString:
-		writeZigJSONString(b, v.s)
+		writeCanonicalJSONString(b, v.s)
 	case kindNumber:
 		b.WriteString(formatConfigNumber(v.s))
 	case kindObject:
@@ -708,9 +734,9 @@ func writeZigJSON(b *strings.Builder, v configValue, indent int) {
 				b.WriteByte(',')
 			}
 			writeIndent(b, indent+1)
-			writeZigJSONString(b, p.k)
+			writeCanonicalJSONString(b, p.k)
 			b.WriteString(": ")
-			writeZigJSON(b, p.v, indent+1)
+			writeCanonicalJSON(b, p.v, indent+1)
 		}
 		writeIndent(b, indent)
 		b.WriteByte('}')
@@ -725,7 +751,7 @@ func writeZigJSON(b *strings.Builder, v configValue, indent int) {
 				b.WriteByte(',')
 			}
 			writeIndent(b, indent+1)
-			writeZigJSON(b, e, indent+1)
+			writeCanonicalJSON(b, e, indent+1)
 		}
 		writeIndent(b, indent)
 		b.WriteByte(']')
@@ -739,12 +765,13 @@ func writeIndent(b *strings.Builder, indent int) {
 	}
 }
 
-// writeZigJSONString applies the Zig oracle's escaping table: only control
+// writeCanonicalJSONString applies a minimal escaping table: only control
 // bytes below 0x20, '"', and '\' are escaped (\b \f \n \r \t short forms,
-// \u00xx lowercase otherwise); every other byte — UTF-8 continuation
-// bytes, DEL, and the HTML-significant characters encoding/json would
-// escape — passes through raw.
-func writeZigJSONString(b *strings.Builder, s string) {
+// \u00xx lowercase otherwise); every other byte — UTF-8 continuation bytes,
+// DEL, and the HTML-significant characters encoding/json would escape — passes
+// through raw, so a hand-edited file stays legible after a rewrite instead of
+// turning its non-ASCII content into escape sequences.
+func writeCanonicalJSONString(b *strings.Builder, s string) {
 	b.WriteByte('"')
 	for i := 0; i < len(s); i++ {
 		c := s[i]
@@ -774,8 +801,9 @@ func writeZigJSONString(b *strings.Builder, s string) {
 	b.WriteByte('"')
 }
 
-// formatConfigNumber re-emits a JSON number literal the way the
-// Zig oracle's Value round-trip does: integer-shaped literals that fit an
+// formatConfigNumber re-emits a JSON number literal in the one canonical form
+// the file uses, so an owner's numbers survive a rewrite unchanged:
+// integer-shaped literals that fit an
 // i64 print as-is (they are already canonical), over-i64 integer literals
 // and non-finite floats print verbatim (number_string), and everything
 // else is parsed to f64 and printed in full decimal notation — shortest

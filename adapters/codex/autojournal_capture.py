@@ -134,13 +134,20 @@ def stash_prompt(payload: dict) -> None:
     if not isinstance(prompt, str) or len(prompt.strip()) < 3:
         return
     target = pending_path(payload)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(
-        json.dumps(
-            {"prompt": prompt, "cwd": cwd, "event_time_ms": int(time.time() * 1000)}
-        ),
-        encoding="utf-8",
-    )
+    # The pending file holds the owner's verbatim prompt, so directory and
+    # file are owner-only. chmod rather than trusting creation modes: umask
+    # can narrow them, and a directory left behind by an earlier adapter
+    # version was created at the default umask and needs repairing.
+    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(target.parent, 0o700)
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as out:
+        os.fchmod(fd, 0o600)
+        out.write(
+            json.dumps(
+                {"prompt": prompt, "cwd": cwd, "event_time_ms": int(time.time() * 1000)}
+            )
+        )
     sweep_stale(time.time())
 
 

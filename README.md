@@ -66,11 +66,14 @@ direct text scan.
 Copying, moving, deleting, and editing episode files is reflected after
 `/autojournal sync`. A manual copy sharing an episode identity is deduplicated
 (the first copy found stays searchable), and dot-directories such as `.git` or
-`.obsidian` are never read as episodes. Revision checking compares the
-requested digest with the digest recorded in frontmatter. Replacing an episode
-with a correctly regenerated revision therefore returns `stale_revision`, but
-an in-place body edit that leaves `payload_digest` unchanged is not detected in
-the current release.
+`.obsidian` are never read as episodes. Revision checking recomputes each
+episode's digest from its actual content before serving it, so an in-place body
+edit — even one that leaves the recorded `payload_digest` line untouched — is
+detected: the episode is excluded from search, evidence references to it return
+`stale_revision`, and `sync` counts it as a digest mismatch (also available
+machine-readably via `sync --json`). Running `autojournal reseal` re-attests
+your own edits by rewriting the recorded digest to match the edited content;
+`reseal --preview` lists what it would touch first.
 
 ## Worlds and scopes
 
@@ -191,7 +194,8 @@ The npm package is a thin Pi lifecycle and TUI adapter plus prebuilt binaries.
 ~~~text
 src/                 shared contracts, publication, index, and retrieval
 adapters/pi/         Pi extension and npm package
-docs/                design, architecture, and search tuning
+DESIGN.md            the binding product contract and its reasoning
+docs/                architecture map and search tuning
 scripts/             verification and release gates
 ~~~
 
@@ -211,7 +215,9 @@ tarball:
 ~~~
 
 The standalone executable supports capture, search, get, status, catalog,
-sync, alias maintenance, and version reporting. It defaults to the same
+sync (with a `--json` form for embedding hosts), reseal, capture-default
+selection (`default`), alias maintenance,
+and version reporting. It defaults to the same
 host-neutral journal directory as the Pi package; `--root` and owner
 configuration override it.
 

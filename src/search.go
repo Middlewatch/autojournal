@@ -10,31 +10,26 @@
 // singular folding of plural terms → vocabulary substring scan →
 // postings fetch under world/scope/lane filters → per-line crediting
 // against the source text (word-start boundary by default, so "hang"
-// credits "hanging" but not "changed"; CreditSubstring preserves v1
-// parity's infix recall) → the pure scorer in retrieval.go → span dedup,
+// credits "hanging" but not "changed"; CreditSubstring restores infix
+// recall on request) → the pure scorer in retrieval.go → span dedup,
 // per-episode cap, floor, page.
 
 package autojournal
 
 import (
 	"errors"
-	"fmt"
-	"io"
 	"math/bits"
 	"os"
 	"sort"
 	"strings"
+	"time"
 )
 
 // DefaultLanes is the recall lane set when the caller does not restrict it.
 var DefaultLanes = []Lane{LaneConversation, LaneDelegatedWork, LaneImportedLegacy}
 
-// MaxVocabMatches caps the vocabulary tokens matched by one query's
-// substring scan; beyond it discovery is truncated and flagged in Detail.
-const MaxVocabMatches = 1024
-
-// DefaultResultsLimit is the page size when the caller does not set one. It
-// preserves the Zig oracle's `limit: u32 = 10` field default.
+// DefaultResultsLimit is the page size when the caller does not set one, and
+// matches the config file's max_results default so the two agree.
 const DefaultResultsLimit = 10
 
 // MinNeedleLen: needles shorter than this are excluded from the
@@ -48,7 +43,7 @@ const MinNeedleLen = 3
 
 // CreditMode is how a term is credited against a matched line's text.
 //
-// CreditSubstring: v1 parity — any occurrence counts, so "hang" credits
+// CreditSubstring: any occurrence counts, so "hang" credits
 // lines containing "change". CreditWordStart: the occurrence must begin
 // at a token boundary — "hang" credits "hanging" but not "change", and
 // "config" still credits "configuration". CreditWholeWord: both edges
@@ -83,8 +78,9 @@ type SearchRequest struct {
 	World string
 	Scope *string
 	Lanes []Lane // nil means DefaultLanes
-	// Limit 0 resolves to DefaultResultsLimit (the Zig oracle's field
-	// default); above MaxResultsLimit clamps down.
+	// Limit 0 resolves to DefaultResultsLimit; above MaxResultsLimit clamps
+	// down. Note the config path rejects max_results: 0 as malformed, so the
+	// same value is an error through one door and a default through this one.
 	Limit uint32
 	// Cursor pages a previous identical request; nil for the first page.
 	Cursor     *string
@@ -95,10 +91,11 @@ type SearchRequest struct {
 
 // singularVariants returns additive singular candidates for one query
 // term: "quotas"→"quota", "boxes"→"box"/"boxe", "policies"→"policy".
-// Part of aj-scorer.v2: purely additive recall closing the word-form gap
-// word-start crediting cannot (a plural query term never occurs inside
-// its singular's text). Variants join the term union like alias values,
-// and a variant that never credits merely contributes df 0.
+// Introduced in aj-scorer.v2: purely additive recall closing the word-form
+// gap word-start crediting cannot (a plural query term never occurs inside
+// its singular's text). Variants append to the term list like alias values
+// (and since aj-scorer.v3 are reported as FoldedTerms); a variant that
+// never credits merely contributes df 0.
 func singularVariants(term string) []string {
 	var out []string
 	add := func(v string) {
@@ -133,8 +130,9 @@ type Hit struct {
 	Line         uint32
 	SnippetStart uint32
 	SnippetEnd   uint32
-	// Snippet is the bounded context; empty when the source changed
-	// between ranking and rendering.
+	// Snippet is the bounded context, rendered from the same verified
+	// content the crediting pass read — it always shows the revision
+	// this hit was credited against, even if the file changes mid-call.
 	Snippet      string
 	MatchedTerms []string
 	Score        float64
@@ -147,7 +145,11 @@ type SearchOutput struct {
 	Outcome    Outcome
 	QueryTerms []string
 	AliasTerms []string
-	Hits       []Hit
+	// FoldedTerms are the additive singular variants that joined the term
+	// list (aj-scorer.v3): surfaced so a term the owner never typed is
+	// never unexplained in the report.
+	FoldedTerms []string
+	Hits        []Hit
 	// Total is the true post-dedup, post-floor result count (not the raw
 	// match count).
 	Total       uint64
@@ -164,13 +166,9 @@ type SearchOutput struct {
 	Detail         string
 }
 
-// ErrEvidenceUnavailable is any failure to read an episode file under
-// containment. Search folds it into EditedExcluded; Get folds it into the
-// gone outcome.
-var ErrEvidenceUnavailable = errors.New("evidence unavailable")
-
-// dbErrorName renders the failure vocabulary the Zig oracle put in
-// `detail` (@errorName strings).
+// dbErrorName renders the `detail` failure vocabulary. These strings are an
+// Interface-tier contract: an adapter distinguishes a busy index from a
+// corrupt one by matching them, so they are not free to reword.
 func dbErrorName(err error) string {
 	switch {
 	case errors.Is(err, ErrSQLiteBusy):
@@ -230,18 +228,22 @@ func Search(root *os.Root, idx *Index, aliasMap *AliasMap, req SearchRequest) Se
 
 func searchInner(root *os.Root, idx *Index, aliasMap *AliasMap, req SearchRequest, out *SearchOutput) error {
 	// Index health first: an empty projection over a nonempty corpus is
-	// index_stale, never no_match. Files the last sync deliberately
-	// excluded count as accounted for, matching status.
-	indexed, err := idx.EpisodeCount()
+	// index_stale, never no_match. The one signal serves search and status
+	// alike: both derive freshness from (*Index).Freshness and nothing
+	// else, so the two reporters cannot disagree about the same corpus.
+	// The injectable clock also drives the memo's settled-corpus guard, so
+	// a fixed-clock test exercises the same path a live query takes.
+	nowMs := req.NowMs
+	if nowMs == 0 {
+		nowMs = uint64(time.Now().UnixMilli())
+	}
+	fresh, err := idx.Freshness(root, nowMs)
 	if err != nil {
 		return err
 	}
-	out.Indexed = indexed
-	out.Source = CountEpisodes(root)
-	out.Freshness = IndexStale
-	if out.Indexed+idx.ExcludedCount() == out.Source {
-		out.Freshness = IndexFresh
-	}
+	out.Indexed = fresh.Indexed
+	out.Source = fresh.Source
+	out.Freshness = fresh.Freshness
 
 	// --- Terms and alias expansion ---
 	base := ExtractTerms(req.Query)
@@ -252,6 +254,14 @@ func searchInner(root *os.Root, idx *Index, aliasMap *AliasMap, req SearchReques
 		return nil
 	}
 
+	// Duplicate term weights are unconditional (aj-scorer.v3): the
+	// query's own list keeps its repetitions, and alias values and folded
+	// singular variants are appended to it — deduplicated against the terms
+	// already present, never replacing the list. Whether a repeated query
+	// word counts twice therefore no longer depends on whether an unrelated
+	// thesaurus entry happens to fire. Folded variants are reported in
+	// FoldedTerms so a term the owner never typed is never unexplained.
+	finalTerms := append([]string(nil), base.Items...)
 	have := newStringSet()
 	for _, t := range base.Items {
 		have.add(t)
@@ -263,26 +273,18 @@ func searchInner(root *os.Root, idx *Index, aliasMap *AliasMap, req SearchReques
 			}
 			have.add(v)
 			out.AliasTerms = append(out.AliasTerms, v)
+			finalTerms = append(finalTerms, v)
 		}
 	}
-	folded := false
 	for _, t := range base.Items {
 		for _, v := range singularVariants(t) {
 			if have.has(v) {
 				continue
 			}
 			have.add(v)
-			folded = true
+			out.FoldedTerms = append(out.FoldedTerms, v)
+			finalTerms = append(finalTerms, v)
 		}
-	}
-
-	// v1 parity quirk, preserved deliberately: without aliases the raw
-	// duplicate-preserving list scores (duplicate query words weigh
-	// twice); once aliases (or folded variants) fire, the deduplicated
-	// union is used instead.
-	finalTerms := base.Items
-	if len(out.AliasTerms) > 0 || folded {
-		finalTerms = have.items
 	}
 	if len(finalTerms) > MaxQueryTerms {
 		finalTerms = finalTerms[:MaxQueryTerms]
@@ -303,27 +305,36 @@ func searchInner(root *os.Root, idx *Index, aliasMap *AliasMap, req SearchReques
 			}
 		}
 	}
-	needleKeys := needles.items
-	if len(needleKeys) == 0 {
-		needleKeys = shortNeedles.items
-	}
-
-	vocab, err := idx.VocabTerms(req.World)
-	if err != nil {
-		return err
-	}
+	// Discovery policy: the fallback is per query, not per needle.
+	// Any long needle makes the whole query trigram-eligible; only a
+	// wholly-short query (every needle under MinNeedleLen, so no trigram
+	// can witness any of them) takes the linear scan, and it takes it
+	// whole — preserving curated short-alias reachability. Both paths
+	// iterate the vocabulary in sorted term order, so the MaxVocabMatches
+	// cap truncates the same stable prefix either way.
 	var vocabMatches []string
 	vocabTruncated := false
-scan:
-	for _, token := range vocab {
-		for _, needle := range needleKeys {
-			if strings.Contains(token, needle) {
-				if len(vocabMatches) >= MaxVocabMatches {
-					vocabTruncated = true
-					break scan
+	if needleKeys := needles.items; len(needleKeys) > 0 {
+		vocabMatches, vocabTruncated, err = idx.VocabCandidates(req.World, needleKeys)
+		if err != nil {
+			return err
+		}
+	} else {
+		vocab, err := idx.VocabTerms(req.World)
+		if err != nil {
+			return err
+		}
+	scan:
+		for _, token := range vocab {
+			for _, needle := range shortNeedles.items {
+				if strings.Contains(token, needle) {
+					if len(vocabMatches) >= MaxVocabMatches {
+						vocabTruncated = true
+						break scan
+					}
+					vocabMatches = append(vocabMatches, token)
+					continue scan
 				}
-				vocabMatches = append(vocabMatches, token)
-				continue scan
 			}
 		}
 	}
@@ -338,6 +349,12 @@ scan:
 		bodyLine      uint32
 		lines         []uint32
 		unionMask     uint64
+		// content is the verified bytes the crediting pass read; snippet
+		// rendering reuses it, so each episode is read once per query and
+		// a snippet always shows the revision that was credited. Held
+		// only within this call — snippets copy out of it, and the accum
+		// dies with the search.
+		content string
 	}
 	lanes := req.Lanes
 	if lanes == nil {
@@ -347,21 +364,32 @@ scan:
 	var episodes []episodeAccum
 	seenLines := map[uint64]struct{}{}
 
-	// Episode metadata once, postings coordinates lean, join in memory:
-	// the SQL-side join cost one B-tree probe per posting row and
-	// dominated broad searches. Pairs outside the world/scope/lane filter
-	// simply miss the metadata map.
-	eligible, err := idx.SearchEpisodes(req.World, req.Scope, lanes)
+	// Postings coordinates lean, metadata for exactly the referenced
+	// episodes, join in memory: the SQL-side join cost one B-tree probe
+	// per posting row and dominated broad searches, and a whole-world
+	// metadata load cost the corpus size on every query. Pairs outside
+	// the world/scope/lane filter simply miss the metadata map. Ordinals
+	// are assigned in PostingPairs order below, which does not change, so
+	// deterministic tie-breaking is preserved.
+	pairs, err := idx.PostingPairs(vocabMatches)
+	if err != nil {
+		return err
+	}
+	seenIDs := map[string]struct{}{}
+	var referenced []string
+	for _, pair := range pairs {
+		if _, dup := seenIDs[pair.EpisodeID]; !dup {
+			seenIDs[pair.EpisodeID] = struct{}{}
+			referenced = append(referenced, pair.EpisodeID)
+		}
+	}
+	eligible, err := idx.EpisodeMetadata(referenced, req.World, req.Scope, lanes)
 	if err != nil {
 		return err
 	}
 	metaByID := make(map[string]*PostingRow, len(eligible))
 	for i := range eligible {
 		metaByID[eligible[i].EpisodeID] = &eligible[i]
-	}
-	pairs, err := idx.PostingPairs(vocabMatches)
-	if err != nil {
-		return err
 	}
 	for _, pair := range pairs {
 		row, eligibleEpisode := metaByID[pair.EpisodeID]
@@ -411,19 +439,27 @@ scan:
 	for ord := range episodes {
 		ep := &episodes[ord]
 		sort.Slice(ep.lines, func(i, j int) bool { return ep.lines[i] < ep.lines[j] })
-		content, err := ReadContained(root, ep.meta.RelPath)
+		content, err := readContained(root, ep.meta.RelPath)
 		if err != nil {
 			out.EditedExcluded++
 			continue
 		}
-		current, ok := FrontmatterDigestHex(content)
-		if !ok {
-			current = ""
-		}
-		if current != ep.digestHex {
+		// Evidence is verified against content, not against the recorded
+		// digest line: a body edit that left the frontmatter untouched has
+		// no reading that recomputes to the recorded digest and is excluded
+		// here. A file that verifies against a different digest
+		// than the projection holds is an absorbed edit awaiting sync —
+		// excluded the same way, never served under a stale reference.
+		verified, err := VerifyEpisode(content)
+		if err != nil {
 			out.EditedExcluded++
 			continue
 		}
+		if verified.DigestHex != ep.digestHex {
+			out.EditedExcluded++
+			continue
+		}
+		ep.content = content
 
 		want := 0
 		for lineNo, line := range strings.Split(content, "\n") {
@@ -489,8 +525,11 @@ scan:
 		idf[i] = IDFWeight(n, d)
 	}
 
+	// The resolved clock, not req.NowMs: a caller using the zero value's
+	// documented live-clock fallback must get live recency too, or every
+	// event time reads as future and the recency nudge silently vanishes.
 	ranked := Rank(candidates, episodeInfos, idf, RankParams{
-		NowMs:         req.NowMs,
+		NowMs:         nowMs,
 		RecencyBoost:  req.Knobs.RecencyBoost,
 		MinScore:      req.Knobs.MinScore,
 		ContextWindow: req.Knobs.ContextWindow,
@@ -568,7 +607,7 @@ scan:
 		}
 		coverage := float64(matchedPositions) / float64(len(finalTerms))
 
-		snippet := renderSnippet(root, ep.digestHex, ep.meta.RelPath, snippetSpec{
+		snippet := renderSnippet(ep.content, snippetSpec{
 			line:          cand.LineNo,
 			bodyLine:      ep.bodyLine,
 			contextWindow: req.Knobs.ContextWindow,
@@ -701,24 +740,18 @@ type snippetSpec struct {
 	contextWindow  uint32
 }
 
-// renderSnippet reads the source again and renders ±context_window lines
-// clamped to the body, each line capped at a codepoint boundary, the
-// whole snippet capped at MaxSnippetBytes. A file whose revision changed
-// since ranking renders an empty snippet — the reference stays valid for
-// Get, which will report stale_revision honestly.
-func renderSnippet(root *os.Root, expectedDigest, relPath string, spec snippetSpec) snippet {
+// readContained is ReadContained behind a package seam, so the
+// one-read-per-episode contract stays countable in tests.
+var readContained = ReadContained
+
+// renderSnippet renders ±context_window lines from the content the
+// crediting pass already read and verified — one read per episode per
+// query, and a snippet always shows the revision that was credited.
+// Rendering runs after Rank and feeds no scoring input, so it cannot
+// move ranking. Lines are clamped to the body, each capped at a
+// codepoint boundary, the whole snippet capped at MaxSnippetBytes.
+func renderSnippet(content string, spec snippetSpec) snippet {
 	empty := snippet{text: "", start: spec.line, end: spec.line}
-	content, err := ReadContained(root, relPath)
-	if err != nil {
-		return empty
-	}
-	current, ok := FrontmatterDigestHex(content)
-	if !ok {
-		current = ""
-	}
-	if current != expectedDigest {
-		return empty
-	}
 
 	first := max(spec.bodyLine, satSub(spec.line, spec.contextWindow))
 	last := spec.line + spec.contextWindow
@@ -780,97 +813,6 @@ func capAtCodepoint(line string, max int) string {
 		cut--
 	}
 	return line[:cut]
-}
-
-// ContainedPath validates the journal-relative path vocabulary: relative
-// validated components only, no dot components, no Windows separators.
-func ContainedPath(relPath string) bool {
-	if relPath == "" || relPath[0] == '/' {
-		return false
-	}
-	for _, component := range strings.Split(relPath, "/") {
-		if component == "" || component == "." || component == ".." {
-			return false
-		}
-		if strings.ContainsRune(component, '\\') {
-			return false
-		}
-	}
-	return true
-}
-
-// ReadContained reads one episode file under the journal root with
-// containment: relative validated components only, no symlink following,
-// resolution stays beneath the root. Descent Lstats each component
-// (refusing symlinks and non-directories) before opening, the same
-// nofollow discipline as store.go's write path.
-func ReadContained(root *os.Root, relPath string) (string, error) {
-	fail := func(err error) (string, error) {
-		return "", fmt.Errorf("%w: %s: %v", ErrEvidenceUnavailable, relPath, err)
-	}
-	if !ContainedPath(relPath) {
-		return fail(errors.New("path outside the containment vocabulary"))
-	}
-	components := strings.Split(relPath, "/")
-	current := root
-	ownsCurrent := false
-	for i, component := range components {
-		info, err := current.Lstat(component)
-		if err != nil {
-			if ownsCurrent {
-				current.Close()
-			}
-			return fail(err)
-		}
-		last := i == len(components)-1
-		if !last {
-			// Lstat does not follow links, so a symlink reports !IsDir
-			// and is refused here — equivalent to the Zig oracle's
-			// O_NOFOLLOW descent.
-			if !info.IsDir() {
-				if ownsCurrent {
-					current.Close()
-				}
-				return fail(errors.New("component is not a directory"))
-			}
-			next, err := current.OpenRoot(component)
-			if err != nil {
-				if ownsCurrent {
-					current.Close()
-				}
-				return fail(err)
-			}
-			if ownsCurrent {
-				current.Close()
-			}
-			current = next
-			ownsCurrent = true
-			continue
-		}
-		// Close only descent-owned handles: for a single-component path
-		// current is still the caller's root and must stay open.
-		if ownsCurrent {
-			defer current.Close()
-		}
-		if !info.Mode().IsRegular() {
-			return fail(errors.New("not a regular file"))
-		}
-		f, err := current.Open(component)
-		if err != nil {
-			return fail(err)
-		}
-		defer f.Close()
-		content, err := io.ReadAll(io.LimitReader(f, MaxEpisodeFileBytes+1))
-		if err != nil {
-			return fail(err)
-		}
-		if len(content) > MaxEpisodeFileBytes {
-			return fail(errors.New("episode exceeds byte budget"))
-		}
-		return string(content), nil
-	}
-	// Unreachable: ContainedPath guarantees at least one component.
-	return fail(errors.New("empty path"))
 }
 
 // --- memory_get ---
@@ -1000,13 +942,26 @@ func getInner(root *os.Root, idx *Index, req GetRequest, out *GetOutput) error {
 	}
 	out.Resolved = true
 	out.Path = usedPath
-	out.Revision = DigestPrefix + ep.DigestHex
 	out.World = ep.World
 	out.Scope = ep.Scope
 	out.Lane = ep.Lane
 	out.CapturePolicy = ep.CapturePolicy
 
-	if ep.DigestHex != requestedHex {
+	// Two distinct edit states report differently. A file that does
+	// not verify at all — the digest-stale state — has no honest current
+	// revision to offer until the owner reseals it, so Revision stays empty.
+	// A file that verifies against a different digest than requested is an
+	// absorbed edit, and the current verified revision is the replacement
+	// reference, exactly as before.
+	verified, verifyErr := VerifyEpisode(content)
+	if verifyErr != nil {
+		out.Outcome = OutcomeStaleRevision
+		out.Detail = "episode was edited after capture; run reseal to re-attest it"
+		return nil
+	}
+	out.Revision = DigestPrefix + verified.DigestHex
+
+	if verified.DigestHex != requestedHex {
 		// Edited evidence is never silently served as the old revision.
 		out.Outcome = OutcomeStaleRevision
 		out.Detail = "episode was edited; re-search or request the current revision"

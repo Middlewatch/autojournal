@@ -140,3 +140,121 @@ func TestStateDirFallsBackToHome(t *testing.T) {
 		t.Errorf("err = %v, want ErrMissingHome", err)
 	}
 }
+
+// TestThesaurusPathPrecedence covers every branch of the resolution rule:
+// owner config, the legacy environment override, XDG, HOME, and no HOME.
+func TestThesaurusPathPrecedence(t *testing.T) {
+	cfgWithPath := Config{ThesaurusPath: "/explicit/thesaurus.json"}
+
+	// Owner config wins over everything.
+	got, err := ThesaurusPath(mapEnviron("AUTOJOURNAL_THESAURUS", "/env/t.json", "XDG_CONFIG_HOME", "/xdg", "HOME", "/home/x"), cfgWithPath)
+	if err != nil || got != "/explicit/thesaurus.json" {
+		t.Errorf("config path: %q, %v", got, err)
+	}
+	// The environment override beats XDG and HOME.
+	got, err = ThesaurusPath(mapEnviron("AUTOJOURNAL_THESAURUS", "/env/t.json", "XDG_CONFIG_HOME", "/xdg", "HOME", "/home/x"), Config{})
+	if err != nil || got != "/env/t.json" {
+		t.Errorf("env override: %q, %v", got, err)
+	}
+	// An empty override falls through.
+	got, err = ThesaurusPath(mapEnviron("AUTOJOURNAL_THESAURUS", "", "XDG_CONFIG_HOME", "/xdg", "HOME", "/home/x"), Config{})
+	if err != nil || got != "/xdg/autojournal/thesaurus.json" {
+		t.Errorf("empty override: %q, %v", got, err)
+	}
+	// XDG beats the HOME default; an empty XDG falls through to HOME.
+	got, err = ThesaurusPath(mapEnviron("XDG_CONFIG_HOME", "", "HOME", "/home/x"), Config{})
+	if err != nil || got != "/home/x/.config/autojournal/thesaurus.json" {
+		t.Errorf("home default: %q, %v", got, err)
+	}
+	// A relative XDG value is invalid per the spec and falls through too:
+	// every path this file returns is absolute, never CWD-dependent.
+	got, err = ThesaurusPath(mapEnviron("XDG_CONFIG_HOME", "relative/dir", "HOME", "/home/x"), Config{})
+	if err != nil || got != "/home/x/.config/autojournal/thesaurus.json" {
+		t.Errorf("relative XDG: %q, %v", got, err)
+	}
+	// No HOME and nothing above it is the typed error.
+	if _, err := ThesaurusPath(mapEnviron(), Config{}); !errors.Is(err, ErrMissingHome) {
+		t.Errorf("no HOME: err = %v, want ErrMissingHome", err)
+	}
+}
+
+// TestMissLogPathPrecedence covers the override, the state-dir derivation,
+// and the no-HOME error.
+func TestMissLogPathPrecedence(t *testing.T) {
+	got, err := MissLogPath(mapEnviron("AUTOJOURNAL_MISS_LOG", "/env/miss.jsonl", "HOME", "/home/x"))
+	if err != nil || got != "/env/miss.jsonl" {
+		t.Errorf("env override: %q, %v", got, err)
+	}
+	// An empty override falls through to the state dir.
+	got, err = MissLogPath(mapEnviron("AUTOJOURNAL_MISS_LOG", "", "XDG_STATE_HOME", "/state", "HOME", "/home/x"))
+	if err != nil || got != "/state/autojournal/thesaurus-candidates.jsonl" {
+		t.Errorf("xdg state: %q, %v", got, err)
+	}
+	got, err = MissLogPath(mapEnviron("HOME", "/home/x"))
+	if err != nil || got != "/home/x/.local/state/autojournal/thesaurus-candidates.jsonl" {
+		t.Errorf("home state: %q, %v", got, err)
+	}
+	if _, err := MissLogPath(mapEnviron()); !errors.Is(err, ErrMissingHome) {
+		t.Errorf("no HOME: err = %v, want ErrMissingHome", err)
+	}
+}
+
+func TestEmptyHomeIsMissingHome(t *testing.T) {
+	// A set-but-empty HOME is the same broken environment as an unset
+	// one: "" + "/.local/..." would resolve to a root-owned absolute
+	// path nobody means.
+	env := func(key string) (string, bool) {
+		if key == "HOME" {
+			return "", true
+		}
+		return "", false
+	}
+	if _, err := StateDir(env); !errors.Is(err, ErrMissingHome) {
+		t.Errorf("StateDir: err = %v, want ErrMissingHome", err)
+	}
+	if _, err := DefaultJournalRoot(env); !errors.Is(err, ErrMissingHome) {
+		t.Errorf("DefaultJournalRoot: err = %v, want ErrMissingHome", err)
+	}
+	if _, err := ThesaurusPath(env, Config{}); !errors.Is(err, ErrMissingHome) {
+		t.Errorf("ThesaurusPath: err = %v, want ErrMissingHome", err)
+	}
+	if _, err := ResolvePath(env, ""); !errors.Is(err, ErrMissingHome) {
+		t.Errorf("ResolvePath: err = %v, want ErrMissingHome", err)
+	}
+}
+
+func TestRootDigestIgnoresTrailingSlash(t *testing.T) {
+	canonical := RootDigestHex("/home/x/journals")
+	for _, spelling := range []string{
+		"/home/x/journals/",
+		"/home/x//journals",
+		"/home/x/./journals",
+		"/home/x/other/../journals",
+	} {
+		if got := RootDigestHex(spelling); got != canonical {
+			t.Errorf("RootDigestHex(%q) differs from the canonical spelling", spelling)
+		}
+	}
+	if RootDigestHex("/home/x/other-journals") == canonical {
+		t.Error("distinct roots share a digest")
+	}
+	// The index filename derives from the digest, so both spellings name
+	// one index file.
+	env := func(key string) (string, bool) {
+		if key == "XDG_STATE_HOME" {
+			return "/state", true
+		}
+		return "", false
+	}
+	a, err := DefaultIndexPath(env, "/home/x/journals")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := DefaultIndexPath(env, "/home/x/journals/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a != b {
+		t.Errorf("index paths differ: %q vs %q", a, b)
+	}
+}

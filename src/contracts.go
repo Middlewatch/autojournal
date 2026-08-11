@@ -72,13 +72,41 @@ const (
 	LaneImportedLegacy Lane = "imported_legacy"
 )
 
-// CaptureOutcome is the result vocabulary reported to adapters. Published
-// and Duplicate are success; everything else is a distinct typed failure.
+// ValidLane reports whether l is one of the four contract lanes. The
+// library refuses an unknown lane itself rather than relying on any one
+// caller to have checked first.
+func ValidLane(l Lane) bool {
+	switch l {
+	case LaneConversation, LaneDelegatedWork, LaneEvaluation, LaneImportedLegacy:
+		return true
+	}
+	return false
+}
+
+// Event times outside this window are refused at Validate with
+// ErrImplausibleEventTime: a wrapped or garbage timestamp would
+// otherwise shard the episode into a nonsense date directory. The bounds
+// are deliberately wide — the epoch through 9999-12-31T23:59:59Z — because
+// the contract's job is refusing nonsense, not judging clocks.
+const (
+	MinEventTimeMs uint64 = 0
+	MaxEventTimeMs uint64 = 253402300799000
+)
+
+// CaptureOutcome is the result vocabulary reported to adapters. Published,
+// Duplicate, and Superseded are success; everything else is a distinct
+// typed failure. Consumers must tolerate values they do not know: the
+// vocabulary is an interface-tier contract and grows by minor version.
 type CaptureOutcome string
 
 const (
-	CapturePublished        CaptureOutcome = "published"
-	CaptureDuplicate        CaptureOutcome = "duplicate"
+	CapturePublished CaptureOutcome = "published"
+	CaptureDuplicate CaptureOutcome = "duplicate"
+	// CaptureSuperseded: a redelivery of this episode's own identity was
+	// proven to contain the stored content, and the episode's bytes
+	// were replaced in place at its own path. Success: exit 0,
+	// indexed on the same branch as published and duplicate.
+	CaptureSuperseded       CaptureOutcome = "superseded"
 	CaptureConflict         CaptureOutcome = "conflict"
 	CaptureMalformed        CaptureOutcome = "malformed"
 	CapturePermissionDenied CaptureOutcome = "permission_denied"
@@ -129,6 +157,7 @@ var (
 	ErrInvalidTurnID            = errors.New("invalid turn_id")
 	ErrInvalidCapturePolicy     = errors.New("invalid capture_policy")
 	ErrInvalidTurnOutcome       = errors.New("invalid turn_outcome")
+	ErrImplausibleEventTime     = errors.New("implausible event_time_ms")
 	ErrEmptyUserContent         = errors.New("empty user_content")
 	ErrEmptyAssistantResult     = errors.New("empty assistant_result")
 	ErrOversizedContent         = errors.New("oversized content")
@@ -261,10 +290,13 @@ func ValidPath(s string) bool {
 
 // ValidScope reports whether s is a usable scope name. Scopes are both
 // frontmatter tokens and directory components; unlike general identity
-// tokens they cannot contain a path separator or name a traversal
-// component.
+// tokens they cannot contain a path separator, name a traversal
+// component, or start with '.' — WalkCorpus skips dot-directories as
+// foreign tooling state, so a dot-led scope would publish episodes the
+// corpus walk (sync, freshness, reseal) could never see. Worlds enforce
+// the same invariant through their charset.
 func ValidScope(s string) bool {
-	if !ValidToken(s) || s == "." || s == ".." {
+	if !ValidToken(s) || s[0] == '.' {
 		return false
 	}
 	return !strings.Contains(s, "/")
@@ -284,8 +316,9 @@ var optionalKeys = map[string]bool{
 
 // ParsePayload parses the wire bytes into a RawPayload. Every parse-level
 // problem — over budget, invalid JSON, duplicate or unknown fields, missing
-// required fields, wrong value types — collapses to ErrMalformed, matching
-// the Zig reference's closed-schema rejection.
+// required fields, wrong value types — collapses to ErrMalformed. One typed
+// outcome is the honest answer because every one of them has the same remedy
+// for the adapter that sent it: fix the payload.
 func ParsePayload(b []byte) (RawPayload, error) {
 	var raw RawPayload
 	if len(b) > MaxPayloadBytes {
@@ -401,8 +434,9 @@ func optString(fields map[string]json.RawMessage, key string) (*string, error) {
 }
 
 // reqUint extracts a required unsigned integer field. Only bare decimal
-// digits are accepted — no sign, fraction, or exponent — matching the Zig
-// parser's integer-only acceptance for u32/u64 wire fields.
+// digits are accepted — no sign, fraction, or exponent. These fields feed
+// identity and digest derivation, so each value must have exactly one textual
+// form; accepting 1.0e3 for 1000 would make identity depend on formatting.
 func reqUint(fields map[string]json.RawMessage, key string, bitSize int) (uint64, error) {
 	raw := bytes.TrimSpace(fields[key])
 	for _, c := range raw {
@@ -456,8 +490,9 @@ func optTools(fields map[string]json.RawMessage) ([]Tool, error) {
 
 // rejectDuplicateKeys walks the JSON token stream and fails on any
 // repeated key inside any object. encoding/json's Unmarshal keeps the last
-// duplicate silently; the Zig reference rejects them, and identity
-// derivation must never disagree about which value was signed.
+// duplicate silently, which would leave identity derivation depending on
+// which repetition happened to win. A payload that says two things cannot be
+// signed as though it said one.
 func rejectDuplicateKeys(b []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(b))
 	if err := walkValue(dec); err != nil {
@@ -518,8 +553,9 @@ func walkValue(dec *json.Decoder) error {
 }
 
 // Validate checks a parsed payload against the closed contract and returns
-// the capture-ready Payload. Check order mirrors the Zig reference so the
-// first typed failure matches it exactly.
+// the capture-ready Payload. The check order is fixed so that a payload with
+// several problems always reports the same first failure, which is what lets
+// an adapter test against a stable error name.
 func Validate(raw RawPayload) (Payload, error) {
 	var p Payload
 	if raw.SchemaVersion != PayloadSchemaVersion {
@@ -537,11 +573,12 @@ func Validate(raw RawPayload) (Payload, error) {
 	if !ValidScope(*raw.Scope) {
 		return p, ErrInvalidScope
 	}
-	switch Lane(raw.Lane) {
-	case LaneConversation, LaneDelegatedWork, LaneEvaluation, LaneImportedLegacy:
-		p.Lane = Lane(raw.Lane)
-	default:
+	if !ValidLane(Lane(raw.Lane)) {
 		return p, ErrInvalidLane
+	}
+	p.Lane = Lane(raw.Lane)
+	if raw.EventTimeMs < MinEventTimeMs || raw.EventTimeMs > MaxEventTimeMs {
+		return p, ErrImplausibleEventTime
 	}
 	if !ValidToken(raw.Harness) {
 		return p, ErrInvalidHarness
@@ -609,4 +646,45 @@ func Validate(raw RawPayload) (Payload, error) {
 	p.BranchOf = raw.BranchOf
 	p.Host = raw.Host
 	return p, nil
+}
+
+// CaptureErrorName renders the failure vocabulary carried in a capture
+// report's `detail`. These CamelCase names are an Interface-tier contract that
+// adapters match on; they are deliberately not snake_cased to match the
+// surrounding JSON, because renaming them would break those consumers.
+func CaptureErrorName(err error) string {
+	for _, m := range []struct {
+		err  error
+		name string
+	}{
+		{ErrMalformed, "Malformed"},
+		{ErrUnsupportedSchemaVersion, "UnsupportedSchemaVersion"},
+		{ErrInvalidWorld, "InvalidWorld"},
+		{ErrInvalidScope, "InvalidScope"},
+		{ErrInvalidLane, "InvalidLane"},
+		{ErrInvalidHarness, "InvalidHarness"},
+		{ErrInvalidAdapterVersion, "InvalidAdapterVersion"},
+		{ErrInvalidSessionID, "InvalidSessionId"},
+		{ErrInvalidTurnID, "InvalidTurnId"},
+		{ErrInvalidCapturePolicy, "InvalidCapturePolicy"},
+		{ErrInvalidTurnOutcome, "InvalidTurnOutcome"},
+		{ErrImplausibleEventTime, "ImplausibleEventTime"},
+		{ErrEmptyUserContent, "EmptyUserContent"},
+		{ErrEmptyAssistantResult, "EmptyAssistantResult"},
+		{ErrOversizedContent, "OversizedContent"},
+		{ErrInvalidUTF8, "InvalidUtf8"},
+		{ErrTooManyTools, "TooManyTools"},
+		{ErrInvalidToolName, "InvalidToolName"},
+		{ErrInvalidWorkspaceRoot, "InvalidWorkspaceRoot"},
+		{ErrInvalidBranchOf, "InvalidBranchOf"},
+		{ErrInvalidHost, "InvalidHost"},
+		{ErrContainmentViolation, "ContainmentViolation"},
+		{ErrPermissionDenied, "PermissionDenied"},
+		{ErrStoreUnavailable, "Unavailable"},
+	} {
+		if errors.Is(err, m.err) {
+			return m.name
+		}
+	}
+	return "Unavailable"
 }

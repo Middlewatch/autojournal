@@ -1,10 +1,10 @@
 # Architecture map for contributors
 
-Status: as built, 2026-08-08.
+Status: as built, 2026-08-10.
 
 This is the orientation document for someone who pulled the repository and
 wants to work on it. The binding product contract — laws, formats, typed
-outcomes, release gates — is [`AUTOJOURNAL_1_0_DESIGN.md`](AUTOJOURNAL_1_0_DESIGN.md);
+outcomes, release gates — is [`DESIGN.md`](../DESIGN.md);
 this file tells you where things live, how data flows, and which invariants
 the code is organized around.
 
@@ -22,32 +22,45 @@ There is one scoring implementation and one storage protocol. Adapters remain
 translation layers; storage, ranking, identity, and freshness rules belong in
 the Go package.
 
-The package was ported from Zig to Go in August 2026 with all on-disk
-formats and the CLI `--json` surface frozen; the archived Zig tree (git tag
-`zig-final`) remains the behavioral reference, and `testdata/golden` pins
-its output byte-for-byte.
+The package was ported to Go in August 2026 from an earlier
+systems-language build, with all on-disk formats and the CLI `--json`
+surface frozen across the move. `testdata/golden` dates from that freeze
+and is now the behavioral authority on its own; the predecessor is not
+consulted for anything.
 
 ## Module map (`src/`)
 
-| Module | Owns |
-|---|---|
-| `contracts.go` | Closed wire schemas (capture payload), typed outcome vocabularies, validation charsets, size budgets. Everything else consumes its types. |
-| `identity.go` | Episode identity: collision-resistant idempotency ID and the canonical payload digest that becomes the evidence revision. |
-| `render.go` | Episode Markdown rendering and frontmatter digest extraction. |
-| `frontmatter.go` | Frontmatter parsing at the read boundary (stored data is untrusted). |
-| `store.go` | Atomic publication: contained paths, owner-only dirs, temp-file + rename + dir sync, duplicate/conflict detection, date-only default layout with optional world/scope/lane directories. |
-| `db.go` | SQLite driver discipline over `modernc.org/sqlite` (pure Go): WAL, busy handling, typed error mapping. |
-| `index.go` | The disposable SQLite projection: per-line postings, per-world term stats, identity metadata, root-digest foreign-index gate. Sync dedupes by episode identity (first copy stays indexed), skips dot-directories, and repairs owner-only permissions best-effort. |
-| `retrieval.go` | Pure lexical core: tokenizer, stop words, IDF scorer, recency nudge, confidence, cursor codec. Versioned as `aj-tok.v1` / `aj-scorer.v2` / `aj-conf.v2`. |
-| `aliases.go` | Owner-edited thesaurus (flat JSON, read fresh per search, digest-identified) and the opt-in weak-query miss log. |
-| `search.go` | `memory_search`/`memory_get` orchestration: discovery scan, word-start crediting, ranking, snippets, revision-verified evidence opening. |
-| `config.go` | The owner config file (XDG `config.json`): journal root, retrieval knobs, capture world/scope defaults. Every key is optional; the `default` command rewrites capture defaults atomically, preserving the rest. |
-| `ops.go` | Owner maintenance (`status`, `sync`) accounting and the capture-time corpus-wide redelivery check: the index answers whether an episode ID exists on any date shard, the named file's own frontmatter decides duplicate/conflict, and any index miss or mismatch falls through to normal publication. |
-| `cmd/autojournal/main.go` | CLI wiring only: argument parsing, config resolution, JSON/text rendering. No product rules. |
+One capability owns each file; a file serves exactly one capability. The
+capability numbers are `DESIGN.md`'s Structure section, and
+`src/ownership_test.go` holds every top-level declaration to this map — a
+symbol in the wrong file, or in no file the manifest claims, is a failing
+test, not a review note.
+
+| Module | Capability | Owns |
+|---|---|---|
+| `contracts.go` | 1 Contracts | Closed wire schemas (capture payload), typed outcome vocabularies, validation charsets, size budgets. Everything else consumes its types. |
+| `identity.go` | 2 Identity and rendering | Episode identity: collision-resistant idempotency ID and the canonical payload digest that becomes the evidence revision. |
+| `render.go` | 2 | Episode Markdown rendering and frontmatter digest extraction. |
+| `episode.go` | 2 | Episode parsing at the read boundary (stored data is untrusted). |
+| `paths.go` | 3 Paths and containment | Where things live: root resolution, `HOME`/XDG rules, root digest, index path, thesaurus path, miss-log path. No filesystem descent. |
+| `corpus.go` | 3 | How the corpus is entered: sharded layout components, the symlink-refusing owner-only descent, atomic temp-write and directory fsync, the containment vocabulary, both contained readers, and `WalkCorpus`, the one visibility rule every corpus traversal shares. |
+| `config.go` | 4 Configuration | The owner config file (XDG `config.json`): journal root, retrieval knobs, capture world/scope defaults. Every key is optional; the `default` command rewrites capture defaults atomically, preserving the rest. |
+| `doc.go` | 4 | The shared version stamp. |
+| `store.go` | 5 Store | The capture transaction's decisions: atomic publication, duplicate/conflict classification, the corpus-wide redelivery check. |
+| `db.go` | 6 Index | SQLite driver discipline over `modernc.org/sqlite` (pure Go): WAL, busy handling, typed error mapping. |
+| `index.go` | 6 | The disposable SQLite projection: per-line postings, per-world term stats and their trigram side-table for vocabulary discovery, identity metadata, the memoized freshness verdict, root-digest foreign-index gate, sync accounting. |
+| `retrieval.go` | 7 Retrieval | Pure lexical core: tokenizer, stop words, IDF scorer, recency nudge, confidence, cursor codec. Versioned identities. |
+| `aliases.go` | 7 | The thesaurus read path: load, merge, digest, lookup. Read fresh per search, digest-identified. |
+| `search.go` | 8 Search | `memory_search`/`memory_get` orchestration: discovery scan, word-start crediting, ranking, snippets, revision-verified evidence opening. |
+| `ops.go` | 9 Operations | Owner maintenance accounting: `status`, `sync`, `catalog`, `reseal`, episode counting. |
+| `ops_alias.go` | 9 | Alias maintenance and the weak-query miss log: the thesaurus write path and its aggregation. |
+| `cmd/autojournal/main.go` | 10 CLI wiring | Argument parsing, config and root resolution, command dispatch, exit codes. No product rules. |
+| `cmd/autojournal/report.go` | 10 | Every `--json` shape and every text renderer, in one file, because the `--json` surface is the Interface-tier contract. |
 
 Test files (`*_test.go`) sit beside the modules and run with the standard
 `go test ./...`. `src/golden_test.go` and the CLI golden tests compare
-against `testdata/golden`, the frozen output of the archived Zig binary.
+against `testdata/golden`, the frozen byte-level pins on stored formats and
+wire shapes.
 
 ## Data flow
 
@@ -58,13 +71,16 @@ episode ID + digest → `store` publishes atomically → `index` updates in one
 transaction. Source publication succeeding while indexing fails is a normal,
 visible, repairable state (`sync`), never a capture failure.
 
-**Retrieval:** query terms → additive alias expansion → vocabulary substring
-scan (needles under 3 bytes skipped when longer ones exist) → postings fetch
-under world/scope/lane filters → per-line crediting at word-start boundaries
-against the source text → IDF ranking with day-quantized recency → span
-dedup, confidence floor, cursor pagination. `memory_get` then opens one
-reference, comparing the requested revision with the digest recorded in the
-file's frontmatter.
+**Retrieval:** query terms → additive alias expansion → trigram-backed
+vocabulary discovery in sorted term order (every trigram candidate is verified
+as a real substring match; a query whose needles are all under 3 bytes takes
+the linear scan whole, and otherwise short needles stay excluded so they
+cannot flood discovery) → postings fetch under world/scope/lane filters → per-line crediting at
+word-start boundaries against the source text, one read per episode per
+query → IDF ranking with day-quantized recency → span dedup, confidence
+floor, cursor pagination. `memory_get` then opens one reference, recomputing
+the episode's digest from its content before serving anything under the
+requested revision.
 
 ## The Pi adapter (`adapters/pi/`)
 
@@ -93,9 +109,11 @@ go test -race ./...                # unit + golden suites
 ```
 
 `verify.sh` runs the format check, `go vet`, the race-enabled test suites,
-a host-platform binary build into `adapters/pi/bin/`, the adapter
-typecheck + tests (including an end-to-end run against the freshly built
-binary), design-contract presence greps, and a CLI smoke that exercises
+five bounded parse-boundary fuzz steps, a host-platform binary build into
+`adapters/pi/bin/`, the adapter typecheck + tests (including an end-to-end
+run against the freshly built binary), the Python hook suite with its
+recorded-transcript replays, the cross-adapter conformance suite,
+design-contract presence greps, and a CLI smoke that exercises
 capture → search → get → stale_revision → typed no_match in an isolated
 root. A change is done when this gate is green.
 

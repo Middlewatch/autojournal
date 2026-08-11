@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"schema_version\": 1, \"world\": \"main\", \"scope\": \"default\", \"lane\": \"conversation\", \"harness\": \"fuzz-seed\", \"adapter_version\": \"0.0.0\", \"session_id\": \"s-fuzz\", \"turn_id\": \"t-unbounded\", \"event_time_ms\": 253402300800000, \"capture_policy\": \"default-v1\", \"turn_outcome\": \"completed\", \"user_content\": \"the timestamp is beyond the calendar\", \"assistant_result\": \"Sharded nowhere sane.\"}")

@@ -1,14 +1,150 @@
 # Changelog
 
 Versions are the npm package (`autojournal`) and the bundled core binary,
-which share one version stamp. On-disk contracts — episode Markdown and
-frontmatter, episode-id and digest derivation, index schema, and the config
-file — are frozen within 1.x; a change to any of them would be a major
-version.
+which share one version stamp. Stability is tiered, and `DESIGN.md` states the
+tiers authoritatively: the corpus-durable contracts — episode Markdown and
+frontmatter bytes, episode-id derivation, and payload-digest derivation — are
+frozen within 1.x, and a change to any of them would be a major version.
+Interface surfaces (the CLI `--json` output and the config file) accept
+additive changes in a minor release, so consumers must tolerate unknown fields
+and unknown values of a typed vocabulary. The SQLite projection is derived
+state, not a contract.
 
 `adapter_version` is recorded in episode frontmatter but is deliberately
 excluded from the payload digest, so upgrading never re-identifies or
 re-publishes existing episodes.
+
+## 1.1.0 — 2026-08-10
+
+### Added
+
+- `scripts/repair-corpus.py`: a report-only owner script that replays
+`cc-stop.v3` episodes through the v4 projection, reanchoring turns the v3 hook
+started on machine input to the owner turn they belong to. With `--apply` it
+publishes each replacement through `autojournal capture` and deletes only the
+v3 file whose replacement published.
+- `sync --json`: the sync report in machine-readable form.
+- `AUTOJOURNAL_NOW_MS`: pins the CLI clock to a decimal millisecond timestamp
+for reproducible ranking-parity runs. Unset, empty, or malformed values are
+ignored.
+- Vocabulary discovery iterates in sorted term order, so the `MaxVocabMatches`
+cap truncates a stable, defined prefix rather than whatever subset an undefined
+scan order happened to reach first.
+- Trigram-backed vocabulary discovery: index schema 2 → 3 adds a `term_trigrams`
+table over vocabulary terms, and trigram-eligible queries narrow their
+candidates through it before the exact containment verification. The candidate
+set is identical to the linear scan's; wholly-short queries still take the
+linear scan, preserving curated short-alias reachability. The schema bump
+disposes and rebuilds existing indexes on first open — one `sync`.
+- Search reads each credited episode once per query, so a snippet always shows
+the revision its hit was credited against; a file edited between ranking and
+rendering previously produced an empty snippet.
+- `digest_mismatch` files that parse as episodes but whose recorded digest
+disagrees with their content. They stay indexed, but are excluded from recall.
+`reseal` resolves this issue.
+- `unreadable` subtrees the corpus walk could not enter. Sync still succeeds,
+and the count joins the exclusion arithmetic so freshness never reports `fresh`
+over content nobody can see.
+- `superseded`: A redelivery of an episode's own identity whose assistant result
+strictly extends the stored one — every other digest-covered field identical —
+replaces the episode in place with the fuller content; anything else remains a
+`conflict` and the first publication survives.
+- The Claude Code Stop hook projects turns by classifying transcript entries
+(`cc-stop.v4`): a slash command journals the argument the owner typed — a bare
+one journals the command name — rather than the expanded command body; a
+background-agent notification no longer splits a turn; bodies accumulate every
+terminal response since the owner's prompt, in order. An envelope is recognized
+by the head of the entry text, so a prompt that merely quotes the envelope tags
+is journaled as the typed sentence.
+- `event_time_ms` outside 1970 through 9999-12-31T23:59:59Z is refused as
+`malformed` (`ImplausibleEventTime`): a garbage timestamp would shard the
+episode into a nonsense date directory. Unknown lanes are refused by the library
+itself
+- The journal root is canonicalized (`filepath.Clean`) before the index identity
+derives from it, so two spellings of one root share one index. Migration: a
+configured root ending in a trailing slash gets a new index filename and one
+extra sync rebuilds it; the corpus is untouched. A set-but-empty `HOME` now
+fails loudly (`ErrMissingHome`) instead of resolving paths under `/`.
+- `reseal`: re-attest owner-edited episodes. A digest-stale file gets its
+`payload_digest` line rewritten to the first valid reading of its edited body,
+atomically in place; a file that no longer parses is refused and left untouched;
+one sync afterwards rebaselines the projection. `--preview` lists without
+writing; `--json` emits `{scanned, resealed, refused, write_failures, paths}`,
+and write failures exit 1 after the sweep completes. The Pi `/autojournal` menu
+gains `Reseal edited episodes`.
+- `folded_terms` in the search report: the additive singular variants search
+folded in, reported beside `alias_terms`.
+- `alias list --json` gains `merged_keys`: duplicate and case-variant alias keys
+now merge on load instead of disabling the whole file. A file that had
+duplicates gets a new alias digest on first load; outstanding search cursors
+degrade to a typed `malformed`.
+
+### Changed
+
+- Evidence is verified against content before it is served: a body edit that
+leaves the recorded `payload_digest` line untouched is excluded from search
+(`edited_excluded`), and `get` against it reports `stale_revision` with a detail
+naming reseal.
+- A numeric config value that parses to a non-finite float (`1e999`) is refused
+as malformed; a 1.0.x config carrying one is rejected until corrected.
+- `--limit 0` now resolves to the default page size; previously it was clamped
+to one result.
+- A JSON encode failure now exits non-zero with zero bytes of stdout instead of
+a silent success exit.
+- A hand-edited episode whose scope no longer satisfies the scope rule is
+excluded from reads as `skipped_malformed` instead of being served.
+- A float-shaped unsigned config value (`1.5e7`) is accepted only when it is
+exactly representable in float64: higher-precision literals were previously
+accepted, then re-emitted rounded by the next config rewrite.
+- A search cursor with a non-canonical offset spelling (`aj1.07.…`) is now a
+typed `malformed`: only the spelling this package mints decodes.
+- A hand-edited episode with a duplicated required frontmatter key (two
+`payload_digest` lines) no longer parses — readers could disagree about which
+line binds. Such files are `skipped_malformed` on sync and refused by reseal;
+delete the extra line by hand to recover them.
+- The scorer is `aj-scorer.v3`: a repeated query word keeps one weight per
+repetition unconditionally. Previously any alias value or folded variant joining
+the search replaced the term list with a deduplicated union, so repetition
+weight depended on whether an unrelated thesaurus entry fired. Ranking can
+move for repeated-term queries with an active alias or fold; the invariant is
+documented in `docs/SEARCH_TUNING.md` and pinned by the `testdata/ranking`
+fixture. The scorer version is part of the cursor guard, so cursors outstanding
+across the upgrade decode as a typed `malformed`.
+- `search` derives its reported freshness from the same verified signal `status`
+uses instead of comparing file and row counts, so the two reporters can no
+longer disagree about one corpus. The verdict is memoized beside a stat-only
+corpus signature, so an unchanged corpus no longer pays the full content walk
+on every query.
+- An index path containing `%`, `?`, or `#` now names the literal file; the
+SQLite URI parser previously truncated or percent-decoded it and the database
+silently landed elsewhere. Migration: the old mislocated database is orphaned
+and one `sync` rebuilds at the literal path.
+- Newly created shard date directories are fsynced level by level, so a reported
+capture success into a fresh chain survives a crash.
+- The Codex adapter's pending-turn file — the owner's verbatim prompt between
+hooks — and its directory are created and held owner-only (`0700`/`0600`)
+instead of at the default umask.
+- The alias-map digest length-frames entry keys, so two distinct thesauri can no
+longer share one alias identity through a key containing the separator byte.
+Every `alias_digest` value changes once; outstanding cursors decode as a typed
+`malformed`, like the other identity changes in this release.
+
+### Fixed
+
+- Scopes can no longer start with `.`, refused by the payload contract's
+`ValidScope`, the owner config, and the Pi adapter alike. A dot-led scope
+published episodes into a directory the corpus walk skips: capture reported
+`published`, the next sync removed the projection row, and search then reported
+`no_match` over a `fresh` index while the file sat on disk, permanently
+unfindable. Such a file now surfaces as a visible `skipped_malformed` exclusion
+instead of vanishing silently.
+- `OpenIndex` checks the foreign-root gate before the schema-disposal decision,
+so an old-schema index recording another journal root's identity is rejected as
+foreign instead of being emptied and re-keyed to the caller's root.
+- Library `Search` with `NowMs: 0` (the documented live-clock spelling) now
+applies live recency instead of reading every event time as future and silently
+collapsing ordering to pure rarity. The CLI always passed a real clock and is
+unaffected.
 
 ## 1.0.4 — 2026-08-08
 

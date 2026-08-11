@@ -202,10 +202,23 @@ test("sessionIdFromFile matches live capture's session id derivation", () => {
 });
 
 test("formatImportSummary reports failure detail only when something failed", () => {
-  const base = { files: 3, skippedFiles: 1, published: 5, existing: 2, skippedTurns: 1, failed: 0, firstFailure: null };
+  const base = {
+    files: 3,
+    skippedFiles: 1,
+    published: 5,
+    existing: 2,
+    skippedTurns: 1,
+    unrecognized: 0,
+    failed: 0,
+    firstFailure: null,
+  };
   assert.ok(!formatImportSummary(base).includes("failed"));
   const failing = { ...base, failed: 2, firstFailure: "malformed" };
   assert.ok(formatImportSummary(failing).includes("2 failed (first: malformed)"));
+  const tolerant = { ...base, unrecognized: 1 };
+  assert.ok(
+    formatImportSummary(tolerant).includes("1 stored with an outcome this adapter does not know"),
+  );
 });
 
 test(

@@ -35,6 +35,9 @@ The menu shows:
 - a capture on/off toggle for this conversation;
 - episode count and index health;
 - index synchronization and diagnostics;
+- **Reseal edited episodes**, which re-attests episode files you edited by
+  hand so they return to search — an owner-only action reachable nowhere
+  but this menu;
 - an importer for Pi sessions that predate AutoJournal.
 
 Capture occurs after Pi's **agent_settled** event, so the response currently
@@ -108,11 +111,13 @@ disposable projection that **/autojournal sync** can rebuild.
 Copying, moving, deleting, and editing episode files is reflected after
 **/autojournal sync**. A manual copy sharing an episode identity is
 deduplicated (the first copy found stays searchable), and dot-directories such
-as `.obsidian` or `.git` are never read as episodes. Revision checking compares
-the requested digest with the digest recorded in frontmatter. Replacing an
-episode with a correctly regenerated revision therefore returns
-`stale_revision`, but an in-place body edit that leaves `payload_digest`
-unchanged is not detected in the current release.
+as `.obsidian` or `.git` are never read as episodes. Revision checking
+recomputes each episode's digest from its actual content before serving it, so
+an in-place body edit — even one that leaves the recorded `payload_digest` line
+untouched — is detected: the episode is excluded from search, references to it
+return `stale_revision`, and sync counts it as a digest mismatch. **Reseal
+edited episodes** in the **/autojournal** menu re-attests your own edits and
+brings them back into search.
 
 ## Worlds and scopes
 

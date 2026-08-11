@@ -279,6 +279,11 @@ test("world/scope validation and branch-local selection restoration", () => {
   assert.equal(validWorld("Bad World"), false);
   assert.equal(validScope("client:a"), true);
   assert.equal(validScope("../escape"), false);
+  // Dot-led scopes publish into directories the corpus walk skips: the
+  // core refuses them, and this validator must agree.
+  assert.equal(validScope(".hidden"), false);
+  assert.equal(validScope("."), false);
+  assert.equal(validScope("a.b"), true);
   assert.deepEqual(selectionFromEntries([], DEFAULT_SELECTION), DEFAULT_SELECTION);
   assert.deepEqual(
     selectionFromEntries([
@@ -398,6 +403,84 @@ test(
         fs.readFileSync(path.join(tmp, "config", "autojournal", "config.json"), "utf8"),
       );
       assert.deepEqual(savedConfig.capture, { world: "isolated-work", scope: "default" });
+    } finally {
+      if (previous.bin === undefined) delete process.env.AUTOJOURNAL_BIN;
+      else process.env.AUTOJOURNAL_BIN = previous.bin;
+      if (previous.config === undefined) delete process.env.AUTOJOURNAL_CONFIG;
+      else process.env.AUTOJOURNAL_CONFIG = previous.config;
+      if (previous.xdgConfig === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = previous.xdgConfig;
+      if (previous.data === undefined) delete process.env.XDG_DATA_HOME;
+      else process.env.XDG_DATA_HOME = previous.data;
+      if (previous.state === undefined) delete process.env.XDG_STATE_HOME;
+      else process.env.XDG_STATE_HOME = previous.state;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "test_pi_menu_offers_reseal",
+  { skip: e2eBinary === null },
+  async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aj-reseal-menu-"));
+    const previous = {
+      bin: process.env.AUTOJOURNAL_BIN,
+      config: process.env.AUTOJOURNAL_CONFIG,
+      xdgConfig: process.env.XDG_CONFIG_HOME,
+      data: process.env.XDG_DATA_HOME,
+      state: process.env.XDG_STATE_HOME,
+    };
+    process.env.AUTOJOURNAL_BIN = e2eBinary as string;
+    delete process.env.AUTOJOURNAL_CONFIG;
+    process.env.XDG_CONFIG_HOME = path.join(tmp, "config");
+    process.env.XDG_DATA_HOME = path.join(tmp, "data");
+    process.env.XDG_STATE_HOME = path.join(tmp, "state");
+    // An existing (empty) journal root: reseal over it reports its scan
+    // rather than the missing-root refusal.
+    fs.mkdirSync(path.join(tmp, "data", "autojournal", "journals"), { recursive: true, mode: 0o700 });
+    try {
+      let command: ((args: string, ctx: unknown) => Promise<void>) | undefined;
+      const fakePi = {
+        on() {},
+        registerTool() {},
+        registerCommand(_name: string, spec: { handler: typeof command }) {
+          command = spec.handler;
+        },
+        appendEntry() {},
+      };
+      autojournalExtension(fakePi as never);
+      assert.ok(command);
+      const offered: string[][] = [];
+      const notices: string[] = [];
+      let selects = 0;
+      await command("", {
+        hasUI: true,
+        ui: {
+          notify(body: string) {
+            notices.push(body);
+          },
+          async select(_title: string, options: string[]) {
+            offered.push(options);
+            selects += 1;
+            if (selects === 1) return "Reseal edited episodes";
+            return "Close";
+          },
+          async input() {
+            return "";
+          },
+        },
+      });
+      assert.ok(
+        offered[0].includes("Reseal edited episodes"),
+        `menu is missing the reseal entry: ${offered[0].join(", ")}`,
+      );
+      // Selecting it shells the real binary over the fresh empty journal
+      // and renders its report.
+      assert.ok(
+        notices.some((body) => /scanned: 0/.test(body) && /resealed: 0/.test(body)),
+        `no reseal report was rendered: ${JSON.stringify(notices)}`,
+      );
     } finally {
       if (previous.bin === undefined) delete process.env.AUTOJOURNAL_BIN;
       else process.env.AUTOJOURNAL_BIN = previous.bin;
@@ -737,4 +820,90 @@ test("end-to-end capture -> search -> get through the binary", { skip: e2eBinary
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+// One helper for the outcome-tolerance pair: a fake binary that reports a
+// chosen capture outcome, a driven extension, and the notifications plus the
+// /autojournal status line it produced.
+async function driveCaptureWithOutcome(outcome: string): Promise<{
+  notifications: string[];
+  statusLine: string;
+}> {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aj-outcome-"));
+  const previousBin = process.env.AUTOJOURNAL_BIN;
+  const script = path.join(tmp, "fake-autojournal");
+  fs.writeFileSync(
+    script,
+    `#!/bin/sh\necho '{"outcome":"${outcome}","index":"fresh"}'\n`,
+  );
+  fs.chmodSync(script, 0o755);
+  process.env.AUTOJOURNAL_BIN = script;
+  try {
+    const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<void>>();
+    let commandHandler: ((args: string, ctx: unknown) => Promise<void>) | null = null;
+    const fakePi = {
+      on(name: string, handler: (event: unknown, ctx: unknown) => Promise<void>) {
+        handlers.set(name, handler);
+      },
+      registerTool() {},
+      registerCommand(_name: string, spec: { handler(args: string, ctx: unknown): Promise<void> }) {
+        commandHandler = spec.handler;
+      },
+      appendEntry() {},
+    };
+    autojournalExtension(fakePi as never);
+
+    const notifications: string[] = [];
+    const ctx = {
+      mode: "tui",
+      hasUI: false,
+      sessionManager: {
+        getLeafId: () => "leaf-outcome",
+        getBranch: () => [1],
+        getEntries: () => [],
+      },
+      ui: {
+        notify(message: string) {
+          notifications.push(message);
+        },
+      },
+    };
+    await handlers.get("agent_end")!(
+      {
+        messages: [
+          { role: "user", content: "outcome tolerance sentinel" },
+          { role: "assistant", content: [{ type: "text", text: "done" }] },
+        ],
+      },
+      ctx,
+    );
+    await handlers.get("agent_settled")!({}, ctx);
+
+    const before = notifications.length;
+    await commandHandler!("status", ctx);
+    const statusLine = notifications.slice(before).join("\n");
+    return { notifications: notifications.slice(0, before), statusLine };
+  } finally {
+    if (previousBin === undefined) delete process.env.AUTOJOURNAL_BIN;
+    else process.env.AUTOJOURNAL_BIN = previousBin;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+test("test_pi_adapter_counts_superseded_as_success", async () => {
+  const { notifications, statusLine } = await driveCaptureWithOutcome("superseded");
+  for (const message of notifications) {
+    assert.ok(!message.includes("capture failing"), `failure notification: ${message}`);
+  }
+  assert.match(statusLine, /1 superseded/);
+  assert.match(statusLine, /0 failed/);
+});
+
+test("test_pi_adapter_does_not_fail_on_an_unknown_outcome", async () => {
+  const { notifications, statusLine } = await driveCaptureWithOutcome("archived_v9");
+  for (const message of notifications) {
+    assert.ok(!message.includes("capture failing"), `failure notification: ${message}`);
+  }
+  assert.match(statusLine, /0 failed/);
+  assert.match(statusLine, /1 with an outcome this adapter does not know/);
 });

@@ -35,11 +35,29 @@
     "payload_digest": "sha256:fc69e950f4850ae8e4d6993880f545125d87510c38490d119ecbdfe88ae2df6c",
     "path": "scopes/project:autojournal/lanes/delegated_work/2026/07/28/aj1-c425aa91eeefe7e194e267c328453036.md"
   },
+  "divergent-base": {
+    "outcome": "published",
+    "episode_id": "aj1-4b330d073be9a08e78357c076f4a2317",
+    "payload_digest": "sha256:cf6ae5644507f69c6700d059d9e6fae2f32b8c2f0c2650002e70aa3f5e245bdc",
+    "path": "worlds/testworld/scopes/workspace:demo/2026/07/26/aj1-4b330d073be9a08e78357c076f4a2317.md"
+  },
+  "divergent-other": {
+    "outcome": "conflict",
+    "episode_id": "aj1-4b330d073be9a08e78357c076f4a2317",
+    "payload_digest": "sha256:c2e8159f680f4b7a59d385b61fcabc1768c73618dacfde15cbee4b9d63b6c6dc",
+    "path": "worlds/testworld/scopes/workspace:demo/2026/07/26/aj1-4b330d073be9a08e78357c076f4a2317.md"
+  },
   "evaluation": {
     "outcome": "published",
     "episode_id": "aj1-ccbb6e27e73b05cca404a4e3ef0e0df7",
     "payload_digest": "sha256:e42b6a07c706d3f32370b0c448978a40e4245e562e847040af6d7d37bc9403bb",
     "path": "lanes/evaluation/2026/07/28/aj1-ccbb6e27e73b05cca404a4e3ef0e0df7.md"
+  },
+  "implausible-event-time": {
+    "outcome": "malformed",
+    "episode_id": null,
+    "payload_digest": null,
+    "path": null
   },
   "imported-legacy": {
     "outcome": "published",
@@ -52,6 +70,18 @@
     "episode_id": "aj1-ef921144c01f7e36c96eb8ee34dd2ba5",
     "payload_digest": "sha256:cdbdb014ea305670a353f3932d7696feea8c40c6c0f90869fb9b9a47efa1b000",
     "path": "2026/07/28/aj1-ef921144c01f7e36c96eb8ee34dd2ba5.md"
+  },
+  "supersede-base": {
+    "outcome": "published",
+    "episode_id": "aj1-f30488b8f13a840be3f8d302a06db5f1",
+    "payload_digest": "sha256:a8bd02880390ec2bbfc2ae105cddf5d0e3d1b1c848184c3cdac5d5d24ac2db1e",
+    "path": "worlds/testworld/scopes/workspace:demo/2026/07/25/aj1-f30488b8f13a840be3f8d302a06db5f1.md"
+  },
+  "supersede-extended": {
+    "outcome": "superseded",
+    "episode_id": "aj1-f30488b8f13a840be3f8d302a06db5f1",
+    "payload_digest": "sha256:f603e3f01c949efae438d55fc02834422da88e787f31c54797dc37f8624f584a",
+    "path": "worlds/testworld/scopes/workspace:demo/2026/07/25/aj1-f30488b8f13a840be3f8d302a06db5f1.md"
   },
   "tools-empty-array": {
     "outcome": "published",
@@ -66,6 +96,12 @@
     "path": "worlds/testworld/2026/07/28/aj1-8135b55941170a4299d10975badfe9fb.md"
   },
   "unknown-field": {
+    "outcome": "malformed",
+    "episode_id": null,
+    "payload_digest": null,
+    "path": null
+  },
+  "unknown-lane": {
     "outcome": "malformed",
     "episode_id": null,
     "payload_digest": null,

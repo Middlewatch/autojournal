@@ -1,10 +1,10 @@
 {
-  "create-missing":        {"world": "team",   "scope": "default", "before": false, "outcome": "ok"},
-  "migrate-world-root":    {"world": "willow", "scope": "global",  "before": true,  "outcome": "ok"},
-  "scope-only":            {"world": "main",   "scope": "work",    "before": true,  "outcome": "ok"},
-  "number-normalization":  {"world": "main",   "scope": "next",    "before": true,  "outcome": "ok"},
-  "unicode-escapes":       {"world": "main",   "scope": "next",    "before": true,  "outcome": "ok"},
-  "null-optionals":        {"world": "main",   "scope": "next",    "before": true,  "outcome": "ok"},
-  "malformed-unknown-key": {"world": "team",   "scope": "default", "before": true,  "outcome": "malformed"},
-  "malformed-fractional":  {"world": "team",   "scope": "default", "before": true,  "outcome": "malformed"}
+  "create-missing":        {"world": "team",     "scope": "default", "before": false, "outcome": "ok"},
+  "migrate-world-root":    {"world": "notebook", "scope": "global",  "before": true,  "outcome": "ok"},
+  "scope-only":            {"world": "main",     "scope": "work",    "before": true,  "outcome": "ok"},
+  "number-normalization":  {"world": "main",     "scope": "next",    "before": true,  "outcome": "ok"},
+  "unicode-escapes":       {"world": "main",     "scope": "next",    "before": true,  "outcome": "ok"},
+  "null-optionals":        {"world": "main",     "scope": "next",    "before": true,  "outcome": "ok"},
+  "malformed-unknown-key": {"world": "team",     "scope": "default", "before": true,  "outcome": "malformed"},
+  "malformed-fractional":  {"world": "team",     "scope": "default", "before": true,  "outcome": "malformed"}
 }

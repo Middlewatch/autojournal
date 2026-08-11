@@ -19,6 +19,21 @@ fi
 go vet ./...
 go test -race ./...
 
+# Parse-boundary fuzz targets, bounded so green stays a fixed-cost command
+# — an unbounded fuzz in the gate is how gates get skipped. The
+# weekly CI job runs the same five targets for ten minutes each.
+FUZZ_LOG=$(mktemp)
+for FUZZ_TARGET in FuzzParsePayload FuzzParseConfig FuzzParseEpisode \
+  FuzzLoadAliasMapFromBytes FuzzCursorDecode; do
+  printf 'fuzz %s (10s)\n' "$FUZZ_TARGET"
+  if ! go test -count=1 -run "^${FUZZ_TARGET}\$" -fuzz "^${FUZZ_TARGET}\$" -fuzztime=10s ./src/ > "$FUZZ_LOG" 2>&1; then
+    cat "$FUZZ_LOG" >&2
+    rm -f "$FUZZ_LOG"
+    exit 1
+  fi
+done
+rm -f "$FUZZ_LOG"
+
 # Host binary for the smoke and adapter tests, in the same layout the npm
 # package ships (adapters/pi/bin/<platform>-<arch>/).
 case "$(uname -s)-$(uname -m)" in
@@ -58,7 +73,14 @@ fi
 python3 adapters/test_python_hooks.py
 printf 'python hook gate: PASS\n'
 
-DESIGN=docs/AUTOJOURNAL_1_0_DESIGN.md
+# Cross-adapter conformance: the token, workspace-root and origin-host rules
+# decide identically in every adapter implementing them. Runs the Pi
+# implementation through node --experimental-strip-types, so it sits after
+# the adapter gate above, which guarantees node and adapters/pi/node_modules.
+python3 adapters/test_conformance.py
+printf 'conformance gate: PASS\n'
+
+DESIGN=DESIGN.md
 for term in \
   "One completed turn is one atomic episode" \
   "Completed-turn projection" \
@@ -95,7 +117,7 @@ EPISODE=$(printf '%s' "$SEARCH_JSON" | rg -o '"episode_id":"[^"]+"' | head -1 | 
 REVISION=$(printf '%s' "$SEARCH_JSON" | rg -o '"revision":"[^"]+"' | head -1 | cut -d'"' -f4)
 
 # Crediting boundaries: "index" occurs only inside "reindexing", which the
-# word-start default refuses; v1-parity substring mode still credits it,
+# word-start default refuses; substring mode still credits it,
 # and a word-start prefix ("reindex") credits the same line.
 "$AJ" search index "${AJ_ARGS[@]}" --json | rg -q '"outcome":"no_match"'
 "$AJ" search index "${AJ_ARGS[@]}" --credit-mode substring --json | rg -q '"outcome":"match"'
@@ -118,6 +140,34 @@ printf '%s' "$STALE_OUT" | rg -q '"outcome":"stale_revision"'
 
 # Typed no_match is exit 0 — an answer, not an error.
 "$AJ" search zzyzxplugh "${AJ_ARGS[@]}" --json | rg -q '"outcome":"no_match"'
+
+# One freshness signal: status and search may not disagree about the
+# same corpus. Delete the projection — search first, since opening it is
+# what recreates the empty database both then describe — and the two
+# reports must carry the same freshness string; one sync brings both to
+# fresh. Search and status over a stale projection both exit non-zero by
+# design, hence the guards.
+rm -f "$SMOKE/index.sqlite" "$SMOKE/index.sqlite-wal" "$SMOKE/index.sqlite-shm"
+SEARCH_FRESHNESS=$("$AJ" search fwupd "${AJ_ARGS[@]}" --json | rg -o '"freshness":"[^"]+"' | head -1 || true)
+STATUS_FRESHNESS=$("$AJ" status --root "$SMOKE/root" --index "$SMOKE/index.sqlite" --json | rg -o '"freshness":"[^"]+"' | head -1 || true)
+[[ -n "$SEARCH_FRESHNESS" && "$SEARCH_FRESHNESS" == "$STATUS_FRESHNESS" ]]
+"$AJ" sync --root "$SMOKE/root" --index "$SMOKE/index.sqlite" >/dev/null
+"$AJ" search fwupd "${AJ_ARGS[@]}" --json | rg -q '"freshness":"fresh"'
+"$AJ" status --root "$SMOKE/root" --index "$SMOKE/index.sqlite" --json | rg -q '"freshness":"fresh"'
+
+# The disagreement case: an in-place edit leaves file and row counts equal,
+# which is exactly the state where a count-based reporter would still say
+# fresh while the authoritative check says stale. Both must say stale, and
+# the same string, before a sync repairs both to fresh.
+SMOKE_EPISODE_FILE=$(rg -l 'Refreshed\.' "$SMOKE/root" --glob 'aj1-*.md' | head -1)
+sed -i 's/Refreshed\./Refreshed twice./' "$SMOKE_EPISODE_FILE"
+SEARCH_FRESHNESS=$("$AJ" search fwupd "${AJ_ARGS[@]}" --json | rg -o '"freshness":"[^"]+"' | head -1 || true)
+STATUS_FRESHNESS=$("$AJ" status --root "$SMOKE/root" --index "$SMOKE/index.sqlite" --json | rg -o '"freshness":"[^"]+"' | head -1 || true)
+[[ "$STATUS_FRESHNESS" == '"freshness":"stale"' ]]
+[[ "$SEARCH_FRESHNESS" == "$STATUS_FRESHNESS" ]]
+"$AJ" sync --root "$SMOKE/root" --index "$SMOKE/index.sqlite" >/dev/null
+"$AJ" search fwupd "${AJ_ARGS[@]}" --json | rg -q '"freshness":"fresh"'
+"$AJ" status --root "$SMOKE/root" --index "$SMOKE/index.sqlite" --json | rg -q '"freshness":"fresh"'
 
 # Fresh-install and relocation contract: no owner config resolves the
 # host-neutral XDG data journal, default classifications produce date-only
@@ -243,5 +293,60 @@ printf '%s' "$EMPTY_PAYLOAD" |
   env HOME="$EMPTY_XDG/home" XDG_DATA_HOME= XDG_CONFIG_HOME= XDG_STATE_HOME= "$AJ" capture >/dev/null
 [[ -d "$EMPTY_XDG/home/.local/share/autojournal/journals" ]]
 [[ "$(file_mode "$EMPTY_XDG/home/.local/share/autojournal/journals")" == 700 ]]
+
+# Hand-edit case: evidence is verified against content. In its own
+# isolated root under $SMOKE (the existing EXIT trap cleans it up), capture
+# one episode, edit its body with the payload_digest line untouched, then
+# assert search excludes it, get reports stale_revision, and sync counts it.
+EDITCASE="$SMOKE/editcase"
+mkdir -p "$EDITCASE"
+EDIT_ARGS=(--root "$EDITCASE/root" --index "$EDITCASE/index.sqlite" --world smokeworld)
+payload s9 t9 "the heliotrope ledger was reconciled" "Reconciled." \
+  | "$AJ" capture --root "$EDITCASE/root" --index "$EDITCASE/index.sqlite" | rg -q '"outcome":"published"'
+EDIT_SEARCH=$("$AJ" search heliotrope "${EDIT_ARGS[@]}" --json)
+printf '%s' "$EDIT_SEARCH" | rg -q '"outcome":"match"'
+EDIT_REVISION=$(printf '%s' "$EDIT_SEARCH" | rg -o '"revision":"[^"]+"' | head -1 | cut -d'"' -f4)
+EDIT_EPISODE=$(printf '%s' "$EDIT_SEARCH" | rg -o '"episode_id":"[^"]+"' | head -1 | cut -d'"' -f4)
+EDIT_FILE=$(find "$EDITCASE/root" -name 'aj1-*.md' | head -1)
+sed -i 's/Reconciled./Reconciled by hand./' "$EDIT_FILE"
+EDIT_AFTER=$("$AJ" search heliotrope "${EDIT_ARGS[@]}" --json || true)
+if printf '%s' "$EDIT_AFTER" | rg -q "$EDIT_EPISODE"; then
+  printf 'digest-stale episode still served by search\n' >&2
+  exit 1
+fi
+printf '%s' "$EDIT_AFTER" | rg -q '"edited_excluded":[1-9]'
+EDIT_GET=$("$AJ" get --episode "$EDIT_EPISODE" --revision "$EDIT_REVISION" \
+  --root "$EDITCASE/root" --index "$EDITCASE/index.sqlite" --json || true)
+printf '%s' "$EDIT_GET" | rg -q '"outcome":"stale_revision"'
+"$AJ" sync --root "$EDITCASE/root" --index "$EDITCASE/index.sqlite" --json | rg -q '"digest_mismatch":1'
+
+# Reseal closes the round trip: the owner's edit is re-attested in
+# place, search serves the episode again, and the mismatch count returns
+# to zero — the digest-stale episode is resolved in the root that made it.
+"$AJ" reseal --root "$EDITCASE/root" --index "$EDITCASE/index.sqlite" --json | rg -q '"resealed":1'
+"$AJ" search heliotrope "${EDIT_ARGS[@]}" --json | rg -q "$EDIT_EPISODE"
+"$AJ" sync --root "$EDITCASE/root" --index "$EDITCASE/index.sqlite" --json | rg -q '"digest_mismatch":0'
+
+# Supersede on proven containment: in its own isolated root, a strict
+# extension of a settled turn replaces in place with outcome superseded and
+# exit 0 and the file carries the fuller body; a divergent redelivery is a
+# conflict with exit 3 and the first publication survives.
+SUPERSEDE="$SMOKE/supersede"
+mkdir -p "$SUPERSEDE"
+SUP_ARGS=(--root "$SUPERSEDE/root" --index "$SUPERSEDE/index.sqlite")
+payload s7 t7 "the falcon deploy settled" "First half." \
+  | "$AJ" capture "${SUP_ARGS[@]}" | rg -q '"outcome":"published"'
+payload s7 t7 "the falcon deploy settled" 'First half.\n\nSecond half arrived.' \
+  | "$AJ" capture "${SUP_ARGS[@]}" | rg -q '"outcome":"superseded"'
+SUP_FILE=$(find "$SUPERSEDE/root" -name 'aj1-*.md' | head -1)
+rg -q "Second half arrived." "$SUP_FILE"
+set +e
+payload s7 t7 "the falcon deploy settled" "A divergent rewrite." \
+  | "$AJ" capture "${SUP_ARGS[@]}" >"$SUPERSEDE/conflict.json"
+SUP_CODE=$?
+set -e
+[[ "$SUP_CODE" == 3 ]]
+rg -q '"outcome":"conflict"' "$SUPERSEDE/conflict.json"
+rg -q "Second half arrived." "$SUP_FILE"
 
 printf 'AutoJournal repository verification: PASS\n'

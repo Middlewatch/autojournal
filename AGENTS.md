@@ -3,7 +3,7 @@
 Guidance for anyone — human or coding agent — changing this repository. The
 codebase map is [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); the binding
 product contract and the reasoning behind it is
-[`docs/AUTOJOURNAL_1_0_DESIGN.md`](docs/AUTOJOURNAL_1_0_DESIGN.md); user-facing
+[`DESIGN.md`](DESIGN.md); user-facing
 search behavior and thesaurus curation is
 [`docs/SEARCH_TUNING.md`](docs/SEARCH_TUNING.md). All three are as-built.
 
@@ -33,17 +33,27 @@ freshness. If a change would put a product rule in an adapter, it belongs in
 
 ## What is frozen
 
-Within 1.x, these are contracts and changing them is a major version: episode
-Markdown and frontmatter bytes, episode-id and digest derivation, the index
-schema, the config file, and the CLI `--json` surface. Harness adapters must
-not observe a behavior change from an ordinary release.
+Stability comes in three tiers, not one list. `DESIGN.md` states them
+authoritatively; the short version:
 
-`testdata/payloads` and `testdata/golden` pin that behavior — episode bytes,
-identity and digest vectors, publish paths, config rewrites, and CLI `--json`
-ops samples. Extend the matrix whenever you change CLI-observable behavior;
-never weaken it. The fixtures were frozen from the Zig implementation this
-core was ported from (git tag `zig-final`), which remains the tiebreaker for
-any behavioral question the tests do not already answer.
+- **Corpus-durable** — episode Markdown and frontmatter bytes, episode-id
+  derivation, payload-digest derivation. Changing any of these is a major
+  version. These are what make an existing corpus readable by a future binary.
+- **Interface** — the CLI `--json` surface and the config file. Additions are
+  minor: new fields, new config keys, new values in an existing typed
+  vocabulary. Removals, renames, and meaning changes are major. Consumers must
+  tolerate unknown fields and unknown values — if you are writing adapter code
+  that treats an unrecognized outcome as an error, that is the bug.
+- **Derived** — the SQLite projection, its schema, and its location. Not a
+  contract. A version bump disposes and rebuilds from Markdown.
+
+`testdata/payloads` and `testdata/golden` pin the corpus-durable tier — episode
+bytes, identity and digest vectors, publish paths, config rewrites, and CLI
+`--json` ops samples. Extend the matrix whenever you change CLI-observable
+behavior; never weaken it. **The fixtures are the authority and there is no
+second one.** Where they and the tests are silent, decide what is correct and
+add a fixture; do not appeal to the earlier implementation this core was ported
+from, which is no longer a tiebreaker for anything.
 
 ## Conventions
 
@@ -66,12 +76,31 @@ any behavioral question the tests do not already answer.
 ./scripts/release-check.sh # verify + cross-compile + npm package layout
 ```
 
-`verify.sh` runs gofmt, `go vet`, race-enabled tests, a host binary build, the
-adapter typecheck and tests, design-contract greps, and an end-to-end
+`verify.sh` runs gofmt, `go vet`, race-enabled tests, five bounded
+parse-boundary fuzz steps, a host binary build, the adapter typecheck and
+tests, the Python hook suite (which replays the recorded transcript fixtures),
+the cross-adapter conformance suite, design-contract greps, and an end-to-end
 capture → search → get → `stale_revision` → `no_match` smoke in an isolated
-root. CI separately runs the core and adapter tests, cross-compilation, package
-layout checks, and a four-target binary end-to-end matrix. A change is done
+root. **CI runs this same script** rather than a re-listed subset, so one
+command reproduces it locally; CI adds only what a single machine cannot do,
+namely cross-compilation, npm package layout, a four-target binary end-to-end
+matrix, and a weekly long-fuzz job over the same five targets. A change is done
 when the local gate and applicable CI jobs are green.
+
+Where the conformance harness lives, since it is not under a `tests/`
+directory: `testdata/payloads` and `testdata/golden` are the fixture corpus,
+`testdata/transcripts` holds the redacted real-transcript recordings with their
+pinned projections, `adapters/test_python_hooks.py` is the stdlib-only hook
+suite, `adapters/test_conformance.py` drives every adapter over the shared
+cases in `adapters/conformance_cases.json`, and `verify.sh` itself drives the
+built binary through its real CLI for the end-to-end cases. The fuzz harness is
+`src/fuzz_test.go`: five functions turn bytes this package did not produce into
+structured values — `ParsePayload`, `ParseConfig`, `ParseEpisode`,
+`LoadAliasMapFromBytes`, and `CursorDecode` — and each is a native fuzz target
+asserting round-trip and containment invariants, not absence of panic, because
+the defects found at those boundaries all parsed cleanly and produced a wrong
+value. Seeds live under `src/testdata/fuzz`, from the existing fixtures plus
+one named regression seed per defect found at that boundary.
 
 ## Releases
 

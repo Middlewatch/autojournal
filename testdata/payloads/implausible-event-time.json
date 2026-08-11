@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "world": "testworld",
+  "scope": "workspace:demo",
+  "lane": "conversation",
+  "harness": "claude-code",
+  "adapter_version": "0.1.0",
+  "session_id": "sess-07",
+  "turn_id": "turn-7001",
+  "event_time_ms": 253402300799001,
+  "capture_policy": "default-v1",
+  "turn_outcome": "completed",
+  "user_content": "When did this supposedly happen?",
+  "assistant_result": "In the year 10000.",
+  "tools": []
+}

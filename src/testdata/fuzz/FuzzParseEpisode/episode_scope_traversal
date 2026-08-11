@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("---\nschema: aj-episode.v1\nepisode_id: aj1-00000000000000000000000000000000\nworld: main\nscope: ../../escape\nlane: conversation\nharness: fuzz-seed\nsession_id: s-fuzz\nturn_id: t-traversal\nevent_time_ms: 1785240000000\ncapture_time_ms: 1785240000000\ncapture_policy: default-v1\nturn_outcome: completed\npayload_digest: sha256:0000000000000000000000000000000000000000000000000000000000000000\n---\n\n## User\n\na scope that walks out of the corpus\n\n## Assistant\n\nRefused at the read boundary.\n")

@@ -1,6 +1,7 @@
 package autojournal
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -191,7 +192,7 @@ func TestConfidenceBandsOffTheFloor(t *testing.T) {
 func TestCursorRoundTripAndGuardMismatch(t *testing.T) {
 	inputs := CursorInputs{
 		Query:       "cinder routing",
-		World:       "willow",
+		World:       "notebook",
 		Scope:       "",
 		Lanes:       "conversation,delegated_work,imported_legacy",
 		AliasDigest: "abc123",
@@ -215,5 +216,23 @@ func TestCursorRoundTripAndGuardMismatch(t *testing.T) {
 	}
 	if _, err := CursorDecode("nonsense", inputs); err == nil {
 		t.Error("garbage decoded")
+	}
+}
+
+// TestCursorRejectsNonCanonicalOffset: "aj1.07.<guard>" parses to the same
+// offset as "aj1.7.<guard>" but was never minted; accepting it would make
+// decode-then-re-mint lossy for tokens this package did not issue.
+func TestCursorRejectsNonCanonicalOffset(t *testing.T) {
+	inputs := CursorInputs{Query: "quokka", World: "main", Lanes: "conversation"}
+	minted := CursorEncode(7, inputs)
+	if _, err := CursorDecode(minted, inputs); err != nil {
+		t.Fatalf("canonical cursor rejected: %v", err)
+	}
+	padded := strings.Replace(minted, ".7.", ".07.", 1)
+	if padded == minted {
+		t.Fatal("test construction failed to pad the offset")
+	}
+	if _, err := CursorDecode(padded, inputs); !errors.Is(err, ErrCursorMalformed) {
+		t.Errorf("non-canonical offset decoded: err = %v, want ErrCursorMalformed", err)
 	}
 }

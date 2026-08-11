@@ -7,8 +7,9 @@
 // is never inspected by the frontmatter parser, which stops at the closing
 // delimiter.
 //
-// The byte layout below is frozen and verified byte-for-byte against the
-// Zig-produced episodes in testdata/golden/episodes.
+// The byte layout below is corpus-durable: frozen and verified byte-for-byte
+// against testdata/golden/episodes. Changing it makes every existing episode
+// unreadable to a future build, which is a major version.
 
 package autojournal
 
@@ -101,9 +102,10 @@ turn_outcome: %s
 	return []byte(b.String())
 }
 
-// ISOFromMs renders epoch milliseconds as UTC ISO-8601 to second
-// precision. Input is unsigned, so pre-epoch times cannot occur by
-// construction.
+// ISOFromMs renders epoch milliseconds as UTC ISO-8601 to second precision.
+// The int64 conversion wraps at or above 2^63 and will render a negative
+// year; Validate rejects those values so they never reach a rendered
+// episode. This function does not defend itself.
 func ISOFromMs(ms uint64) string {
 	return time.UnixMilli(int64(ms)).UTC().Format("2006-01-02T15:04:05Z")
 }
