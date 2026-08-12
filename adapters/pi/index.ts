@@ -18,7 +18,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-export const ADAPTER_VERSION = "1.1.0";
+export const ADAPTER_VERSION = "1.1.1";
 const HARNESS = "pi";
 const CAPTURE_POLICY = "pi-default-v1";
 const CAPTURE_TIMEOUT_MS = 10_000;
@@ -31,6 +31,7 @@ export const QUERY_TIMEOUT_MS = 15_000;
 // unmeasured, and this budget is part of what revisits it.
 export const SYNC_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_SEARCH_LIMIT = 6;
+const MAX_EVIDENCE_REFERENCES = 256;
 // Binary-side cap is 2 MiB per content field; truncate below it so an
 // oversized turn degrades to a marked partial capture instead of a failure.
 const MAX_CONTENT_BYTES = 1_500_000;
@@ -672,7 +673,101 @@ interface SearchResultJson {
   detail?: string | null;
 }
 
-export function renderSearchResults(json: SearchResultJson): string {
+interface EvidenceIdentity extends SessionSelection {
+  episode_id: string;
+  revision: string;
+}
+
+export interface EvidenceReference extends EvidenceIdentity {
+  reference: number;
+}
+
+// Models are good at choosing a numbered search result and needlessly fallible
+// at reproducing two adjacent opaque identifiers. Keep those identifiers in a
+// bounded, branch-restorable adapter table and expose only its short handle to
+// memory_get. The core still receives and validates the original revision.
+export class EvidenceReferenceStore {
+  private readonly references = new Map<number, EvidenceIdentity>();
+  private nextReference = 1;
+  private readonly capacity: number;
+
+  constructor(capacity = MAX_EVIDENCE_REFERENCES) {
+    this.capacity = capacity;
+  }
+
+  remember(identities: readonly EvidenceIdentity[]): EvidenceReference[] {
+    return identities.map((identity) => {
+      const reference = this.nextReference++;
+      this.set(reference, identity);
+      return { reference, ...identity };
+    });
+  }
+
+  resolve(reference: number): EvidenceIdentity | undefined {
+    return this.references.get(reference);
+  }
+
+  restoreFromEntries(entries: readonly unknown[]): void {
+    this.references.clear();
+    this.nextReference = 1;
+    for (const rawEntry of entries) {
+      if (typeof rawEntry !== "object" || rawEntry === null) continue;
+      const entry = rawEntry as { type?: unknown; message?: unknown };
+      if (entry.type !== "message" || typeof entry.message !== "object" || entry.message === null) {
+        continue;
+      }
+      const message = entry.message as {
+        role?: unknown;
+        toolName?: unknown;
+        details?: { evidence_references?: unknown };
+      };
+      if (message.role !== "toolResult" || message.toolName !== "memory_search") continue;
+      const saved = message.details?.evidence_references;
+      if (!Array.isArray(saved)) continue;
+      for (const rawReference of saved) {
+        if (typeof rawReference !== "object" || rawReference === null) continue;
+        const candidate = rawReference as Partial<EvidenceReference>;
+        if (
+          !Number.isSafeInteger(candidate.reference) ||
+          (candidate.reference ?? 0) < 1 ||
+          typeof candidate.episode_id !== "string" ||
+          typeof candidate.revision !== "string" ||
+          typeof candidate.world !== "string" ||
+          typeof candidate.scope !== "string" ||
+          !validWorld(candidate.world) ||
+          !validScope(candidate.scope)
+        ) {
+          continue;
+        }
+        const reference = candidate.reference as number;
+        this.set(reference, {
+          episode_id: candidate.episode_id,
+          revision: candidate.revision,
+          world: candidate.world,
+          scope: candidate.scope,
+        });
+        this.nextReference = Math.max(this.nextReference, reference + 1);
+      }
+    }
+  }
+
+  private set(reference: number, identity: EvidenceIdentity): void {
+    // A branch-restored reference can replace an earlier mapping with the same
+    // number. Delete first so Map insertion order continues to describe age.
+    this.references.delete(reference);
+    this.references.set(reference, { ...identity });
+    while (this.references.size > this.capacity) {
+      const oldest = this.references.keys().next().value as number | undefined;
+      if (oldest === undefined) break;
+      this.references.delete(oldest);
+    }
+  }
+}
+
+export function renderSearchResults(
+  json: SearchResultJson,
+  evidenceReferences: readonly EvidenceReference[] = [],
+): string {
   if (json.outcome === "no_match") {
     const aliases =
       json.alias_terms && json.alias_terms.length > 0
@@ -691,15 +786,19 @@ export function renderSearchResults(json: SearchResultJson): string {
       ":",
   ];
   results.forEach((r, i) => {
+    const reference = evidenceReferences[i];
     lines.push(
-      `${i + 1}. ${r.path}:${r.line}${r.event_time ? ` (${r.event_time})` : ""}`,
+      `${i + 1}. ${reference ? `[reference ${reference.reference}] ` : ""}${r.path}:${r.line}` +
+        `${r.event_time ? ` (${r.event_time})` : ""}`,
       `   episode ${r.episode_id} revision ${r.revision}`,
       ...r.snippet.split("\n").map((s) => `   > ${s}`),
     );
   });
   lines.push(
     "",
-    "Open exact evidence with memory_get(episode_id, revision, lines).",
+    evidenceReferences.length === results.length
+      ? "Open exact evidence with memory_get(reference, lines)."
+      : "Open exact evidence with memory_get(episode_id, revision, lines).",
   );
   return lines.join("\n");
 }
@@ -713,6 +812,11 @@ interface GetResultJson {
   line_end?: number;
   content?: string;
   detail?: string | null;
+}
+
+interface MemoryGetParams {
+  reference: number;
+  lines?: string;
 }
 
 export function renderGetResult(json: GetResultJson): string {
@@ -778,6 +882,8 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
   let pendingRun: unknown[] | null = null;
   let activeSelection: SessionSelection = DEFAULT_SELECTION;
   let captureEnabled = true;
+  const evidenceReferences = new EvidenceReferenceStore();
+  let sessionGeneration = 0;
   const counters = {
     published: 0,
     duplicate: 0,
@@ -817,11 +923,15 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
     return pairs.length > 0 ? pairs : [DEFAULT_SELECTION];
   }
 
-  async function restoreSelection(ctx: { sessionManager: { getBranch?(): unknown[]; getEntries(): unknown[] } }) {
+  async function restoreSessionState(ctx: {
+    sessionManager: { getBranch?(): unknown[]; getEntries(): unknown[] };
+  }) {
     const known = await catalog();
     const entries = ctx.sessionManager.getBranch?.() ?? ctx.sessionManager.getEntries();
     activeSelection = selectionFromEntries(entries, known[0] ?? DEFAULT_SELECTION);
     captureEnabled = captureFromEntries(entries);
+    evidenceReferences.restoreFromEntries(entries);
+    sessionGeneration += 1;
   }
 
   function appendPolicy() {
@@ -837,7 +947,7 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
     if (typeof file === "string" && file !== "") {
       sessionId = sanitizeToken(path.basename(file).replace(/\.[^.]+$/, ""), sessionId);
     }
-    await restoreSelection(ctx);
+    await restoreSessionState(ctx);
     if (binary === null && !degradationNotified) {
       degradationNotified = true;
       ctx.ui.notify(
@@ -884,7 +994,7 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("session_tree", async (_event, ctx) => {
-    await restoreSelection(ctx);
+    await restoreSessionState(ctx);
   });
 
   pi.on("agent_end", async (event) => {
@@ -948,9 +1058,11 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
       };
     }
     const limit = Math.max(1, Math.min(params.limit ?? DEFAULT_SEARCH_LIMIT, 25));
+    const searchSelection = { ...activeSelection };
+    const searchGeneration = sessionGeneration;
     const run = await runBinary(binary, [
       "search", params.query, "--json", "--limit", String(limit),
-      "--world", activeSelection.world, "--scope", activeSelection.scope,
+      "--world", searchSelection.world, "--scope", searchSelection.scope,
     ]);
     const json = parseJsonOutput(run);
     if (json === null) {
@@ -960,15 +1072,34 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
         details: undefined,
       };
     }
+    const result = json as unknown as SearchResultJson;
+    if (searchGeneration !== sessionGeneration) {
+      const detail = "conversation branch changed while search was running; run memory_search again";
+      return {
+        content: [{ type: "text" as const, text: `memory_search unavailable — ${detail}` }],
+        details: { ...json, outcome: "reference_unavailable", detail } as unknown,
+      };
+    }
+    const references = result.outcome === "match"
+      ? evidenceReferences.remember((result.results ?? []).map((identity) => ({
+          ...identity,
+          ...searchSelection,
+        })))
+      : [];
+    const details = { ...json, evidence_references: references };
     return {
-      content: [{ type: "text" as const, text: renderSearchResults(json as unknown as SearchResultJson) }],
-      details: json,
+      content: [{ type: "text" as const, text: renderSearchResults(result, references) }],
+      details: details as unknown,
     };
   };
 
   const searchParameters = Type.Object({
     query: Type.String({ description: "Words to search for; curated aliases expand them" }),
-    limit: Type.Optional(Type.Number({ description: "Max results (default 6)" })),
+    limit: Type.Optional(Type.Integer({
+      minimum: 1,
+      maximum: 25,
+      description: "Max results (default 6)",
+    })),
   });
 
   pi.registerTool({
@@ -988,21 +1119,69 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
     name: "memory_get",
     label: "Memory Get",
     description:
-      "Open one evidence reference returned by memory_search: exact source lines with provenance. A changed recorded revision or deleted episode returns stale_revision or gone.",
+      "Open one numbered evidence reference returned by memory_search: exact source lines with provenance. A changed recorded revision or deleted episode returns stale_revision or gone.",
     parameters: Type.Object({
-      episode_id: Type.String(),
-      revision: Type.String({ description: "sha256:<hex> revision from the search result" }),
-      lines: Type.Optional(Type.String({ description: "<start>-<end> line span from the search result" })),
+      reference: Type.Integer({
+        minimum: 1,
+        description: "Short reference number from a memory_search result",
+      }),
+      lines: Type.Optional(Type.String({
+        pattern: "^[1-9][0-9]*-[1-9][0-9]*$",
+        description: "<start>-<end> line span from the search result",
+      })),
     }),
-    async execute(_id, params: { episode_id: string; revision: string; lines?: string }) {
+    // Pi runs this before schema validation. Older resumed calls still carry
+    // episode_id/revision; fold them into the current strict schema without
+    // advertising those transcription-prone fields to new model turns.
+    prepareArguments(args: unknown): MemoryGetParams {
+      if (typeof args !== "object" || args === null) return args as MemoryGetParams;
+      const input = args as {
+        reference?: unknown;
+        episode_id?: unknown;
+        revision?: unknown;
+        lines?: unknown;
+      };
+      if (input.reference !== undefined) return args as MemoryGetParams;
+      if (
+        typeof input.episode_id !== "string" ||
+        !/^aj1-[0-9a-f]{32}$/.test(input.episode_id) ||
+        typeof input.revision !== "string" ||
+        !/^sha256:[0-9a-f]{64}$/.test(input.revision) ||
+        (input.lines !== undefined &&
+          (typeof input.lines !== "string" || !/^[1-9][0-9]*-[1-9][0-9]*$/.test(input.lines)))
+      ) {
+        return args as MemoryGetParams;
+      }
+      const [saved] = evidenceReferences.remember([{
+        episode_id: input.episode_id,
+        revision: input.revision,
+        ...activeSelection,
+      }]);
+      return (input.lines === undefined
+        ? { reference: saved.reference }
+        : { reference: saved.reference, lines: input.lines }) as MemoryGetParams;
+    },
+    async execute(_id, params: MemoryGetParams) {
       if (binary === null) {
         return {
           content: [{ type: "text" as const, text: "autojournal binary unavailable; recall is disabled" }],
           details: undefined,
         };
       }
-      const args = ["get", "--episode", params.episode_id, "--revision", params.revision, "--json"];
-      args.push("--world", activeSelection.world, "--scope", activeSelection.scope);
+      const identity = evidenceReferences.resolve(params.reference);
+      if (identity === undefined) {
+        const detail =
+          `reference ${params.reference} is not available on this conversation branch; ` +
+          "run memory_search again";
+        return {
+          content: [{ type: "text" as const, text: `memory_get unavailable — ${detail}` }],
+          details: { outcome: "reference_unavailable", reference: params.reference, detail },
+        };
+      }
+      const args = [
+        "get", "--episode", identity.episode_id, "--revision", identity.revision, "--json",
+      ];
+      args.push("--world", identity.world, "--scope", identity.scope);
       if (params.lines !== undefined) args.push("--lines", params.lines);
       const run = await runBinary(binary, args);
       const json = parseJsonOutput(run);

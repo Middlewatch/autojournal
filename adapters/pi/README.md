@@ -173,12 +173,15 @@ AutoJournal registers:
 
 - memory_search(query, limit?) for ranked discovery in the conversation's
   active world and scope;
-- memory_get(episode_id, revision, lines?) for exact source evidence.
+- memory_get(reference, lines?) for exact source evidence. The reference is a
+  short number assigned to each search hit and restored with the conversation
+  branch; Pi retains the opaque episode ID and revision rather than asking the
+  model to reproduce them.
 
-There is no automatic ambient injection. Search results include episode and
-revision identity; `memory_get` refuses a reference when the episode's recorded
-digest has changed. Direct body edits that retain the recorded digest are the
-known exception described above.
+There is no automatic ambient injection. Search results retain episode and
+revision identity as provenance; `memory_get` refuses a reference when the
+episode's recorded digest has changed. Direct body edits that retain the
+recorded digest are the known exception described above.
 
 ## Move or share the journal
 

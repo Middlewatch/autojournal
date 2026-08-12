@@ -8,6 +8,7 @@ import {
   buildPayload,
   captureFromEntries,
   DEFAULT_SELECTION,
+  EvidenceReferenceStore,
   extractText,
   formatMenuTitle,
   legacyPiJournalRoot,
@@ -243,11 +244,18 @@ test("renderSearchResults covers match, no_match, and typed failures", () => {
     // The binary reports index health as an object; a fresh index adds
     // nothing to the header.
     index: { freshness: "fresh", indexed: 9, source: 9, edited_excluded: 0 },
-  });
+  }, [{
+    reference: 17,
+    episode_id: hit.episode_id,
+    revision: hit.revision,
+    world: "main",
+    scope: "default",
+  }]);
   assert.match(text, /1 of 9 matching result\(s\):/);
+  assert.match(text, /\[reference 17\]/);
   assert.match(text, /aj1-x\.md:12/);
   assert.match(text, /> the fwupd refresh worked/);
-  assert.match(text, /memory_get/);
+  assert.match(text, /memory_get\(reference, lines\)/);
 
   const stale = renderSearchResults({
     outcome: "match",
@@ -257,6 +265,187 @@ test("renderSearchResults covers match, no_match, and typed failures", () => {
   });
   assert.match(stale, /\(index stale\)/);
   assert.doesNotMatch(stale, /object Object/);
+});
+
+test("evidence references are bounded and restore from search tool details", () => {
+  const store = new EvidenceReferenceStore(2);
+  const remembered = store.remember([
+    { episode_id: "aj1-a", revision: "sha256:a", world: "main", scope: "default" },
+    { episode_id: "aj1-b", revision: "sha256:b", world: "main", scope: "default" },
+    { episode_id: "aj1-c", revision: "sha256:c", world: "main", scope: "default" },
+  ]);
+  assert.equal(store.resolve(remembered[0].reference), undefined);
+  assert.deepEqual(store.resolve(remembered[1].reference), {
+    episode_id: "aj1-b",
+    revision: "sha256:b",
+    world: "main",
+    scope: "default",
+  });
+
+  const restored = new EvidenceReferenceStore(2);
+  restored.restoreFromEntries([{
+    type: "message",
+    message: {
+      role: "toolResult",
+      toolName: "memory_search",
+      details: { evidence_references: remembered.slice(1) },
+    },
+  }]);
+  assert.deepEqual(restored.resolve(remembered[2].reference), {
+    episode_id: "aj1-c",
+    revision: "sha256:c",
+    world: "main",
+    scope: "default",
+  });
+  const [next] = restored.remember([{
+    episode_id: "aj1-d",
+    revision: "sha256:d",
+    world: "main",
+    scope: "default",
+  }]);
+  assert.equal(next.reference, remembered[2].reference + 1);
+});
+
+test("memory_get resolves short references and keeps legacy calls compatible", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aj-evidence-ref-"));
+  const previousBin = process.env.AUTOJOURNAL_BIN;
+  const previousLog = process.env.AUTOJOURNAL_TEST_LOG;
+  const script = path.join(tmp, "fake-autojournal");
+  const log = path.join(tmp, "args.log");
+  const episode = "aj1-0123456789abcdef0123456789abcdef";
+  const revision = `sha256:${"a".repeat(64)}`;
+  fs.writeFileSync(
+    script,
+    `#!/bin/sh\n` +
+      `printf '%s\\n' "$*" >> "$AUTOJOURNAL_TEST_LOG"\n` +
+      `case "$1" in\n` +
+      `  search) [ "$2" = "slow" ] && sleep 0.1; printf '%s\\n' '${JSON.stringify({
+        outcome: "match",
+        total: 1,
+        results: [{
+          episode_id: episode,
+          revision,
+          path: `2026/08/12/${episode}.md`,
+          line: 7,
+          snippet: "reference sentinel",
+          score: 1,
+        }],
+        index: { freshness: "fresh" },
+      })}' ;;\n` +
+      `  get) printf '%s\\n' '${JSON.stringify({
+        outcome: "match",
+        episode_id: episode,
+        revision,
+        path: `2026/08/12/${episode}.md`,
+        line_start: 7,
+        line_end: 8,
+        content: "reference sentinel",
+      })}' ;;\n` +
+      `  *) printf '%s\\n' '{"pairs":[{"world":"main","scope":"default"}]}' ;;\n` +
+      `esac\n`,
+  );
+  fs.chmodSync(script, 0o755);
+  process.env.AUTOJOURNAL_BIN = script;
+  process.env.AUTOJOURNAL_TEST_LOG = log;
+
+  type ToolResult = {
+    content: Array<{ type: string; text: string }>;
+    details?: unknown;
+  };
+  type ToolSpec = {
+    parameters: { required?: string[]; properties?: Record<string, unknown> };
+    prepareArguments?(args: unknown): { reference: number; lines?: string };
+    execute(id: string, params: never): Promise<ToolResult>;
+  };
+  const tools = new Map<string, ToolSpec>();
+  const events = new Map<string, (event: unknown, ctx: unknown) => Promise<void>>();
+  const fakePi = {
+    on(name: string, handler: (event: unknown, ctx: unknown) => Promise<void>) {
+      events.set(name, handler);
+    },
+    registerTool(spec: ToolSpec & { name: string }) { tools.set(spec.name, spec); },
+    registerCommand() {},
+    appendEntry() {},
+  };
+
+  try {
+    autojournalExtension(fakePi as never);
+    const search = tools.get("memory_search") as ToolSpec;
+    const get = tools.get("memory_get") as ToolSpec;
+    assert.deepEqual(get.parameters.required, ["reference"]);
+    assert.ok(get.parameters.properties?.reference);
+    assert.equal(get.parameters.properties?.episode_id, undefined);
+    assert.equal(get.parameters.properties?.revision, undefined);
+
+    const searched = await search.execute("search-1", { query: "reference sentinel" } as never);
+    assert.match(searched.content[0].text, /\[reference 1\]/);
+    const searchDetails = searched.details as { evidence_references: Array<{ reference: number }> };
+    assert.equal(searchDetails.evidence_references[0].reference, 1);
+
+    const opened = await get.execute("get-1", { reference: 1, lines: "7-8" } as never);
+    assert.match(opened.content[0].text, /reference sentinel/);
+    assert.match(
+      fs.readFileSync(log, "utf8"),
+      new RegExp(`get --episode ${episode} --revision ${revision} --json --world main --scope default --lines 7-8`),
+    );
+
+    // A resumed branch restores references from durable tool-result details.
+    // The reference retains the world/scope where search found it even when
+    // the branch's active selection later changes.
+    const sessionTree = events.get("session_tree");
+    assert.ok(sessionTree);
+    const resumedContext = {
+      sessionManager: {
+        getBranch: () => [
+          {
+            type: "message",
+            message: { role: "toolResult", toolName: "memory_search", details: searched.details },
+          },
+          {
+            type: "custom",
+            customType: SESSION_POLICY_ENTRY,
+            data: { world: "private", scope: "resumed" },
+          },
+        ],
+        getEntries: () => [],
+      },
+    };
+    await sessionTree({}, resumedContext);
+    await get.execute("get-resumed", { reference: 1 } as never);
+    const resumedCall = fs.readFileSync(log, "utf8").trim().split("\n").at(-1);
+    assert.match(resumedCall ?? "", /--world main --scope default/);
+
+    const delayedSearch = search.execute("search-slow", { query: "slow" } as never);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await sessionTree({}, resumedContext);
+    const abandoned = await delayedSearch;
+    assert.match(abandoned.content[0].text, /branch changed while search was running/);
+    const beforeAbandonedGet = fs.readFileSync(log, "utf8");
+    const abandonedGet = await get.execute("get-abandoned", { reference: 2 } as never);
+    assert.match(abandonedGet.content[0].text, /run memory_search again/);
+    assert.equal(fs.readFileSync(log, "utf8"), beforeAbandonedGet);
+
+    const beforeUnknown = fs.readFileSync(log, "utf8");
+    const unknown = await get.execute("get-2", { reference: 999 } as never);
+    assert.match(unknown.content[0].text, /run memory_search again/);
+    assert.equal(fs.readFileSync(log, "utf8"), beforeUnknown, "unknown references must not invoke the core");
+
+    const prepared = get.prepareArguments?.({
+      episode_id: episode,
+      revision,
+      lines: "9-10",
+    });
+    assert.ok(prepared);
+    assert.equal(typeof prepared.reference, "number");
+    await get.execute("get-legacy", prepared as never);
+    assert.match(fs.readFileSync(log, "utf8"), /--lines 9-10/);
+  } finally {
+    if (previousBin === undefined) delete process.env.AUTOJOURNAL_BIN;
+    else process.env.AUTOJOURNAL_BIN = previousBin;
+    if (previousLog === undefined) delete process.env.AUTOJOURNAL_TEST_LOG;
+    else process.env.AUTOJOURNAL_TEST_LOG = previousLog;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test("renderGetResult frames content as untrusted evidence", () => {

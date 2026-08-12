@@ -14,6 +14,17 @@ state, not a contract.
 excluded from the payload digest, so upgrading never re-identifies or
 re-publishes existing episodes.
 
+## 1.1.1 — 2026-08-12
+
+### Changed
+
+- Pi search results now receive bounded, conversation-local numeric references,
+and `memory_get` accepts the reference instead of requiring the model to copy an
+episode ID and SHA-256 revision. References survive session resume and branch
+navigation through ordinary tool-result state, retain the world/scope where
+their search ran, and leave revision validation in the core unchanged. Legacy
+raw-identity calls remain accepted through Pi's argument preparation hook.
+
 ## 1.1.0 — 2026-08-10
 
 ### Added

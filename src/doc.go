@@ -12,4 +12,4 @@ package autojournal
 
 // PackageVersion is the product release version. It is separate from the
 // immutable wire schema versions and must match the CLI and adapter manifests.
-const PackageVersion = "1.1.0"
+const PackageVersion = "1.1.1"

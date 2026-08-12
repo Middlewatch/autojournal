@@ -97,7 +97,10 @@ full layout.
 
 AutoJournal registers two tools: `memory_search(query, limit?)` for ranked
 discovery within the conversation's active world and scope, and
-`memory_get(episode_id, revision, lines?)` for exact source evidence. There is
+`memory_get(reference, lines?)` for exact source evidence. Search assigns each
+hit a short, conversation-local reference and keeps its opaque episode and
+revision identities in adapter state, so the model does not have to transcribe
+them. There is
 no ambient injection — the agent asks, or nothing happens.
 
 **Ranking.** Every matched line scores as rarity × recency. Rarity is a
