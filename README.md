@@ -16,7 +16,7 @@ For the [Pi coding agent](https://github.com/earendil-works/pi-coding-agent):
 pi install npm:autojournal
 ~~~
 
-Then start a new Pi process, or run **/reload** in a running session. The
+Then start a new Pi process, or run `/reload` in a running session. The
 package bundles prebuilt binaries, so users need no Go, SQLite, compiler, or
 `autojournal` on PATH. Supported targets are Linux x64/ARM64 and macOS
 Intel/Apple Silicon; Windows is not supported.
@@ -25,8 +25,8 @@ The core is a single static Go executable. That was deliberate: the same core
 serves other harnesses and an embedding host, so the system stays portable
 with no runtime dependencies.
 
-Full Pi usage — the `/autojournal` menu, session-history import, per-session
-capture toggle — is documented in
+Full Pi usage (the `/autojournal` menu, session-history import, per-session
+capture toggle) is documented in
 [`adapters/pi/README.md`](adapters/pi/README.md), which is the README npm
 publishes.
 
@@ -68,8 +68,9 @@ Copying, moving, deleting, and editing episode files is reflected after
 (the first copy found stays searchable), and dot-directories such as `.git` or
 `.obsidian` are never read as episodes. Revision checking recomputes each
 episode's digest from its actual content before serving it, so an in-place body
-edit — even one that leaves the recorded `payload_digest` line untouched — is
-detected: the episode is excluded from search, evidence references to it return
+edit (even one that leaves the recorded `payload_digest` line untouched) is
+detected. The episode is then excluded from search, evidence references to it
+return
 `stale_revision`, and `sync` counts it as a digest mismatch (also available
 machine-readably via `sync --json`). Running `autojournal reseal` re-attests
 your own edits by rewriting the recorded digest to match the edited content;
@@ -78,7 +79,7 @@ your own edits by rewriting the recorded digest to match the edited content;
 ## Worlds and scopes
 
 Most users never touch these: every normal session captures and searches
-**main / default**, across projects and sessions.
+`main` / `default`, across projects and sessions.
 
 - **World** is a separate corpus. Choosing another world changes both capture
   and search for the current conversation.
@@ -101,7 +102,7 @@ discovery within the conversation's active world and scope, and
 hit a short, conversation-local reference and keeps its opaque episode and
 revision identities in adapter state, so the model does not have to transcribe
 them. There is
-no ambient injection — the agent asks, or nothing happens.
+no ambient injection. The agent either asks or nothing happens.
 
 **Ranking.** Every matched line scores as rarity × recency. Rarity is a
 classic IDF sum: each matched query term contributes log(N / df), so a term
@@ -111,12 +112,12 @@ of 1 + boost / (elapsed_24h_periods + 1); at the default boost of 1.0, an
 episode under 24 hours old scores ×2, one 24–47 hours old ×1.5, and one seven
 elapsed periods old about ×1.13, decaying toward ×1. Each episode's age is
 floored into 24-hour periods, so its score changes only at those boundaries.
-Recency is a nudge, not an override.
+Recency is a nudge rather than a full override.
 
 **Thesaurus.** A single hand-editable JSON file maps a casual query word to
-the canonical terms that actually appear in the journal — for example
+the canonical terms that actually appear in the journal, for example
 `{"firmware": ["fwupd", "polkit"]}`. Each query term is looked up and its
-aliases added to the term set (additive expansion). The file is re-read on
+aliases are added to the term set (additive expansion). The file is re-read on
 every search, so edits take effect immediately, and a SHA-256 digest of its
 canonical form is stamped on results so you can tell which version produced a
 given answer. Curation is deliberately manual; an opt-in miss log records
@@ -127,7 +128,7 @@ from real recall failures. A broken or missing file is treated as empty.
 
 Owner configuration lives at `~/.config/autojournal/config.json`; the lookup
 also honors `$XDG_CONFIG_HOME` and `$AUTOJOURNAL_CONFIG`. Paths must be
-absolute and every key is optional — a config naming no `journal_root` keeps
+absolute and every key is optional: a config naming no `journal_root` keeps
 the default location and may carry only capture defaults or retrieval knobs.
 
 To choose another location before first capture, create:
@@ -164,10 +165,10 @@ rename and normal filesystem permissions; this has not been tested against any
 such filesystem. If yours does not, keep the authoritative journal on a local
 filesystem and synchronize backups separately.
 
-A journal root under a shared directory — one whose nearest existing parent is
-group- or world-writable, such as `/tmp` — is refused for capture and sync:
-other local users can interfere there, and such locations are often cleared on
-reboot. Choose a private, persistent directory, or `chmod g-w,o-w` the parent.
+A journal root under a shared directory (one whose nearest existing parent is
+group- or world-writable, such as `/tmp`) is refused for capture and sync.
+Other local users can interfere in these directories, and such locations are
+often cleared on reboot. Choose a private, persistent directory, or `chmod g-w,o-w` the parent.
 
 ## Other harnesses
 
