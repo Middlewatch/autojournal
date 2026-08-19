@@ -1,0 +1,15 @@
+{
+  "name": "autojournal-repo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Repo-root Pi manifest so `pi install git:github.com/Middlewatch/autojournal` loads the Pi adapter. The published npm package lives at adapters/pi.",
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./adapters/pi/index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}
