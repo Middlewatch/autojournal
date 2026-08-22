@@ -11,3 +11,4 @@ __pycache__/
 # root package.json exists only as the Pi package manifest; npm install there produces nothing worth tracking
 /node_modules/
 /package-lock.json
+.local/
