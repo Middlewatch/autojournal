@@ -265,12 +265,12 @@
         },
         {
           "id": "short-name",
-          "value": "willow",
+          "value": "ash",
           "expect": "accept"
         },
         {
           "id": "fqdn-shortens",
-          "value": "willow.example.com",
+          "value": "ash.example.com",
           "expect": "accept"
         },
         {
@@ -310,7 +310,7 @@
         },
         {
           "id": "padded-short-name",
-          "value": "  willow  ",
+          "value": "  ash  ",
           "expect": "accept"
         },
         {
