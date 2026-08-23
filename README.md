@@ -190,3 +190,6 @@ tarball:
 ~~~
 
 Released versions are recorded in [`CHANGELOG.md`](CHANGELOG.md). Licensed MIT.
+Development setup and the rules a change has to respect live in
+[`CONTRIBUTING.md`](CONTRIBUTING.md), and third-party license attributions for
+the prebuilt binaries in [`NOTICES.md`](NOTICES.md).

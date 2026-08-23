@@ -5,7 +5,7 @@ version stamp. `adapter_version` is recorded in episode frontmatter but is delib
 excluded from the payload digest, so upgrading never re-identifies or re-publishes
 existing episodes.
 
-## 1.2.0 — unreleased
+## 1.2.0 — 2026-08-22
 
 ### Added
 
@@ -15,6 +15,8 @@ owner turns it on, subagent sessions (their session logs carry
 in `pi-adapter.json` beside the resolved owner config and is read fresh at
 settle, so it reaches processes that are already running. Headless owner
 runs stay excluded, and session-history import follows the same lever.
+- A `NOTICES.md` file covering the third-party modules statically linked
+into the prebuilt binaries, shipped inside the npm package.
 
 ### Changed
 

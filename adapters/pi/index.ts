@@ -19,7 +19,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-export const ADAPTER_VERSION = "1.1.1";
+export const ADAPTER_VERSION = "1.2.0";
 const HARNESS = "pi";
 const CAPTURE_POLICY = "pi-default-v1";
 const CAPTURE_TIMEOUT_MS = 10_000;

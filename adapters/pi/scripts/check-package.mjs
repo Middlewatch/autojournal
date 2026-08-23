@@ -4,12 +4,16 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-// The changelog is authored once at the repository root and staged into the
-// package here, because npm packs symlinks as nothing at all. Generated, not
-// committed — same treatment as bin/.
+// The changelog and the notices file are authored once at the repository
+// root and staged into the package here, because npm packs symlinks as
+// nothing at all. Generated, not committed — same treatment as bin/.
 fs.copyFileSync(
   path.resolve(root, "..", "..", "CHANGELOG.md"),
   path.join(root, "CHANGELOG.md"),
+);
+fs.copyFileSync(
+  path.resolve(root, "..", "..", "NOTICES.md"),
+  path.join(root, "NOTICES.md"),
 );
 
 const expected = [
@@ -33,7 +37,7 @@ for (const relative of expected) {
   }
 }
 
-for (const relative of ["index.ts", "README.md", "LICENSE", "CHANGELOG.md"]) {
+for (const relative of ["index.ts", "README.md", "LICENSE", "CHANGELOG.md", "NOTICES.md"]) {
   if (!fs.existsSync(path.join(root, relative))) {
     throw new Error(`missing package file: ${relative}`);
   }
