@@ -1,6 +1,6 @@
 // The capability manifest and the AST check that holds the tree to it.
 //
-// DESIGN.md's Structure section names ten capabilities; this manifest states
+// Ten capabilities own the package; this manifest states
 // which src/ files implement each and which top-level symbols each file owns,
 // and the tests below parse the tree with go/ast and fail on a symbol
 // declared in the wrong file, on a symbol no capability claims, and on a
@@ -16,7 +16,6 @@
 package autojournal
 
 import (
-	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -26,9 +25,9 @@ import (
 	"testing"
 )
 
-// capability is one DESIGN.md Structure entry: its number, its name exactly
-// as Structure prints it, and the files that implement it with the symbols
-// each owns. Methods are keyed Receiver.Method.
+// capability is one numbered capability: its number, its name, and the
+// files that implement it with the symbols each owns. Methods are keyed
+// Receiver.Method.
 type capability struct {
 	num   int
 	name  string
@@ -363,31 +362,6 @@ func TestCapabilityOwnershipHasNoOrphans(t *testing.T) {
 	for sym, declFile := range decls {
 		if _, ok := claims[sym]; !ok {
 			t.Errorf("%s (declared in %s) is claimed by no capability", sym, declFile)
-		}
-	}
-}
-
-// TestCapabilityManifestMatchesDesignStructure asserts every capability
-// number in the manifest appears in DESIGN.md's Structure section with the
-// same name, so the manifest and the document cannot drift apart silently.
-func TestCapabilityManifestMatchesDesignStructure(t *testing.T) {
-	b, err := os.ReadFile("../DESIGN.md")
-	if err != nil {
-		t.Fatalf("read DESIGN.md: %v", err)
-	}
-	text := string(b)
-	idx := strings.Index(text, "\n## Structure")
-	if idx < 0 {
-		t.Fatal("DESIGN.md has no Structure section")
-	}
-	section := text[idx:]
-	if end := strings.Index(section[1:], "\n## "); end >= 0 {
-		section = section[:end+1]
-	}
-	for _, c := range capabilityManifest {
-		want := fmt.Sprintf("%d. **%s**", c.num, c.name)
-		if !strings.Contains(section, want) {
-			t.Errorf("Structure section does not list %q", want)
 		}
 	}
 }

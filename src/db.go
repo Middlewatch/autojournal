@@ -2,8 +2,8 @@
 //
 // database/sql with the pure-Go modernc.org/sqlite driver is that layer — the
 // package's only direct dependency, chosen because no cgo means the binary
-// stays static and dependency-free, which DESIGN.md treats as a product
-// property rather than a build detail. This file owns the two things that must not drift between call
+// stays static and dependency-free, which is a product property rather
+// than a build detail. This file owns the two things that must not drift between call
 // sites: the connection configuration (WAL, bounded busy wait, immediate
 // transactions) and the driver-error → sentinel mapping the rest of the
 // package classifies with errors.Is.

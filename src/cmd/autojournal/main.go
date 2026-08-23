@@ -1,5 +1,5 @@
 // Standalone AutoJournal binary: owner CLI and hook target in one
-// executable. This slice ships capture, status, catalog, sync, search,
+// executable. It ships capture, status, catalog, sync, search,
 // get, alias, default, and version over a text or JSON command interface.
 package main
 
@@ -675,7 +675,7 @@ func (c *cli) aliasCommand(cfg aj.Config, o *opts) int {
 	return c.fail(exitMalformed, "unknown alias subcommand; use list | add | remove | candidates\n")
 }
 
-// --- capture / status / catalog / sync (write slice) ---
+// --- capture / status / catalog / sync (write commands) ---
 
 func (c *cli) captureCommand(cfg aj.Config, rootPath, indexPath string) int {
 	payloadBytes, err := io.ReadAll(io.LimitReader(c.stdin, aj.MaxPayloadBytes+2))

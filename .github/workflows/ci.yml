@@ -36,10 +36,10 @@ jobs:
       # The repository gate is the definition of green, and CI runs it rather
       # than a re-listed subset: gofmt, vet, race tests, the host binary build,
       # the adapter typecheck and tests, the Python hook suite, the
-      # design-contract greps, and the end-to-end capture/search/get smoke. One
-      # command reproduces this locally. The jobs below add only what a single
-      # machine cannot do — cross-compilation and the multi-target binary
-      # matrix.
+      # cross-adapter conformance suite, and the end-to-end capture/search/get
+      # smoke. One command reproduces this locally. The jobs below add only
+      # what a single machine cannot do — cross-compilation and the
+      # multi-target binary matrix.
       - name: Repository gate
         run: ./scripts/verify.sh
 

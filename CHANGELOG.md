@@ -1,18 +1,26 @@
 # Changelog
 
-Versions are the npm package (`autojournal`) and the bundled core binary,
-which share one version stamp. Stability is tiered, and `DESIGN.md` states the
-tiers authoritatively: the corpus-durable contracts — episode Markdown and
-frontmatter bytes, episode-id derivation, and payload-digest derivation — are
-frozen within 1.x, and a change to any of them would be a major version.
-Interface surfaces (the CLI `--json` output and the config file) accept
-additive changes in a minor release, so consumers must tolerate unknown fields
-and unknown values of a typed vocabulary. The SQLite projection is derived
-state, not a contract.
+Versions are the npm package (`autojournal`) and the bundled core binary, which share one
+version stamp. `adapter_version` is recorded in episode frontmatter but is deliberately
+excluded from the payload digest, so upgrading never re-identifies or re-publishes
+existing episodes.
 
-`adapter_version` is recorded in episode frontmatter but is deliberately
-excluded from the payload digest, so upgrading never re-identifies or
-re-publishes existing episodes.
+## 1.2.0 — unreleased
+
+### Added
+
+- Subagent capture lever in the Pi adapter's `/autojournal` menu: when the
+owner turns it on, subagent sessions (their session logs carry
+`parentSession`) publish episodes like interactive ones. The lever persists
+in `pi-adapter.json` beside the resolved owner config and is read fresh at
+settle, so it reaches processes that are already running. Headless owner
+runs stay excluded, and session-history import follows the same lever.
+
+### Changed
+
+- The `/autojournal` menu relabels "Save as default for new sessions" to
+"Save world/scope as default for new sessions", and the menu title reports
+subagent capture while the lever is on.
 
 ## 1.1.1 — 2026-08-12
 

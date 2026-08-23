@@ -6,7 +6,7 @@ written by the Pi extension, the Codex hook, and the Claude Code hook) and
 publishes each User/Agent turn pair through `autojournal capture` into the
 `imported_legacy` lane. The legacy source is never modified.
 
-Identity contract (DESIGN.md, "Legacy import"): every
+Identity contract: every
 turn receives a deterministic synthesized identity — the legacy session id,
 a 1-based turn ordinal (`legacy-NNNN`), and the fixed capture policy
 `legacy-import.v1` — so re-running the importer yields `duplicate`, never a

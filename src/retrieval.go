@@ -167,8 +167,8 @@ func ExtractTerms(query string) Terms {
 // stop-word list as the query side, plus a byte cap that keeps hash blobs
 // out of the vocabulary. The length floor is 2 here, one shorter than the
 // query side: curated alias values may legitimately be two bytes ("q8"),
-// and discovery happens against this vocabulary. Known gap, accepted with
-// reasons in DESIGN.md: a query term whose only occurrence on a line is inside
+// and discovery happens against this vocabulary. Known gap, accepted:
+// a query term whose only occurrence on a line is inside
 // a stop word or an over-cap token is not discoverable, because such tokens
 // are never indexed.
 func TokenizeLine(line string) []string {

@@ -80,19 +80,6 @@ printf 'python hook gate: PASS\n'
 python3 adapters/test_conformance.py
 printf 'conformance gate: PASS\n'
 
-DESIGN=DESIGN.md
-for term in \
-  "One completed turn is one atomic episode" \
-  "Completed-turn projection" \
-  'memory_search' \
-  'memory_get' \
-  "No generated durable claims"; do
-  if ! grep -Fq "$term" "$DESIGN"; then
-    printf 'missing required design contract: %s\n' "$term" >&2
-    exit 1
-  fi
-done
-
 # End-to-end retrieval smoke against the installed binary: capture two
 # episodes, search (exact and alias-rescued), open evidence, then prove
 # stale_revision and typed no_match. Isolated root/index/thesaurus.

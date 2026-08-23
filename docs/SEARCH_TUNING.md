@@ -13,15 +13,15 @@ A search runs through five stages:
    query made only of stop words or 1–2 letter words matches nothing.
 2. **Alias expansion.** Each term is looked up in the thesaurus by exact
    match, and its canonical values join the term list. Expansion is additive:
-   aliases can only widen a search, never narrow it.
-   Plural terms also fold: `quotas` additionally searches `quota`,
-   `policies` searches `policy` — the one word-form direction the boundary
-   rule below cannot cover, since a plural query term never occurs inside
-   its singular's text. Folded variants are reported back as
+   aliases can only widen a search.
+   Plural terms also fold: `quotas` additionally searches `quota` and
+   `policies` searches `policy`. Plural folding is the one word-form
+   direction the boundary rule below cannot cover, since a plural query term
+   never occurs inside its singular's text. Folded variants are reported back as
    `folded_terms`, so a term you never typed is never unexplained.
-   **Invariant (aj-scorer.v3): repeating a query word always weighs it
-   that many times.** Alias values and folded variants are appended to
-   your term list, never merged into it — so whether `deploy deploy logs`
+   **Invariant (aj-scorer.v3):** repeating a query word always weighs it
+   that many times. Alias values and folded variants are appended to your
+   term list rather than merged into it, so whether `deploy deploy logs`
    counts `deploy` twice cannot depend on whether some unrelated thesaurus
    entry happens to fire. `testdata/ranking/` pins this with an ordered
    fixture ranking.
@@ -33,18 +33,19 @@ A search runs through five stages:
 4. **Crediting (the filter this guide is mostly about).** Each candidate
    line is re-checked against the source text. A term credits a line only
    where an occurrence *begins at a word boundary*:
-   - `hang` credits "hang", "hangs", "hanging" — but **not** "changed".
-   - `config` credits "config" and "configuration" — prefixes stay free.
-   - `index` does **not** credit "reindexing" — mid-word (infix)
-     occurrences never credit. See below for how to recover an infix
-     family you actually want.
+   - `hang` credits "hang", "hangs", and "hanging", but not "changed".
+   - `config` credits "config" and "configuration". A match may extend
+     past the term.
+   - `index` does not credit "reindexing". Mid-word (infix) occurrences
+     never credit. See below for how to recover an infix family you
+     actually want.
 5. **Scoring.** Credited lines are ranked by term rarity (a word appearing
    in few episodes outweighs a ubiquitous one) with a mild recency boost.
    One episode contributes at most two result regions per page, so a long
    episode cannot crowd out the rest of the corpus. Each hit's
    `confidence` band discounts partial matches: a hit crediting only some
    of your query words needs a proportionally stronger score to report
-   `high` — ordering is unaffected, the band is display trust only.
+   `high`. Ordering is unaffected, and the band is display trust only.
 
 ## When an expected result is missing
 
@@ -57,10 +58,10 @@ Work through these in order; each has a fast check.
    than it is.
 2. **Was your word dropped at extraction?** 1–2 letter words and stop words
    never search. Rephrase with a longer or rarer word ("q8" style short
-   canonical terms work as *alias values*, not as query words).
-3. **Is it a word-form mismatch?** You searched `deploy`, the journal says
-   `deployment` — that still matches (prefix). But you searched `index` and
-   the journal only says `reindexing` — that does not (infix). Diagnose
+   canonical terms work as *alias values* rather than as query words).
+3. **Is it a word-form mismatch?** You searched `deploy` and the journal
+   says `deployment`. That still matches (prefix). But you searched `index`
+   and the journal only says `reindexing`. That does not (infix). Diagnose
    by widening crediting to any occurrence:
 
    ```sh
@@ -72,7 +73,7 @@ Work through these in order; each has a fast check.
    word-start form: `autojournal alias add index reindex` makes `index`
    also credit "reindex", "reindexing", "reindexed".
 4. **Is it a vocabulary mismatch?** You search `vpn`, the journals only ever
-   say `tailscale`. No boundary rule fixes that — it is what the thesaurus
+   say `tailscale`. No boundary rule fixes that. This is what the thesaurus
    is for: `autojournal alias add vpn tailscale`.
 5. **Check the miss log.** With `"miss_log": true` in `config.json`, every
    weak-scoring search is recorded, and `autojournal alias candidates`
@@ -86,8 +87,8 @@ The thesaurus is one flat JSON object mapping a query word to the canonical
 terms your journals actually use. It lives at
 `$XDG_CONFIG_HOME/autojournal/thesaurus.json` (normally
 `~/.config/autojournal/thesaurus.json`, or the configured `thesaurus_path`)
-and is read fresh on every search — edits apply immediately, no restart or
-reindex.
+and is read fresh on every search. Edits apply immediately, with no
+restart or reindex.
 
 Prefer the CLI, which validates entries and keeps the file well-formed:
 
@@ -105,37 +106,36 @@ Hand-editing the file is fine too; a corrupt file degrades to an empty map
 
 - **Keys are exact-match.** `crash` firing does not make `crashed` fire;
   inflected query forms each need their own key.
-- **Don't add prefix expansions.** `config → configuration` buys nothing:
-  prefixes already match. The useful direction is long-to-short
+- **Don't add prefix expansions.** `config → configuration` buys nothing
+  because prefixes already match. The useful direction is long-to-short
   (`configuration → config`) and casual-to-canonical (`vpn → tailscale`).
 - **Avoid near-universal targets.** An alias value that appears in most of
   your journal flattens the query into "match everything". Before adding a
   broad word such as "session", "agent", "log", or "model", ask whether the
-  results of searching that word alone would be useful — the alias inherits
-  exactly that behavior.
+  results of searching that word alone would be useful, because the alias
+  inherits exactly that behavior.
 - **Phrase values are supported and precise.** `oom → "out of memory"`
-  credits only lines containing the whole phrase; use phrases when the
-  single-word form is too common (`memory`).
+  credits only lines containing the whole phrase, so use a phrase value
+  when the single-word form is too common (`memory`).
 - **Avoid values with very short fragments.** A value like `pi-guardrails`
-  contributes a 2-byte discovery needle ("pi"); the scanner drops such
+  contributes a 2-byte discovery needle ("pi"). The scanner drops such
   needles when it can, but a value whose *only* tokens are short scans
   broadly. Prefer the distinctive token alone (`guardrails`).
 - **Grow from misses, not speculation.** The miss log tells you which real
-  queries failed. A speculative synonym pack was tried and removed as
-  net-negative; small and targeted wins.
+  queries failed.
 
 ## Reviewing and ruling on candidates
 
 This is the workflow when the owner asks to "review and rule on potential
 thesaurus entries" (or similar). It is written so an agent can run it end
-to end; every verdict stays with the owner.
+to end. Every verdict stays with the owner.
 
 1. **Gather.** `autojournal alias candidates` prints distinct weak queries,
    most frequent first. Without the CLI, read the miss log directly: it is
    JSONL at `$XDG_STATE_HOME/autojournal/thesaurus-candidates.jsonl`
    (default `~/.local/state/autojournal/thesaurus-candidates.jsonl`, or
    `$AUTOJOURNAL_MISS_LOG`), one record per weak-scoring search:
-   `{"ts", "query", "terms", "best", "top"}`. Aggregate by query, count
+   `{"ts", "query", "terms", "best", "top"}`. Aggregate by query and count
    repeats. A query is only logged when `"miss_log": true` is set in
    `config.json` and its best score fell below the confidence floor.
 2. **Triage.** Drop candidates that are one-off noise: session-specific
@@ -147,12 +147,12 @@ to end; every verdict stays with the owner.
    journal for what it *actually* says about the topic
    (`autojournal search <likely canonical words>`; without the CLI, `rg -li`
    over the journal root). The alias value must be a word the journal
-   uses, not another guess.
+   uses rather than another guess.
 4. **Check breadth before proposing.** A near-universal target flattens the
    query into "match everything". Run `autojournal search <value> --json`
    and compare its breadth with the corpus size from `autojournal status`.
-   The search `total` counts result regions, not distinct episodes, so it is a
-   conservative warning signal rather than an episode percentage. If the
+   The search `total` counts result regions rather than distinct episodes, so
+   it is a conservative warning signal rather than an episode percentage. If the
    value is visibly broad, prefer a rarer word or a phrase value. The curation
    rules above (no prefix expansions, phrases for precision, no short
    fragments) all apply to the proposed value.
@@ -160,7 +160,7 @@ to end; every verdict stays with the owner.
    query, how often it missed, the proposed
    `autojournal alias add <key> <value>` (or "dismiss" with the reason),
    and what the value's breadth check showed. Apply only what the owner
-   approves — the engine never invents aliases, and neither does the
+   approves. The engine never invents aliases, and neither does the
    reviewing agent.
 6. **Reset the log.** After the ruling session, truncate the miss log so
    the next review starts from fresh signal:
@@ -176,12 +176,6 @@ for diagnosis:
 
 | mode | rule | example |
 |---|---|---|
-| `word_start` (default) | occurrence starts at a word boundary | `hang` credits "hanging", not "changed" |
+| `word_start` (default) | occurrence starts at a word boundary | `hang` credits "hanging" but not "changed" |
 | `substring` | any occurrence, including infix | `index` credits "reindexing" |
 | `whole_word` | both edges bounded | `hang` credits only "hang" |
-
-`whole_word` was evaluated on a private journal corpus and rejected as the
-default because it drops legitimate inflections ("configuration",
-"deployment"). In that unpublished evaluation, word-start removed 60–80% of
-credited matches on boundary-prone queries (`hang`, `lock`, `space`) with no
-measured loss of relevant top results.

@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// Golden fixture harness — the enforcement of DESIGN.md's corpus-durable tier.
+// Golden fixture harness — the enforcement of the corpus-durable tier.
 //
 // testdata/payloads is the capture contract matrix. testdata/golden/capture-
 // vectors.json pins the required outcome, episode id, payload digest, and

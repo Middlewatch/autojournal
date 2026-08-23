@@ -5,7 +5,7 @@
 //
 // The golden fixtures under testdata are the behavioral authority for this
 // package: they pin the on-disk formats, identity derivation, and CLI output
-// that DESIGN.md places in the corpus-durable tier. Where the fixtures and the
+// that the corpus-durable tier freezes. Where the fixtures and the
 // tests are silent, decide what is correct and add a fixture — there is no
 // second authority to appeal to.
 package autojournal

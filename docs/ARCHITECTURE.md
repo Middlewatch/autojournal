@@ -1,12 +1,8 @@
 # Architecture map for contributors
 
-Status: as built, 2026-08-10.
-
 This is the orientation document for someone who pulled the repository and
-wants to work on it. The binding product contract — laws, formats, typed
-outcomes, release gates — is [`DESIGN.md`](../DESIGN.md);
-this file tells you where things live, how data flows, and which invariants
-the code is organized around.
+wants to work on it. It tells you where things live, how data flows, and
+which invariants the code is organized around.
 
 ## The one-package shape
 
@@ -30,11 +26,10 @@ consulted for anything.
 
 ## Module map (`src/`)
 
-One capability owns each file; a file serves exactly one capability. The
-capability numbers are `DESIGN.md`'s Structure section, and
-`src/ownership_test.go` holds every top-level declaration to this map — a
+One capability owns each file; a file serves exactly one capability.
+`src/ownership_test.go` holds every top-level declaration to this map. A
 symbol in the wrong file, or in no file the manifest claims, is a failing
-test, not a review note.
+test rather than a review note.
 
 | Module | Capability | Owns |
 |---|---|---|
@@ -69,7 +64,7 @@ lifecycle facts plus an explicit owner-selected session world/scope, when
 present) → `contracts` validates the closed schema → `identity` derives
 episode ID + digest → `store` publishes atomically → `index` updates in one
 transaction. Source publication succeeding while indexing fails is a normal,
-visible, repairable state (`sync`), never a capture failure.
+visible, repairable state (`sync`) rather than a capture failure.
 
 **Retrieval:** query terms → additive alias expansion → trigram-backed
 vocabulary discovery in sorted term order (every trigram candidate is verified
@@ -90,10 +85,14 @@ retried run is captured once, in its final form), and the `memory_search`
 and `memory_get` tools plus the interactive `/autojournal` menu wrap the
 CLI's `--json` surface. Session world/scope selections are persisted as
 branch-local Pi custom entries and applied symmetrically to capture and
-search. It resolves its binary from `AUTOJOURNAL_BIN`, then
+search. Subagent sessions publish only when the owner turns on Subagent
+capture in the menu; the lever lives in `pi-adapter.json` beside the
+resolved owner config and is read fresh at settle, because a branch-local
+entry would never reach an exec-spawned subagent's process. It resolves
+its binary from `AUTOJOURNAL_BIN`, then
 the bundled `bin/<platform>-<arch>/` build, then PATH.
 
-Adapter rule worth internalizing: it **invents no memory policy**. It may
+The adapter invents no memory policy. It may
 transport an explicit owner choice made in the session menu, but validation,
 layout, lane semantics, indexing, and retrieval remain core rules. With no
 owner config, the core resolves the host-neutral journal default from
@@ -113,7 +112,7 @@ five bounded parse-boundary fuzz steps, a host-platform binary build into
 `adapters/pi/bin/`, the adapter typecheck + tests (including an end-to-end
 run against the freshly built binary), the Python hook suite with its
 recorded-transcript replays, the cross-adapter conformance suite,
-design-contract presence greps, and a CLI smoke that exercises
+and a CLI smoke that exercises
 capture → search → get → stale_revision → typed no_match in an isolated
 root. A change is done when this gate is green.
 
