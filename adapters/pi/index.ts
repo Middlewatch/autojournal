@@ -3,8 +3,9 @@
 //
 // Capture: `agent_end` stashes the run's messages; `agent_settled` publishes
 // exactly one completed turn as one episode (a retried run overwrites the
-// stashed one, so only the final run is captured). Recall: `memory_search`
-// and `memory_get` tools shell to the binary with `--json`.
+// stashed one, so only the final run is captured). Subagent sessions publish
+// only when the owner turns on Subagent capture in /autojournal. Recall:
+// `memory_search` and `memory_get` tools shell to the binary with `--json`.
 //
 // The adapter invents no memory policy. It transports an explicit
 // owner-selected session world/scope when present; otherwise it uses the
@@ -382,10 +383,9 @@ export function buildPayload(input: {
 // as duplicate or conflict instead of storing twice, and re-running the
 // import is idempotent. Provenance is stamped in adapter_version (excluded
 // from the identity digest by design). Subagent-spawned session files
-// (header carries parentSession) are synthetic work products and are
-// skipped, matching live capture's interactive-mode gate; headless --print
-// sessions are indistinguishable from interactive ones in the log and are
-// imported.
+// (header carries parentSession) are skipped unless the owner turned on
+// Subagent capture, matching live capture's gate; headless --print sessions
+// are indistinguishable from interactive ones in the log and are imported.
 
 export const IMPORT_ADAPTER_VERSION = `${ADAPTER_VERSION}+import`;
 
@@ -426,11 +426,11 @@ export function listPiSessionFiles(root: string): string[] {
 
 // Cheap importability probe for menu counts and the first-run notice: reads
 // only the header line, never the body.
-export function importableSessionHeader(firstLine: string | null): boolean {
+export function importableSessionHeader(firstLine: string | null, includeSubagents = false): boolean {
   if (firstLine === null) return false;
   try {
     const header = JSON.parse(firstLine) as { type?: string; parentSession?: unknown };
-    return header.type === "session" && header.parentSession === undefined;
+    return header.type === "session" && (includeSubagents || header.parentSession === undefined);
   } catch {
     return false;
   }
@@ -479,7 +479,7 @@ interface SessionEntry {
   message?: { role?: string; content?: unknown; timestamp?: unknown };
 }
 
-export function parsePiSession(text: string): ParsedPiSession {
+export function parsePiSession(text: string, includeSubagents = false): ParsedPiSession {
   const lines = text.split("\n");
   let headerSeen = false;
   const turns: ImportTurn[] = [];
@@ -526,7 +526,7 @@ export function parsePiSession(text: string): ParsedPiSession {
     }
     if (!headerSeen) {
       if (entry.type !== "session") return { turns: [], skippedTurns: 0, skip: "missing session header" };
-      if (entry.parentSession !== undefined) return { turns: [], skippedTurns: 0, skip: "subagent session" };
+      if (entry.parentSession !== undefined && !includeSubagents) return { turns: [], skippedTurns: 0, skip: "subagent session" };
       headerSeen = true;
       continue;
     }
@@ -575,6 +575,7 @@ export async function importPiHistory(options: {
   binary: string;
   selection: SessionSelection;
   files: string[];
+  includeSubagents?: boolean;
 }): Promise<ImportCounts> {
   const counts: ImportCounts = {
     files: 0,
@@ -594,7 +595,7 @@ export async function importPiHistory(options: {
       counts.skippedFiles += 1;
       continue;
     }
-    const parsed = parsePiSession(text);
+    const parsed = parsePiSession(text, options.includeSubagents ?? false);
     if (parsed.skip !== undefined) {
       counts.skippedFiles += 1;
       continue;
@@ -854,6 +855,7 @@ export function formatMenuTitle(
   status: StatusJson | null,
   selection: SessionSelection,
   captureEnabled = true,
+  subagentCapture = false,
 ): string {
   const journalRoot = status?.journal_root ?? "(unavailable)";
   const source =
@@ -869,8 +871,62 @@ export function formatMenuTitle(
     `Episodes: ${status?.episodes ?? 0} · Index: ${status?.index?.freshness ?? "not_built"}`,
     `Active: ${selection.world} / ${selection.scope} / conversation`,
   ];
-  if (!captureEnabled) lines.push("Capture: OFF — this session's turns are not being journaled");
+  if (!captureEnabled) lines.push("Capture: OFF (this session's turns are not being journaled)");
+  if (subagentCapture) lines.push("Subagent capture: ON (subagent sessions are being journaled)");
   return lines.join("\n");
+}
+
+// --- Adapter-owned subagent capture lever ---
+
+// Whether subagent sessions may publish is adapter policy, and it cannot
+// live in branch-local session state: an exec-spawned subagent is a
+// separate process with its own branch, which would never see the toggle.
+// The owner config file is not available for this either, because the core
+// rejects unknown keys. So the lever is one small adapter-owned file beside
+// the resolved owner config, read fresh at every settle so flipping it in
+// one session reaches processes that are already running.
+export function adapterStatePath(env: NodeJS.ProcessEnv = process.env): string {
+  const explicit = env.AUTOJOURNAL_CONFIG;
+  if (explicit !== undefined && explicit !== "") {
+    return path.join(path.dirname(explicit), "pi-adapter.json");
+  }
+  const xdg = env.XDG_CONFIG_HOME;
+  if (xdg !== undefined && xdg !== "" && path.isAbsolute(xdg)) {
+    return path.join(xdg, "autojournal", "pi-adapter.json");
+  }
+  return path.join(os.homedir(), ".config", "autojournal", "pi-adapter.json");
+}
+
+export function readSubagentCapture(file: string): boolean {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as {
+      capture_subagent_sessions?: unknown;
+    };
+    return parsed.capture_subagent_sessions === true;
+  } catch {
+    return false;
+  }
+}
+
+export function writeSubagentCapture(file: string, on: boolean): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const text = `${JSON.stringify({ version: 1, capture_subagent_sessions: on }, null, 2)}\n`;
+  const tmp = `${file}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, text, { mode: 0o600 });
+  fs.renameSync(tmp, file);
+}
+
+// A session is a subagent session when its log header carries
+// parentSession, the same field the importer uses to recognize subagent
+// logs.
+export function sessionHeaderIsSubagent(firstLine: string | null): boolean {
+  if (firstLine === null) return false;
+  try {
+    const header = JSON.parse(firstLine) as { type?: string; parentSession?: unknown };
+    return header.type === "session" && header.parentSession !== undefined;
+  } catch {
+    return false;
+  }
 }
 
 // --- Extension entry point ---
@@ -882,6 +938,7 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
   let pendingRun: unknown[] | null = null;
   let activeSelection: SessionSelection = DEFAULT_SELECTION;
   let captureEnabled = true;
+  let isSubagentSession = false;
   const evidenceReferences = new EvidenceReferenceStore();
   let sessionGeneration = 0;
   const counters = {
@@ -946,6 +1003,9 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
     const file = ctx.sessionManager.getSessionFile?.();
     if (typeof file === "string" && file !== "") {
       sessionId = sanitizeToken(path.basename(file).replace(/\.[^.]+$/, ""), sessionId);
+      isSubagentSession = sessionHeaderIsSubagent(readFirstLine(file));
+    } else {
+      isSubagentSession = false;
     }
     await restoreSessionState(ctx);
     if (binary === null && !degradationNotified) {
@@ -976,10 +1036,11 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
       if (!importNoticeShown) {
         importNoticeShown = true;
         if (status?.episodes === 0) {
+          const includeSubagents = readSubagentCapture(adapterStatePath());
           const history = listPiSessionFiles(piSessionsRoot()).filter(
             (file) =>
               sessionIdFromFile(file) !== sessionId &&
-              importableSessionHeader(readFirstLine(file)),
+              importableSessionHeader(readFirstLine(file), includeSubagents),
           );
           if (history.length > 0) {
             ctx.ui.notify(
@@ -1006,10 +1067,14 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
     pendingRun = null;
     if (run === null || binary === null) return;
 
-    // Headless runs and exec-spawned subagents (print/json modes) are
-    // synthetic work products, not the owner's conversation: capturing them
-    // would pollute the corpus. Only interactive TUI and RPC turns publish.
-    if (ctx.mode !== "tui" && ctx.mode !== "rpc") {
+    // Headless owner runs (print/json modes) are synthetic work products
+    // and never publish. Subagent sessions (the session log header carries
+    // parentSession) are the exception when the owner turns on Subagent
+    // capture in /autojournal; the lever file is read fresh so the flip
+    // reaches processes that are already running. Interactive TUI and RPC
+    // turns publish as before.
+    const interactive = ctx.mode === "tui" || ctx.mode === "rpc";
+    if (!interactive && !(isSubagentSession && readSubagentCapture(adapterStatePath()))) {
       counters.skipped += 1;
       return;
     }
@@ -1239,12 +1304,14 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
       while (true) {
         const statusRun = await runBinary(binary, ["status", "--json"]);
         const status = parseJsonOutput(statusRun) as StatusJson | null;
-        const title = formatMenuTitle(status, activeSelection, captureEnabled);
+        const subagentCapture = readSubagentCapture(adapterStatePath());
+        const title = formatMenuTitle(status, activeSelection, captureEnabled, subagentCapture);
         const choice = await ctx.ui.select(title, [
           `World: ${activeSelection.world}`,
           `Scope: ${activeSelection.scope}`,
           `Capture: ${captureEnabled ? "on" : "off"} (this session)`,
-          "Save as default for new sessions",
+          `Subagent capture: ${subagentCapture ? "on" : "off"} (all sessions)`,
+          "Save world/scope as default for new sessions",
           "Sync index",
           "Reseal edited episodes",
           "Import Pi session history",
@@ -1263,7 +1330,23 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
           );
           continue;
         }
-        if (choice === "Save as default for new sessions") {
+        if (choice.startsWith("Subagent capture:")) {
+          const stateFile = adapterStatePath();
+          const next = !readSubagentCapture(stateFile);
+          try {
+            writeSubagentCapture(stateFile, next);
+            ctx.ui.notify(
+              next
+                ? "autojournal: subagent sessions now publish to the journal (applies to every session)"
+                : "autojournal: subagent sessions no longer publish to the journal",
+              "info",
+            );
+          } catch {
+            ctx.ui.notify(`autojournal: could not write ${stateFile}`, "warning");
+          }
+          continue;
+        }
+        if (choice === "Save world/scope as default for new sessions") {
           const run = await runBinary(binary, [
             "default",
             "--world", activeSelection.world,
@@ -1306,7 +1389,7 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
           const candidates = listPiSessionFiles(root).filter(
             (file) =>
               sessionIdFromFile(file) !== sessionId &&
-              importableSessionHeader(readFirstLine(file)),
+              importableSessionHeader(readFirstLine(file), readSubagentCapture(adapterStatePath())),
           );
           if (candidates.length === 0) {
             ctx.ui.notify(`autojournal: no importable Pi session logs under ${root}`, "info");
@@ -1327,7 +1410,12 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
             `autojournal: importing ${candidates.length} session file(s) — this may take a moment`,
             "info",
           );
-          const imported = await importPiHistory({ binary, selection, files: candidates });
+          const imported = await importPiHistory({
+            binary,
+            selection,
+            files: candidates,
+            includeSubagents: readSubagentCapture(adapterStatePath()),
+          });
           let indexLine = "";
           if (imported.published > 0) {
             const endStatus = beginSyncStatus(ctx);

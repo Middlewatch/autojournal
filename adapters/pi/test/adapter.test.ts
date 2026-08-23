@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  adapterStatePath,
   default as autojournalExtension,
   buildPayload,
   captureFromEntries,
@@ -13,16 +14,19 @@ import {
   formatMenuTitle,
   legacyPiJournalRoot,
   originHost,
+  readSubagentCapture,
   renderGetResult,
   renderSearchResults,
   resolveBinary,
   runBinary,
   sanitizeToken,
   selectionFromEntries,
+  sessionHeaderIsSubagent,
   SESSION_POLICY_ENTRY,
   stableTurnId,
   summarizeRun,
   syncResultBody,
+  writeSubagentCapture,
   QUERY_TIMEOUT_MS,
   SYNC_TIMEOUT_MS,
   validScope,
@@ -526,7 +530,7 @@ test("/autojournal menu title exposes resolved journal directory and source", ()
   assert.doesNotMatch(title, /Capture: OFF/);
   assert.match(
     formatMenuTitle(null, DEFAULT_SELECTION, false),
-    /Capture: OFF — this session's turns are not being journaled/,
+    /Capture: OFF \(this session's turns are not being journaled\)/,
   );
 });
 
@@ -573,7 +577,7 @@ test(
             selects += 1;
             if (selects === 1) return options.find((option) => option.startsWith("World:"));
             if (selects === 2) return "New world…";
-            if (selects === 3) return "Save as default for new sessions";
+            if (selects === 3) return "Save world/scope as default for new sessions";
             return "Close";
           },
           async input() {
@@ -1096,3 +1100,266 @@ test("test_pi_adapter_does_not_fail_on_an_unknown_outcome", async () => {
   assert.match(statusLine, /0 failed/);
   assert.match(statusLine, /1 with an outcome this adapter does not know/);
 });
+
+test("adapterStatePath resolves beside the resolved owner config", () => {
+  assert.equal(
+    adapterStatePath({ AUTOJOURNAL_CONFIG: "/elsewhere/my-config.json" }),
+    path.join("/elsewhere", "pi-adapter.json"),
+  );
+  assert.equal(
+    adapterStatePath({ XDG_CONFIG_HOME: "/xdg" }),
+    path.join("/xdg", "autojournal", "pi-adapter.json"),
+  );
+  assert.equal(
+    adapterStatePath({}),
+    path.join(os.homedir(), ".config", "autojournal", "pi-adapter.json"),
+  );
+});
+
+test("subagent capture lever round-trips; missing, malformed, or mistyped state means off", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aj-lever-"));
+  try {
+    const file = path.join(tmp, "autojournal", "pi-adapter.json");
+    assert.equal(readSubagentCapture(file), false, "missing file");
+    writeSubagentCapture(file, true);
+    assert.equal(readSubagentCapture(file), true);
+    writeSubagentCapture(file, false);
+    assert.equal(readSubagentCapture(file), false);
+    fs.writeFileSync(file, "not json");
+    assert.equal(readSubagentCapture(file), false, "malformed file");
+    fs.writeFileSync(file, JSON.stringify({ capture_subagent_sessions: "yes" }));
+    assert.equal(readSubagentCapture(file), false, "non-boolean value");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("sessionHeaderIsSubagent reads the header's parentSession field", () => {
+  assert.equal(sessionHeaderIsSubagent(JSON.stringify({ type: "session", parentSession: "/p.jsonl" })), true);
+  assert.equal(sessionHeaderIsSubagent(JSON.stringify({ type: "session" })), false);
+  assert.equal(sessionHeaderIsSubagent("not json"), false);
+  assert.equal(sessionHeaderIsSubagent(null), false);
+});
+
+test("menu title announces subagent capture only while the lever is on", () => {
+  assert.doesNotMatch(formatMenuTitle(null, DEFAULT_SELECTION), /Subagent capture/);
+  assert.doesNotMatch(formatMenuTitle(null, DEFAULT_SELECTION, true, false), /Subagent capture/);
+  assert.match(
+    formatMenuTitle(null, DEFAULT_SELECTION, true, true),
+    /Subagent capture: ON \(subagent sessions are being journaled\)/,
+  );
+});
+
+test(
+  "menu subagent toggle writes the adapter state file and the next title shows it",
+  { skip: e2eBinary === null },
+  async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aj-lever-menu-"));
+    const previous = {
+      bin: process.env.AUTOJOURNAL_BIN,
+      config: process.env.AUTOJOURNAL_CONFIG,
+      xdgConfig: process.env.XDG_CONFIG_HOME,
+      data: process.env.XDG_DATA_HOME,
+      state: process.env.XDG_STATE_HOME,
+    };
+    process.env.AUTOJOURNAL_BIN = e2eBinary as string;
+    delete process.env.AUTOJOURNAL_CONFIG;
+    process.env.XDG_CONFIG_HOME = path.join(tmp, "config");
+    process.env.XDG_DATA_HOME = path.join(tmp, "data");
+    process.env.XDG_STATE_HOME = path.join(tmp, "state");
+    try {
+      let command: ((args: string, ctx: unknown) => Promise<void>) | undefined;
+      const fakePi = {
+        on() {},
+        registerTool() {},
+        registerCommand(_name: string, spec: { handler: typeof command }) {
+          command = spec.handler;
+        },
+        appendEntry() {},
+      };
+      autojournalExtension(fakePi as never);
+      assert.ok(command);
+      let selects = 0;
+      const titles: string[] = [];
+      await command!("", {
+        hasUI: true,
+        ui: {
+          notify() {},
+          async select(title: string, options: string[]) {
+            titles.push(title);
+            selects += 1;
+            if (selects === 1) return options.find((option) => option.startsWith("Subagent capture:"));
+            return "Close";
+          },
+          async input() {
+            return undefined;
+          },
+        },
+      });
+      const stateFile = path.join(tmp, "config", "autojournal", "pi-adapter.json");
+      assert.equal(readSubagentCapture(stateFile), true, "toggle wrote the lever");
+      assert.match(titles[1], /Subagent capture: ON/, "next menu render reflects the lever");
+    } finally {
+      if (previous.bin === undefined) delete process.env.AUTOJOURNAL_BIN;
+      else process.env.AUTOJOURNAL_BIN = previous.bin;
+      if (previous.config === undefined) delete process.env.AUTOJOURNAL_CONFIG;
+      else process.env.AUTOJOURNAL_CONFIG = previous.config;
+      if (previous.xdgConfig === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = previous.xdgConfig;
+      if (previous.data === undefined) delete process.env.XDG_DATA_HOME;
+      else process.env.XDG_DATA_HOME = previous.data;
+      if (previous.state === undefined) delete process.env.XDG_STATE_HOME;
+      else process.env.XDG_STATE_HOME = previous.state;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "subagent sessions publish only when the lever is on",
+  { skip: e2eBinary === null },
+  async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aj-subgate-"));
+    const previous = {
+      bin: process.env.AUTOJOURNAL_BIN,
+      config: process.env.AUTOJOURNAL_CONFIG,
+      xdgConfig: process.env.XDG_CONFIG_HOME,
+      data: process.env.XDG_DATA_HOME,
+      state: process.env.XDG_STATE_HOME,
+    };
+    process.env.AUTOJOURNAL_BIN = e2eBinary as string;
+    delete process.env.AUTOJOURNAL_CONFIG;
+    process.env.XDG_CONFIG_HOME = path.join(tmp, "config");
+    process.env.XDG_DATA_HOME = path.join(tmp, "data");
+    process.env.XDG_STATE_HOME = path.join(tmp, "state");
+    try {
+      const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<void>>();
+      const fakePi = {
+        on(name: string, handler: (event: unknown, ctx: unknown) => Promise<void>) {
+          handlers.set(name, handler);
+        },
+        registerTool() {},
+        registerCommand() {},
+        appendEntry() {},
+      };
+      autojournalExtension(fakePi as never);
+
+      // A session whose log header carries parentSession is a subagent
+      // session, however it was spawned.
+      const subagentFile = path.join(tmp, "subagent-session.jsonl");
+      fs.writeFileSync(
+        subagentFile,
+        `${JSON.stringify({ type: "session", id: "sub-1", parentSession: "/tmp/parent.jsonl" })}\n`,
+      );
+      const ctx = {
+        sessionManager: {
+          getSessionFile: () => subagentFile,
+          getLeafId: () => "leaf-subagent-gate",
+          getBranch: () => [1],
+          getEntries: () => [],
+        },
+        ui: { notify() {} },
+      };
+      await handlers.get("session_start")!({}, ctx);
+
+      const messages = [
+        { role: "user", content: "subagent gating sentinel" },
+        { role: "assistant", content: [{ type: "text", text: "done" }] },
+      ];
+      const journals = path.join(tmp, "data", "autojournal", "journals");
+      const stateFile = path.join(tmp, "config", "autojournal", "pi-adapter.json");
+
+      // Lever off: a subagent session settling in print mode is skipped.
+      await handlers.get("agent_end")!({ messages }, ctx);
+      await handlers.get("agent_settled")!({}, { ...ctx, mode: "print" });
+      assert.equal(fs.existsSync(journals), false);
+
+      // Lever on: the same session publishes.
+      writeSubagentCapture(stateFile, true);
+      await handlers.get("agent_end")!({ messages }, ctx);
+      await handlers.get("agent_settled")!({}, { ...ctx, mode: "print" });
+      assert.equal(fs.existsSync(journals), true);
+    } finally {
+      if (previous.bin === undefined) delete process.env.AUTOJOURNAL_BIN;
+      else process.env.AUTOJOURNAL_BIN = previous.bin;
+      if (previous.config === undefined) delete process.env.AUTOJOURNAL_CONFIG;
+      else process.env.AUTOJOURNAL_CONFIG = previous.config;
+      if (previous.xdgConfig === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = previous.xdgConfig;
+      if (previous.data === undefined) delete process.env.XDG_DATA_HOME;
+      else process.env.XDG_DATA_HOME = previous.data;
+      if (previous.state === undefined) delete process.env.XDG_STATE_HOME;
+      else process.env.XDG_STATE_HOME = previous.state;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "headless owner runs stay skipped even with the lever on",
+  { skip: e2eBinary === null },
+  async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aj-headless-"));
+    const previous = {
+      bin: process.env.AUTOJOURNAL_BIN,
+      config: process.env.AUTOJOURNAL_CONFIG,
+      xdgConfig: process.env.XDG_CONFIG_HOME,
+      data: process.env.XDG_DATA_HOME,
+      state: process.env.XDG_STATE_HOME,
+    };
+    process.env.AUTOJOURNAL_BIN = e2eBinary as string;
+    delete process.env.AUTOJOURNAL_CONFIG;
+    process.env.XDG_CONFIG_HOME = path.join(tmp, "config");
+    process.env.XDG_DATA_HOME = path.join(tmp, "data");
+    process.env.XDG_STATE_HOME = path.join(tmp, "state");
+    try {
+      const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<void>>();
+      const fakePi = {
+        on(name: string, handler: (event: unknown, ctx: unknown) => Promise<void>) {
+          handlers.set(name, handler);
+        },
+        registerTool() {},
+        registerCommand() {},
+        appendEntry() {},
+      };
+      autojournalExtension(fakePi as never);
+
+      // No parentSession in the header: a headless owner run, not a
+      // subagent session.
+      const headlessFile = path.join(tmp, "headless-session.jsonl");
+      fs.writeFileSync(headlessFile, `${JSON.stringify({ type: "session", id: "headless-1" })}\n`);
+      const ctx = {
+        sessionManager: {
+          getSessionFile: () => headlessFile,
+          getLeafId: () => "leaf-headless-gate",
+          getBranch: () => [1],
+          getEntries: () => [],
+        },
+        ui: { notify() {} },
+      };
+      await handlers.get("session_start")!({}, ctx);
+
+      writeSubagentCapture(path.join(tmp, "config", "autojournal", "pi-adapter.json"), true);
+      const messages = [
+        { role: "user", content: "headless gating sentinel" },
+        { role: "assistant", content: [{ type: "text", text: "done" }] },
+      ];
+      const journals = path.join(tmp, "data", "autojournal", "journals");
+      await handlers.get("agent_end")!({ messages }, ctx);
+      await handlers.get("agent_settled")!({}, { ...ctx, mode: "print" });
+      assert.equal(fs.existsSync(journals), false);
+    } finally {
+      if (previous.bin === undefined) delete process.env.AUTOJOURNAL_BIN;
+      else process.env.AUTOJOURNAL_BIN = previous.bin;
+      if (previous.config === undefined) delete process.env.AUTOJOURNAL_CONFIG;
+      else process.env.AUTOJOURNAL_CONFIG = previous.config;
+      if (previous.xdgConfig === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = previous.xdgConfig;
+      if (previous.data === undefined) delete process.env.XDG_DATA_HOME;
+      else process.env.XDG_DATA_HOME = previous.data;
+      if (previous.state === undefined) delete process.env.XDG_STATE_HOME;
+      else process.env.XDG_STATE_HOME = previous.state;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+);

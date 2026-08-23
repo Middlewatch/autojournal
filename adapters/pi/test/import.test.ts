@@ -317,3 +317,80 @@ test(
     }
   },
 );
+
+test("parsePiSession admits subagent sessions only when the lever is on", () => {
+  const text = jsonl([
+    header({ parentSession: "/somewhere/parent.jsonl" }),
+    userMsg("u1", "2026-07-01T10:01:00.000Z", "subagent question"),
+    assistantMsg("a1", "2026-07-01T10:01:05.000Z", "subagent answer"),
+  ]);
+  assert.equal(parsePiSession(text).skip, "subagent session");
+  const parsed = parsePiSession(text, true);
+  assert.equal(parsed.skip, undefined);
+  assert.equal(parsed.turns.length, 1);
+  assert.equal(parsed.turns[0].summary.userText, "subagent question");
+});
+
+test("importableSessionHeader includes subagent logs only when asked", () => {
+  const subagent = JSON.stringify(header({ parentSession: "/p.jsonl" }));
+  const own = JSON.stringify(header());
+  assert.equal(importableSessionHeader(subagent), false);
+  assert.equal(importableSessionHeader(subagent, true), true);
+  assert.equal(importableSessionHeader(own), true);
+  assert.equal(importableSessionHeader(own, true), true);
+});
+
+test(
+  "e2e: import follows the subagent capture lever",
+  { skip: e2eBinary === null },
+  async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aj-import-lever-"));
+    const previous = {
+      bin: process.env.AUTOJOURNAL_BIN,
+      config: process.env.AUTOJOURNAL_CONFIG,
+      xdgConfig: process.env.XDG_CONFIG_HOME,
+      data: process.env.XDG_DATA_HOME,
+      state: process.env.XDG_STATE_HOME,
+    };
+    process.env.AUTOJOURNAL_BIN = e2eBinary as string;
+    delete process.env.AUTOJOURNAL_CONFIG;
+    process.env.XDG_CONFIG_HOME = path.join(tmp, "config");
+    process.env.XDG_DATA_HOME = path.join(tmp, "data");
+    process.env.XDG_STATE_HOME = path.join(tmp, "state");
+    try {
+      const sessionsDir = path.join(tmp, "sessions", "--home-user-project--");
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(sessionsDir, "subagent.jsonl"),
+        jsonl([
+          header({ parentSession: "/p.jsonl" }),
+          userMsg("u1", "2026-07-01T10:01:00.000Z", "subagent import question"),
+          assistantMsg("a1", "2026-07-01T10:01:10.000Z", "subagent import answer"),
+        ]),
+      );
+      const binary = e2eBinary as string;
+      const selection = { world: "main", scope: "default" };
+      const files = listPiSessionFiles(path.join(tmp, "sessions"));
+
+      const off = await importPiHistory({ binary, selection, files });
+      assert.equal(off.skippedFiles, 1, "lever off: subagent log is not importable");
+      assert.equal(off.published, 0);
+
+      const on = await importPiHistory({ binary, selection, files, includeSubagents: true });
+      assert.equal(on.published, 1, "lever on: the subagent turn imports");
+      assert.equal(on.failed, 0);
+    } finally {
+      if (previous.bin === undefined) delete process.env.AUTOJOURNAL_BIN;
+      else process.env.AUTOJOURNAL_BIN = previous.bin;
+      if (previous.config === undefined) delete process.env.AUTOJOURNAL_CONFIG;
+      else process.env.AUTOJOURNAL_CONFIG = previous.config;
+      if (previous.xdgConfig === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = previous.xdgConfig;
+      if (previous.data === undefined) delete process.env.XDG_DATA_HOME;
+      else process.env.XDG_DATA_HOME = previous.data;
+      if (previous.state === undefined) delete process.env.XDG_STATE_HOME;
+      else process.env.XDG_STATE_HOME = previous.state;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+);
