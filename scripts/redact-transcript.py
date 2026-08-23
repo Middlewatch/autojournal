@@ -15,7 +15,9 @@ uuid *shape* (same length and dashes, different hex), and timestamps.
 
 What is replaced: every content string, with deterministic placeholder text
 drawn from a fixed sixteen-word alphabet, seeded by a hash of the original so
-repeated runs are byte-stable and no original text survives. Newline
+repeated runs are byte-stable and no original text survives. Path-shaped
+object keys (a file-history snapshot keys its backup map by the real file
+path) are content and are replaced the same way. Newline
 structure inside content is preserved because the projection is sensitive to
 it.
 
@@ -90,6 +92,11 @@ PATH_KEYS = {"cwd", "workspace_root", "transcript_path"}
 
 _TAG_RE = re.compile("(</?(?:%s)>)" % "|".join(ENVELOPE_TAGS))
 _HEX_RE = re.compile(r"[0-9a-fA-F]")
+# Object keys are harness structure, with one observed exception: a
+# file-history snapshot keys trackedFileBackups by the real file path.
+# A key carrying a path separator, a tilde, or a file extension is content,
+# not structure, and gets replaced.
+_CONTENT_KEY_RE = re.compile(r"[/\\~]|\.\w{1,10}$")
 
 
 def words_for(seed: str, count: int) -> str:
@@ -130,9 +137,19 @@ def redact_identifier(value: str) -> str:
     return _HEX_RE.sub(lambda _: next(it), value)
 
 
+def redact_key(key: str) -> str:
+    """Redact one object key. Structural keys (type, message, content, ...)
+    pass through; a path-shaped key is owner content wearing a key's
+    clothing and is replaced with a deterministic placeholder path."""
+    if _CONTENT_KEY_RE.search(key):
+        digest = hashlib.sha256(("aj-redact-key.v1\0" + key).encode()).hexdigest()[:8]
+        return f"redacted/path-{digest}.md"
+    return key
+
+
 def redact_value(key: str, value: object) -> object:
     if isinstance(value, dict):
-        return {k: redact_value(k, v) for k, v in value.items()}
+        return {redact_key(k): redact_value(k, v) for k, v in value.items()}
     if isinstance(value, list):
         return [redact_value(key, v) for v in value]
     if not isinstance(value, str):
@@ -583,6 +600,21 @@ def self_test() -> int:
     encoded = encode_fixture_line(red1)
     assert "<" not in encoded and ">" not in encoded, "literal tag bytes at rest"
     assert json.loads(encoded) == red1, "encoding does not round-trip"
+
+    # A file-history snapshot keys its backup map by real file paths; the
+    # keys are content and must not survive.
+    snapshot = {
+        "type": "file-history-snapshot",
+        "snapshot": {
+            "trackedFileBackups": {
+                "projects/secret-thing/README.md": {"backupFileName": "a", "version": 2},
+                "/home/someone/notes/private.md": {"backupFileName": "b", "version": 1},
+            }
+        },
+    }
+    red = json.dumps(redact_entry(snapshot))
+    for leaked in ("secret-thing", "someone", "private"):
+        assert leaked not in red, f"leaked snapshot key: {leaked}"
 
     # --- classification and projection, on synthetic entries only -----------
     def user(content, **extra):
