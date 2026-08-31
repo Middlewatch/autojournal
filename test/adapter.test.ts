@@ -132,6 +132,20 @@ test("summarizeRun keeps every visible assistant segment and dedups tool names",
   assert.equal(summary.userText, "do the thing");
   assert.equal(summary.assistantText, "working\n\nfinal answer");
   assert.deepEqual(summary.toolNames, ["bash", "read"]);
+  // Block level, not message level: two text blocks inside one assistant
+  // message also join with a blank line (pi-visible-v2 to the letter).
+  const blocks = summarizeRun([
+    { role: "user", content: "go" },
+    {
+      role: "assistant",
+      content: [
+        { type: "text", text: "first segment" },
+        { type: "toolCall", name: "bash" },
+        { type: "text", text: "second segment" },
+      ],
+    },
+  ]);
+  assert.equal(blocks.assistantText, "first segment\n\nsecond segment");
 });
 
 test("stableTurnId uses Pi's durable leaf id and deterministic fallback", () => {

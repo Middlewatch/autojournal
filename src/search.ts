@@ -257,6 +257,7 @@ export function search(root: JournalRoot, snapshot: Snapshot | null, aliasMap: A
     lanes: lanes.join(","),
     aliasDigest: out.aliasDigest,
     corpusSignature: stat.signature,
+    rankingTag: `${creditMode};${knobs.contextWindow};${knobs.recencyBoost};${knobs.minScore};${knobs.confidenceFloor}`,
   };
   let nowMs = req.nowMs === undefined || req.nowMs === 0 ? Date.now() : req.nowMs;
   let offset = 0;

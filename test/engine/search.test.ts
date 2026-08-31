@@ -343,7 +343,7 @@ test("scorer primitives: smoothed idf, recency, confidence, crediting", () => {
   assert.ok(creditLine("uses llama.cpp today", "llama.cpp", "whole_word"));
 
   // Cursor round-trip and guard binding.
-  const inputs = { query: "q", world: "main", scope: "", lanes: "conversation", aliasDigest: "d", corpusSignature: "sig" };
+  const inputs = { query: "q", world: "main", scope: "", lanes: "conversation", aliasDigest: "d", corpusSignature: "sig", rankingTag: "t" };
   const cursor = cursorEncode(7, NOW, inputs);
   assert.deepEqual(cursorDecode(cursor, inputs), { offset: 7, nowMs: NOW });
   assert.equal(cursorDecode(cursor, { ...inputs, corpusSignature: "other" }), null);

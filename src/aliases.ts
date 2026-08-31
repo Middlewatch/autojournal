@@ -103,14 +103,20 @@ function parseAliasEntries(text: string): AliasEntry[] | null {
     // whole. The alternative is guessing what a scalar meant, and a
     // thesaurus that guesses is worse than one that ignores.
     if (!Array.isArray(value)) continue;
-    const entry: AliasEntry = { key: normalizeAliasKey(key), values: [] };
+    // toWellFormed keeps the two parse paths convergent: the strict
+    // parser decodes unpaired surrogate escapes to U+FFFD, and the
+    // duplicate-key fallback below goes through JSON.parse, which leaves
+    // them as lone surrogates — canonical alias data and its digest must
+    // not depend on which path a file happened to take.
+    const entry: AliasEntry = { key: normalizeAliasKey(key).toWellFormed(), values: [] };
     for (const item of value) {
       // Non-string items — numbers, bools, nested containers — are
       // skipped item by item; the key stays.
       if (typeof item !== "string") continue;
-      const byteLen = Buffer.byteLength(item, "utf8");
+      const wellFormed = item.toWellFormed();
+      const byteLen = Buffer.byteLength(wellFormed, "utf8");
       if (byteLen === 0 || byteLen > MAX_TOKEN_LEN) continue;
-      entry.values.push(lowerAscii(item));
+      entry.values.push(lowerAscii(wellFormed));
     }
     entries.push(entry);
   }

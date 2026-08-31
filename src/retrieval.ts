@@ -313,6 +313,13 @@ export interface CursorInputs {
   lanes: string;
   aliasDigest: string;
   corpusSignature: string;
+  /**
+   * Everything else that changes the ordering: the credit mode and the
+   * scoring knobs, in one framed tag. A page-2 request under different
+   * ranking parameters must refuse the cursor rather than apply its
+   * offset to a different ordering.
+   */
+  rankingTag: string;
 }
 
 /** The 8-hex-char guard binding a cursor to its minting state. */
@@ -326,6 +333,7 @@ export function cursorGuardHex(inputs: CursorInputs, nowMs: number): string {
     inputs.lanes,
     inputs.aliasDigest,
     inputs.corpusSignature,
+    inputs.rankingTag,
     String(nowMs),
   ]) {
     h.update(`\x00${Buffer.byteLength(field, "utf8")}\x00`);

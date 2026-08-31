@@ -554,7 +554,10 @@ export function saveCaptureDefaults(env: Environ, explicitPath: string, world: s
  */
 export function writeAtomicJsonFile(configPath: string, text: string): void {
   const dir = path.dirname(configPath);
-  const tmpPath = path.join(dir, "." + path.basename(configPath) + ".tmp");
+  // The temp name carries the pid: concurrent sessions rewriting one
+  // owner file must never truncate or rename each other's staging file
+  // (last rename still wins, which is the most either writer can promise).
+  const tmpPath = path.join(dir, "." + path.basename(configPath) + "." + process.pid + ".tmp");
   try {
     fs.mkdirSync(dir, { recursive: true, mode: 0o755 });
     const fd = fs.openSync(tmpPath, "w", 0o600);

@@ -174,9 +174,16 @@ function classifyExisting(dirAbs: string, finalName: string, digestHex: string):
   const finalPath = path.join(dirAbs, finalName);
   let existing: Buffer;
   try {
+    // lstat before touching anything: a planted symlink at the final name
+    // must not redirect the chmod or the read outside the corpus — the
+    // same nofollow discipline every other descent applies.
+    if (!fs.lstatSync(finalPath).isFile()) {
+      throw new StoreError("containment_violation", "existing episode is not a regular file: " + finalName);
+    }
     fs.chmodSync(finalPath, 0o600);
     existing = fs.readFileSync(finalPath);
   } catch (err) {
+    if (err instanceof StoreError) throw err;
     throw classifyIo("read existing episode", err);
   }
   if (existing.byteLength > MAX_EPISODE_FILE_BYTES) {

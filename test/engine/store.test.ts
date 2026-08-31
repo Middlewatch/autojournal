@@ -111,6 +111,31 @@ test("same-identity redelivery with different bytes is a conflict", () => {
   }
 });
 
+test("a planted symlink at the final episode path is refused, not followed", { skip: onWindows }, () => {
+  const dir = tempDir();
+  const outside = tempDir();
+  try {
+    const root = openJournalRoot(dir);
+    const p = loadPayload("bare-no-world-scope"); // shards to 1970/01/01
+    const victim = path.join(outside, "victim.md");
+    fs.writeFileSync(victim, "outside bytes", { mode: 0o644 });
+    fs.mkdirSync(path.join(dir, "1970", "01", "01"), { recursive: true, mode: 0o700 });
+    // Plant the link at the exact final name publish will derive (the
+    // pinned id from testdata/golden/capture-vectors.json).
+    const finalName = "aj1-b42df6da3736e3f73459dd31930678b4.md";
+    fs.symlinkSync(victim, path.join(dir, "1970", "01", "01", finalName));
+    assert.throws(
+      () => publish(root, p, 1785240000000),
+      (err: unknown) => err instanceof StoreError && err.code === "containment_violation",
+    );
+    assert.equal(fs.readFileSync(victim, "utf8"), "outside bytes", "the outside target was read or modified");
+    assert.equal(fs.lstatSync(victim).mode & 0o777, 0o644, "the outside target's mode was changed");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
 test("a symlinked shard component is a containment violation", { skip: onWindows }, () => {
   const dir = tempDir();
   const outside = tempDir();

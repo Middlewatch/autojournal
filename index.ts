@@ -229,15 +229,20 @@ export function summarizeRun(messages: unknown[]): RunSummary {
       const text = extractText(msg.content);
       if (text !== "") userParts.push(text);
     } else if (msg.role === "assistant") {
-      // pi-visible-v2: every nonempty visible assistant segment survives
-      // in turn order. Measured on 50 sampled turns (see the spec's dated
-      // note): mid-turn text exists in 32/50, adds 22% over final-reply
-      // bytes, and is 100% novel — goal statements, measured results,
-      // verdicts, commit hashes — none of it restated in the final reply.
-      const text = extractText(msg.content);
-      if (text !== "") assistantParts.push(text);
-      if (Array.isArray(msg.content)) {
+      // pi-visible-v2: every nonempty visible assistant text block
+      // survives, in turn order, joined with blank lines — block level,
+      // not message level. Measured on 50 sampled turns (see the spec's
+      // dated note): mid-turn text exists in 32/50, adds 22% over
+      // final-reply bytes, and is 100% novel — goal statements, measured
+      // results, verdicts, commit hashes — none of it restated in the
+      // final reply.
+      if (typeof msg.content === "string") {
+        if (msg.content.trim() !== "") assistantParts.push(msg.content);
+      } else if (Array.isArray(msg.content)) {
         for (const block of msg.content as ContentBlock[]) {
+          if (block.type === "text" && typeof block.text === "string" && block.text.trim() !== "") {
+            assistantParts.push(block.text);
+          }
           if (block.type === "toolCall" && typeof block.name === "string") {
             if (!toolNames.includes(block.name)) toolNames.push(block.name);
           }
@@ -568,9 +573,11 @@ function runCapture(raw: RawPayload): { outcome: string } {
 }
 
 // openSnapshotForDedupe loads the projection import's policy-aware dedupe
-// reads, syncing first when it is absent or unusable. Null means import
-// proceeds without prior-policy knowledge (same-policy identity dedupe
-// still applies at the store).
+// reads, always syncing first: a stale snapshot would miss episodes and
+// let a prior-policy turn double-store, and import is owner time where a
+// one-second rebuild is cheap. Null means import proceeds without
+// prior-policy knowledge (same-policy identity dedupe still applies at
+// the store).
 function openSnapshotForDedupe(): Snapshot | null {
   let cfg: Config;
   let paths: { rootPath: string; indexPath: string };
@@ -580,12 +587,8 @@ function openSnapshotForDedupe(): Snapshot | null {
   } catch {
     return null;
   }
-  const digest = rootDigestHex(paths.rootPath);
-  let opened = openSnapshot(paths.indexPath, digest);
-  if (opened.kind !== "ok") {
-    runCli(["sync"]);
-    opened = openSnapshot(paths.indexPath, digest);
-  }
+  runCli(["sync"]);
+  const opened = openSnapshot(paths.indexPath, rootDigestHex(paths.rootPath));
   return opened.kind === "ok" ? opened.snapshot : null;
 }
 
