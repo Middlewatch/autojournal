@@ -145,6 +145,7 @@ export function openSnapshot(indexPath: string, expectedRootDigest: string | nul
     wire.format !== SNAPSHOT_FORMAT_VERSION ||
     wire.tokenizer !== TOKENIZER_VERSION ||
     !Array.isArray(wire.episodes) ||
+    wire.postings === null ||
     typeof wire.postings !== "object"
   ) {
     return { kind: "not_built" };
@@ -152,6 +153,18 @@ export function openSnapshot(indexPath: string, expectedRootDigest: string | nul
   if (expectedRootDigest !== null && wire.root_digest !== expectedRootDigest) {
     return { kind: "foreign" };
   }
+  // Decode inside a catch: the snapshot is disposable derived state, and a
+  // structurally corrupt file that slipped past the shape checks must read
+  // as not_built — capture consults this on its way to publishing a turn,
+  // and a throw there costs the turn.
+  try {
+    return decodeSnapshot(wire);
+  } catch {
+    return { kind: "not_built" };
+  }
+}
+
+function decodeSnapshot(wire: SnapshotWire): OpenSnapshotResult {
   const episodes: SnapshotEpisode[] = wire.episodes.map((row) => ({
     episodeId: row[0] as string,
     digestHex: row[1] as string,

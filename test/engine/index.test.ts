@@ -156,6 +156,31 @@ test("a foreign snapshot is refused, never misread as empty memory", () => {
   }
 });
 
+test("a structurally corrupt snapshot reads as not_built, never throws", () => {
+  // Regression: valid JSON with postings: null passed the shape checks
+  // (typeof null is "object") and threw during decode — uncaught on the
+  // capture path, costing the turn.
+  const s = scratch();
+  try {
+    captureInto(s.rootPath, "", rawPayload("basic"));
+    sync(s.rootPath, s.indexPath);
+    const wire = JSON.parse(fs.readFileSync(s.indexPath, "utf8"));
+    wire.postings = null;
+    fs.writeFileSync(s.indexPath, JSON.stringify(wire));
+    assert.equal(openSnapshot(s.indexPath, null).kind, "not_built");
+    wire.postings = {};
+    wire.episodes = [null];
+    fs.writeFileSync(s.indexPath, JSON.stringify(wire));
+    assert.equal(openSnapshot(s.indexPath, null).kind, "not_built");
+    // Capture consults the snapshot on its way to publishing; a corrupt
+    // one degrades the corpus-wide check, it does not lose the turn.
+    const result = captureInto(s.rootPath, s.indexPath, rawPayload("delegated"));
+    assert.equal(result.outcome, "published");
+  } finally {
+    s.drop();
+  }
+});
+
 test("the writer lock serializes and recovers from stale holders", () => {
   const s = scratch();
   try {

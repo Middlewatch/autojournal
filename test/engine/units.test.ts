@@ -372,6 +372,19 @@ test("episode parse and verify edges", () => {
   assert.ok(!broken.ok && broken.failure === "episode_malformed");
 });
 
+test("separator-heavy content verifies: the interpretation cap scales with body size", () => {
+  // Regression: with a fixed 64-candidate cap, a freshly rendered episode
+  // whose user content quotes the body separators ~62 times failed its own
+  // verification with digest_mismatch and dropped out of recall. Seed:
+  // testdata/fuzz/FuzzParseEpisode/episode_separator_exhaustion.
+  const quoted = "quoting a transcript:" + "\n\n## Assistant\n\n".repeat(500) + "done";
+  const p = validate(parsePayload(basePayload({ user_content: quoted })));
+  const content = render({ payload: p, episodeId: episodeId(p), digestHex: payloadDigestHex(p), captureTimeMs: 1785240000500 });
+  const v = verifyEpisode(content);
+  assert.ok(v.ok);
+  assert.equal(v.ok && v.episode.userContent, quoted);
+});
+
 test("frontmatter digest extraction", () => {
   const p = validate(parsePayload(basePayload()));
   const digest = payloadDigestHex(p);

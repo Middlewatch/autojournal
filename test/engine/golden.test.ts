@@ -19,7 +19,11 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 
-import { parsePayload, validate, type RawPayload, type Payload } from "../../src/contracts.ts";
+import { createHash } from "node:crypto";
+
+import { parsePayload, validate, MAX_CONTENT_BYTES, type RawPayload, type Payload } from "../../src/contracts.ts";
+import { applyOversizePolicy } from "../../src/store.ts";
+import { verifyEpisode } from "../../src/episode.ts";
 import { episodeId, payloadDigestHex, DIGEST_PREFIX } from "../../src/identity.ts";
 import { render } from "../../src/render.ts";
 import { parseEpisode } from "../../src/episode.ts";
@@ -88,6 +92,59 @@ test("golden episode bytes re-render byte-identically", async (t) => {
       assert.equal(DIGEST_PREFIX + ep!.digestHex, vec.payload_digest);
     });
   }
+});
+
+// Truncation frontmatter is corpus-durable like every other rendered
+// byte, but its inputs are 2 MiB payloads, too large to keep as fixture
+// files. The input is generated deterministically here and the pins —
+// dropped-byte counts, identity, digest, the exact frontmatter block, and
+// the whole-file hash — are the fixture. A diff is a contract break,
+// never a value to update.
+test("golden truncation: oversize capture pins bytes and stays verifiable", () => {
+  const raw = parsePayload(fs.readFileSync(path.join(PAYLOADS_DIR, "basic.json")));
+  raw.userContent = "U".repeat(MAX_CONTENT_BYTES + 9) + "é";
+  raw.assistantResult = "A".repeat(MAX_CONTENT_BYTES - 1) + "é"; // straddles the cut: boundary backoff drops 2
+  const { raw: sized, drops } = applyOversizePolicy(raw);
+  assert.deepEqual(drops, { user: 11, assistant: 2 });
+  const p = validateAsCaptureHost(sized);
+  const digestHex = payloadDigestHex(p);
+  const rendered = render({
+    payload: p,
+    episodeId: episodeId(p),
+    digestHex,
+    captureTimeMs: 1700000000000,
+    userDroppedBytes: drops.user,
+    assistantDroppedBytes: drops.assistant,
+  });
+  assert.equal(episodeId(p), "aj1-2b51a0c261ddfe3de551ddcd9bf03a7d");
+  assert.equal(digestHex, "c76e87ba2176355b8ee1cf472a6c5a110ce2c9177967074ce64f08286ba920f7");
+  const frontmatter =
+    "---\n" +
+    "schema: aj-episode.v1\n" +
+    "episode_id: aj1-2b51a0c261ddfe3de551ddcd9bf03a7d\n" +
+    "world: testworld\n" +
+    "scope: workspace:demo\n" +
+    "lane: conversation\n" +
+    "harness: claude-code\n" +
+    "adapter_version: 0.1.0\n" +
+    "session_id: sess-01\n" +
+    "turn_id: turn-0007\n" +
+    "event_time: 2026-07-12T13:20:00Z\n" +
+    "event_time_ms: 1783862400123\n" +
+    "capture_time: 2023-11-14T22:13:20Z\n" +
+    "capture_time_ms: 1700000000000\n" +
+    "capture_policy: default-v1\n" +
+    "turn_outcome: completed\n" +
+    "user_dropped_bytes: 11\n" +
+    "assistant_dropped_bytes: 2\n" +
+    "payload_digest: sha256:c76e87ba2176355b8ee1cf472a6c5a110ce2c9177967074ce64f08286ba920f7\n" +
+    "---\n";
+  assert.equal(rendered.slice(0, frontmatter.length), frontmatter);
+  assert.equal(
+    createHash("sha256").update(rendered, "utf8").digest("hex"),
+    "2da2f5d4ec8c67e77cfae180884727d5885009e8fc4edbbd3107fcf5cecef278",
+  );
+  assert.ok(verifyEpisode(rendered).ok);
 });
 
 // The published path is an index and evidence-reference key, so a layout

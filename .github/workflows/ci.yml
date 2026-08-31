@@ -32,23 +32,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # shell: bash covers Windows too (Git Bash on the hosted runners),
+      # so every platform runs the one gate script rather than a re-listed
+      # copy that could drift from it.
       - name: Repository gate
-        if: runner.os != 'Windows'
+        shell: bash
         run: ./scripts/verify.sh
-
-      # The gate script is bash; on Windows the same checks run step by
-      # step, including the identical e2e smoke (a portable node script).
-      - name: Typecheck (Windows)
-        if: runner.os == 'Windows'
-        run: npm run typecheck
-
-      - name: Test suite (Windows)
-        if: runner.os == 'Windows'
-        run: npm test
-
-      - name: E2E smoke (Windows)
-        if: runner.os == 'Windows'
-        run: node scripts/smoke.mjs
 
   # The gate's property runs are bounded so green stays a fixed-cost
   # command; this job is where the budget actually hunts. A failure prints

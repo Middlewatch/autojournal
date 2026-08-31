@@ -102,7 +102,7 @@ byte-identically. The Go tree is deleted only after that gate passes.
 - **Fuzzing becomes property + regression testing.** The five parse-boundary
   targets (payload, config, episode, alias map, cursor) keep their round-trip
   and containment invariants as node:test properties over a seeded in-repo
-  generator; every existing fuzz seed under `src/testdata/fuzz` becomes a
+  generator; every existing fuzz seed under the fuzz seed tree (now `testdata/fuzz`) becomes a
   regression fixture. The weekly long-fuzz CI job becomes a long randomized
   run of the same properties.
 - **Gates reshape at the deletion slice.** `verify.sh` v2: typecheck, engine

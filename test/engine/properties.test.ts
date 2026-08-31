@@ -3,7 +3,7 @@
 // containment invariants rather than crash-freedom — every defect found at
 // these boundaries in the Go engine parsed cleanly and produced a wrong
 // value. Seeds are the fixture corpus plus the named regression seeds
-// minted per defect (src/testdata/fuzz); each also runs under a bounded
+// minted per defect (testdata/fuzz); each also runs under a bounded
 // deterministic mutation loop, and the weekly long job raises the budget
 // through AUTOJOURNAL_PROPERTY_ITERS.
 

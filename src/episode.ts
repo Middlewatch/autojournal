@@ -234,7 +234,22 @@ const BODY_TOOL_LINE_PREFIX = "- ";
 // assistant-separator positions and tools-separator positions plus the
 // no-tools reading. Enumeration is lazy in render order and stops at the
 // cap.
+//
+// The cap scales with body size because each candidate costs one digest
+// of the whole body: what needs bounding is total bytes hashed, not the
+// candidate count. A small body — an owner transcript quoting the
+// separators themselves is the case that actually occurs — affords
+// thousands of readings inside the same work budget, while the largest
+// bodies keep the fixed floor. Without the scaling, a rendered episode
+// whose user content contains ~62 separator sequences fails its own
+// verification (see the interpretation-exhaustion regression test).
 export const MAX_BODY_INTERPRETATIONS = 64;
+const INTERPRETATION_BYTE_BUDGET = 256 * 1024 * 1024;
+
+export function interpretationCap(bodyLength: number): number {
+  const byBudget = Math.floor(INTERPRETATION_BYTE_BUDGET / Math.max(1, bodyLength));
+  return Math.max(MAX_BODY_INTERPRETATIONS, byBudget);
+}
 
 /**
  * A parsed episode together with the body reading whose recomputed digest
@@ -340,12 +355,13 @@ function enumerateReadings(body: string, visit: (r: BodyReading) => boolean): [n
   // scan quadratically. The bound cannot strand a legitimate file — every
   // rendered region ends in a newline, so each earlier split yields a
   // countable no-tools candidate and the pair cap fires first.
+  const cap = interpretationCap(body.length);
   let splits = 0;
   for (let from = 0; ; ) {
     const i = region.indexOf(BODY_ASSISTANT_SEP, from);
     if (i < 0) return [visited, false];
     splits++;
-    if (splits > MAX_BODY_INTERPRETATIONS) return [visited, false];
+    if (splits > cap) return [visited, false];
     const split = i;
     const userContent = region.slice(0, split);
     const rest = region.slice(split + BODY_ASSISTANT_SEP.length);
@@ -356,7 +372,7 @@ function enumerateReadings(body: string, visit: (r: BodyReading) => boolean): [n
       if (visit({ userContent, assistantResult: rest.slice(0, -1), tools: [] })) {
         return [visited, true];
       }
-      if (visited >= MAX_BODY_INTERPRETATIONS) return [visited, false];
+      if (visited >= cap) return [visited, false];
     }
     // Tools readings, earliest separator first.
     for (let tfrom = 0; ; ) {
@@ -368,7 +384,7 @@ function enumerateReadings(body: string, visit: (r: BodyReading) => boolean): [n
         if (visit({ userContent, assistantResult: rest.slice(0, j), tools })) {
           return [visited, true];
         }
-        if (visited >= MAX_BODY_INTERPRETATIONS) return [visited, false];
+        if (visited >= cap) return [visited, false];
       }
       tfrom = j + 1;
     }

@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-for (const relative of [
+const requiredFiles = [
   "index.ts",
   "cli.ts",
   "bin/autojournal",
@@ -30,9 +30,27 @@ for (const relative of [
   "src/config.ts",
   "src/paths.ts",
   "src/json.ts",
-]) {
+];
+
+for (const relative of requiredFiles) {
   if (!fs.existsSync(path.join(root, relative))) {
     throw new Error(`missing package file: ${relative}`);
+  }
+}
+
+// With --pack-json <file> (a saved `npm pack --dry-run --json` listing),
+// also assert the tarball layout itself: every required file ships, and
+// no test, fixture, or workflow tree leaks into the package.
+const packArg = process.argv.indexOf("--pack-json");
+if (packArg !== -1) {
+  const listing = JSON.parse(fs.readFileSync(process.argv[packArg + 1], "utf8"));
+  const shipped = new Set(listing[0].files.map((f) => f.path));
+  for (const relative of requiredFiles) {
+    if (!shipped.has(relative)) throw new Error(`npm pack omits required file: ${relative}`);
+  }
+  const forbidden = [...shipped].filter((p) => /^(test|testdata|docs|artifacts|node_modules|\.github)\//.test(p));
+  if (forbidden.length > 0) {
+    throw new Error(`npm pack leaks non-package trees: ${forbidden.join(", ")}`);
   }
 }
 

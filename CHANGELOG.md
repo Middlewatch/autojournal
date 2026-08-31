@@ -42,6 +42,13 @@ clock: pages of one search score against one instant, and a corpus change betwee
 pages refuses the cursor rather than serving shifted results.
 - `capture` births the projection at first use, so redelivery classification works
 before any manual sync.
+- The body-verification candidate cap scales with body size (bounded total bytes
+hashed) instead of a fixed 64 readings. Under the fixed cap an episode whose user
+content quoted the `## Assistant` separator ~62 times — a transcript quoting a
+transcript — failed its own verification and dropped out of recall; such episodes,
+including any a 1.x engine wrote and could not verify, now verify.
+- A structurally corrupt snapshot index (valid JSON, wrong shape) reads as
+`not_built` and is rebuilt, instead of throwing on the capture path.
 
 ### Removed
 

@@ -429,4 +429,3 @@ function storeErrorCode(err: unknown): CaptureErrorCode {
   if (err instanceof CaptureError) return err.code;
   return "Unavailable";
 }
-
