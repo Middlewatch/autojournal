@@ -19,7 +19,7 @@ A search runs through five stages:
    direction the boundary rule below cannot cover, since a plural query term
    never occurs inside its singular's text. Folded variants are reported back as
    `folded_terms`, so a term you never typed is never unexplained.
-   **Invariant (aj-scorer.v3):** repeating a query word always weighs it
+   **Invariant (aj-scorer.v3, kept in v4):** repeating a query word always weighs it
    that many times. Alias values and folded variants are appended to your
    term list rather than merged into it, so whether `deploy deploy logs`
    counts `deploy` twice cannot depend on whether some unrelated thesaurus

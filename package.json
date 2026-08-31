@@ -1,27 +1,55 @@
 {
-  "name": "autojournal-repo",
-  "version": "0.0.0",
-  "private": true,
+  "name": "autojournal",
+  "version": "2.0.0",
+  "description": "Durable agent memory for the Pi coding agent: every completed turn becomes an owner-controlled Markdown episode, with exact, ranked, bounded recall.",
   "type": "module",
-  "description": "Repo-root Pi manifest so `pi install git:github.com/Middlewatch/autojournal` loads the Pi adapter. The published npm package lives at adapters/pi.",
+  "license": "MIT",
   "keywords": [
-    "pi-package"
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "agent-memory",
+    "extension"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Middlewatch/autojournal.git"
+  },
+  "engines": {
+    "node": ">=22.6"
+  },
+  "files": [
+    "index.ts",
+    "cli.ts",
+    "src/*.ts",
+    "bin/autojournal",
+    "README.md",
+    "CHANGELOG.md",
+    "NOTICES.md",
+    "scripts/check-package.mjs"
+  ],
+  "bin": {
+    "autojournal": "./bin/autojournal"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test \"test/*.test.ts\" \"test/engine/*.test.ts\"",
+    "prepack": "node scripts/check-package.mjs",
+    "prepublishOnly": "./scripts/release-check.sh"
+  },
   "pi": {
     "extensions": [
-      "./adapters/pi/index.ts"
+      "./index.ts"
     ]
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"
   },
-  "peerDependenciesMeta": {
-    "@earendil-works/pi-coding-agent": {
-      "optional": true
-    },
-    "typebox": {
-      "optional": true
-    }
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.80 <1.0",
+    "@types/node": "^26.0.0",
+    "typebox": "^1.0.55",
+    "typescript": "^5.0.0"
   }
 }

@@ -1,15 +1,8 @@
 /artifacts/
 __pycache__/
 /tmp/
-/adapters/pi/node_modules/
-/adapters/pi/bin/
-# Staged from repo-root files at prepack; never edit in place.
-/adapters/pi/CHANGELOG.md
-/adapters/pi/NOTICES.md
-# Local harness convenience symlink to AGENTS.md; AGENTS.md is the tracked one.
-/CLAUDE.md
-
-# root package.json exists only as the Pi package manifest; npm install there produces nothing worth tracking
 /node_modules/
 /package-lock.json
+# Local harness convenience symlink to AGENTS.md; AGENTS.md is the tracked one.
+/CLAUDE.md
 .local/

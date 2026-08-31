@@ -1,8 +1,7 @@
-# Build the four shipped binaries once, then execute the real artifacts on
-# every platform the npm package targets. linux-arm64 runs under QEMU binfmt
-# and darwin-x64 under Rosetta 2 (CGO is off, so every binary is a
-# self-contained static file and both work); native paid runners would be
-# needed to catch arch-specific timing bugs.
+# CI runs the repository gate — the same ./scripts/verify.sh a developer
+# runs locally — on Linux and on Windows (a claimed, tested target), and
+# adds the one thing a bounded local run cannot: a weekly long randomized
+# pass over the parse-boundary properties.
 name: CI
 
 on:
@@ -11,182 +10,61 @@ on:
   pull_request:
   workflow_dispatch:
   schedule:
-    # Weekly long fuzz (see the fuzz job); every other job skips this event.
+    # Weekly long property run (see the properties job); every other job
+    # skips this event.
     - cron: "17 6 * * 1"
 
 jobs:
-  build:
+  verify:
     if: github.event_name != 'schedule'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Install adapter dependencies
-        working-directory: adapters/pi
-        run: npm ci
-
-      # The repository gate is the definition of green, and CI runs it rather
-      # than a re-listed subset: gofmt, vet, race tests, the host binary build,
-      # the adapter typecheck and tests, the Python hook suite, the
-      # cross-adapter conformance suite, and the end-to-end capture/search/get
-      # smoke. One command reproduces this locally. The jobs below add only
-      # what a single machine cannot do — cross-compilation and the
-      # multi-target binary matrix.
-      - name: Repository gate
-        run: ./scripts/verify.sh
-
-      - name: Cross-compile release binaries
-        run: ./scripts/build-adapter-binaries.sh
-
-      - name: Verify npm package layout
-        run: ./scripts/verify-package.sh
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: adapter-binaries
-          path: adapters/pi/bin/
-          if-no-files-found: error
-
-  # Windows is a claimed, tested target for the TypeScript engine (2.0
-  # port). Until the deletion slice reshapes the full gate, this job runs
-  # the engine's own suite — golden byte pins, conformance cases,
-  # parse-boundary properties — on windows-latest; the adapter suite still
-  # depends on the Go binary and joins at the port's deletion slice.
-  engine-windows:
-    if: github.event_name != 'schedule'
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Install adapter dependencies
-        working-directory: adapters/pi
-        run: npm ci
-
-      - name: Typecheck
-        working-directory: adapters/pi
-        run: npm run typecheck
-
-      - name: Engine tests
-        working-directory: adapters/pi
-        run: node --experimental-strip-types --test "engine/test/*.test.ts"
-
-  e2e:
-    if: github.event_name != 'schedule'
-    needs: build
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - target: linux-x64
-            os: ubuntu-latest
-          - target: linux-arm64
-            os: ubuntu-latest
-            emulation: qemu
-          - target: darwin-arm64
-            os: macos-latest
-          - target: darwin-x64
-            os: macos-latest
-            emulation: rosetta
-    name: e2e ${{ matrix.target }}
+        os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/setup-node@v4
         with:
-          name: adapter-binaries
-          path: adapters/pi/bin/
+          node-version: 22
 
-      - name: Register QEMU binfmt handlers
-        if: matrix.emulation == 'qemu'
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
+      - name: Install dependencies
+        run: npm ci
 
-      - name: Ensure Rosetta 2
-        if: matrix.emulation == 'rosetta'
-        run: |
-          if ! /usr/bin/pgrep -q oahd; then
-            sudo softwareupdate --install-rosetta --agree-to-license
-          fi
+      - name: Repository gate
+        if: runner.os != 'Windows'
+        run: ./scripts/verify.sh
 
-      # The adapter e2e suite resolves its binary from the *runner's*
-      # platform-arch dir under adapters/pi/bin/. Stage the matrix
-      # target's binary at that path so the emulated jobs actually
-      # execute the foreign artifact (QEMU/Rosetta), and restore the
-      # execute bit the artifact download drops.
-      - name: Stage target binary at the host-arch path
-        run: |
-          case "$(uname -s)-$(uname -m)" in
-            Linux-x86_64) HOST_DIR=linux-x64 ;;
-            Linux-aarch64) HOST_DIR=linux-arm64 ;;
-            Darwin-arm64) HOST_DIR=darwin-arm64 ;;
-            Darwin-x86_64) HOST_DIR=darwin-x64 ;;
-            *) echo "unsupported runner: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
-          esac
-          if [ "$HOST_DIR" != "${{ matrix.target }}" ]; then
-            cp -f "adapters/pi/bin/${{ matrix.target }}/autojournal" \
-              "adapters/pi/bin/$HOST_DIR/autojournal"
-          fi
-          chmod +x "adapters/pi/bin/$HOST_DIR/autojournal"
-          "./adapters/pi/bin/$HOST_DIR/autojournal" version
+      # The gate script is bash; on Windows the same checks run through
+      # npm directly (the e2e smoke's shell plumbing is POSIX-only, and
+      # the suite already drives the CLI in-process on every platform).
+      - name: Typecheck (Windows)
+        if: runner.os == 'Windows'
+        run: npm run typecheck
+
+      - name: Test suite (Windows)
+        if: runner.os == 'Windows'
+        run: npm test
+
+  # The gate's property runs are bounded so green stays a fixed-cost
+  # command; this job is where the budget actually hunts. A failure prints
+  # the mutated input so it can be pinned as a regression seed under
+  # testdata/fuzz.
+  long-properties:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: 22
 
-      - name: Adapter tests (binary e2e included)
-        working-directory: adapters/pi
-        run: |
-          npm ci
-          npm test
+      - name: Install dependencies
+        run: npm ci
 
-  # The gate's fuzz steps are bounded at ten seconds so green stays a
-  # fixed-cost command; this job is where the budget actually hunts. A
-  # crasher Go discovers is written into the package's seed corpus and
-  # committed back, so the failure becomes a permanent regression seed the
-  # bounded gate replays forever after.
-  fuzz:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-
-      - name: Long fuzz, ten minutes per target
-        run: |
-          status=0
-          for target in FuzzParsePayload FuzzParseConfig FuzzParseEpisode \
-            FuzzLoadAliasMapFromBytes FuzzCursorDecode; do
-            go test -count=1 -run "^${target}\$" -fuzz "^${target}\$" \
-              -fuzztime=10m ./src/ || status=1
-          done
-          exit "$status"
-
-      - name: Commit any new crasher as a regression seed
-        if: failure()
-        run: |
-          if [ -n "$(git status --porcelain src/testdata/fuzz)" ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add src/testdata/fuzz
-            git commit -m "fuzz: scheduled run found a crasher; pinned as a regression seed"
-            git push
-          fi
+      - name: Long randomized property run
+        env:
+          AUTOJOURNAL_PROPERTY_ITERS: "2000000"
+        run: node --experimental-strip-types --test "test/engine/properties.test.ts"

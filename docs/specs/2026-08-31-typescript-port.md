@@ -158,7 +158,7 @@ byte-identically. The Go tree is deleted only after that gate passes.
 - [x] S6 Search quality: miss-log capture and aggregation in the engine, the
       menu section with weak queries, candidates, and confirmed add/remove;
       `alias` verbs on the bin. (after S5)
-- [ ] S7 Parity gate and deletion wave: live-corpus sweep recorded; Go tree,
+- [x] S7 Parity gate and deletion wave: live-corpus sweep recorded; Go tree,
       hook adapters, Python suites, transcripts, and cross-compile machinery
       deleted; package hoisted to the repo root; verify.sh, release-check,
       CI, README, and ARCHITECTURE rewritten; changelog carries 2.0.0
@@ -184,6 +184,13 @@ typed-array layout is the escalation if S5's residency decision needs a
 smaller resident set). Gzip: 5.8 MiB on disk but +0.39 s per write and
 0.22 s decompress+parse versus 0.13 s plain load — rejected; disk is
 cheap, search latency is not. Artifacts: scratchpad measure-s3.mjs.
+
+2026-08-31 (S7 live-corpus sweep) — read-only sweep over the real journal
+root (4,212 episodes, 23.4 MiB) with the TS engine: 4,212 parsed, 4,212
+recorded episode ids re-derived byte-identically from their own identity
+fields, 4,212 recorded digests verified against a reading of the body.
+Zero failures of any kind; 0.2 s total. Artifact: scratchpad sweep.mjs.
+The deletion gate is met.
 
 2026-08-31 (capture-policy study) — 50 pi episodes sampled at random from the
 1,520 whose session JSONL still exists, each turn reconstructed from the log

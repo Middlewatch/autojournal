@@ -1,9 +1,55 @@
 # Changelog
 
-Versions are the npm package (`autojournal`) and the bundled core binary, which share one
-version stamp. `adapter_version` is recorded in episode frontmatter but is deliberately
-excluded from the payload digest, so upgrading never re-identifies or re-publishes
-existing episodes.
+Versions are the npm package (`autojournal`). `adapter_version` is recorded in episode
+frontmatter but is deliberately excluded from the payload digest, so upgrading never
+re-identifies or re-publishes existing episodes.
+
+## 2.0.0 — unreleased
+
+The engine is now TypeScript running inside the Pi process (ADR 0001): no bundled
+binaries, no subprocesses, no runtime dependencies. Episode bytes, episode-id
+derivation, and payload-digest derivation are unchanged — an existing 1.x corpus is
+read, searched, and extended with no migration, verified by re-deriving every identity
+and digest in the maintainer's full pre-port corpus byte-identically.
+
+### Added
+
+- Oversize turns truncate instead of reject: content beyond the 2 MiB per-side budget
+is tail-truncated deterministically at a UTF-8 boundary, the dropped byte count lands
+in new optional frontmatter (`user_dropped_bytes` / `assistant_dropped_bytes`), and
+`status`/`sync` report a `truncated` count.
+- Capture policy `pi-visible-v2`: every visible assistant text segment of a turn is
+kept in order, replacing last-reply-only capture. Session-history import is
+policy-aware, so turns captured live under the v1 policy are recognized as already
+present rather than stored twice.
+- A "Search quality" section in the `/autojournal` menu: weak-query review from the
+opt-in miss log and alias add/remove behind explicit confirms. `alias list` and
+`alias candidates` gain `--json`.
+- The `autojournal` CLI installs as a real npm bin over the in-process engine, with
+the same verbs and `--json` interface as 1.x.
+- Windows is a claimed, tested target: CI runs the suite on windows-latest.
+
+### Changed
+
+- The search index is a single-file snapshot built with the Node standard library
+(ADR 0002), replacing SQLite; it is disposable and `sync` rebuilds it. Freshness is a
+stat-walk signature over every episode's path, size, and mtime.
+- The scorer is `aj-scorer.v4`: rarity uses the smoothed idf
+ln(1 + (N − df + 0.5)/(df + 0.5)). Ordering semantics otherwise carry over, including
+the duplicate-term-weight invariant.
+- Search cursors are `aj2` tokens bound to the corpus signature and the first page's
+clock: pages of one search score against one instant, and a corpus change between
+pages refuses the cursor rather than serving shifted results.
+- `capture` births the projection at first use, so redelivery classification works
+before any manual sync.
+
+### Removed
+
+- The Go engine, the bundled per-platform binaries, and the claude-code/codex hook
+adapters with their Python suites. The 1.x binary remains the way to drive non-Pi
+harnesses.
+- The `superseded` capture outcome: a same-identity redelivery with different bytes is
+always a fail-visible conflict.
 
 ## 1.2.0 — 2026-08-22
 

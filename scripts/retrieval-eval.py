@@ -84,7 +84,7 @@ def self_test(binary):
         env = dict(os.environ)
         env["AUTOJOURNAL_THESAURUS"] = os.path.join(tmp, "thesaurus.json")
         env["AUTOJOURNAL_MISS_LOG"] = os.path.join(tmp, "misses.jsonl")
-        root, index = os.path.join(tmp, "root"), os.path.join(tmp, "index.sqlite")
+        root, index = os.path.join(tmp, "root"), os.path.join(tmp, "index.v2.json")
         for turn, user, result in [
             ("t1", "the quokka fence was mended", "Mended."),
             ("t2", "the quokka ramp by the fence latch", "Noted."),

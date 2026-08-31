@@ -1,0 +1,16 @@
+#!/usr/bin/env node
+// Node bin shim for the TypeScript CLI: re-executes node with type
+// stripping enabled so the same cli.ts the extension imports runs from a
+// shell. Node 22.6+ needs the flag; newer majors strip types by default
+// and tolerate the flag.
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+
+const cli = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "cli.ts");
+const result = spawnSync(
+  process.execPath,
+  ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", cli, ...process.argv.slice(2)],
+  { stdio: "inherit" },
+);
+process.exit(result.status ?? 1);

@@ -1,1 +1,1 @@
-autojournal 0.1.1 (payload schema v1, episode schema aj-episode.v1, index schema v3, aj-tok.v1, aj-scorer.v3, aj-conf.v2)
+autojournal 2.0.0 (payload schema v1, episode schema aj-episode.v1, index schema v1, aj-tok.v1, aj-scorer.v4, aj-conf.v2)

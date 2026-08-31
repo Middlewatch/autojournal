@@ -1,1 +1,1 @@
-{"journal_root":"/tmp/aj-golden.rTwa4g/root","root_source":"explicit","root_source_path":null,"root_ok":true,"episodes":12,"index":{"freshness":"fresh","indexed":12,"path":"/tmp/aj-golden.rTwa4g/idx.sqlite"}}
+{"journal_root":"$ROOT","root_source":"explicit","root_source_path":null,"root_ok":true,"episodes":12,"index":{"freshness":"fresh","indexed":12,"truncated":0,"path":"$INDEX"}}
