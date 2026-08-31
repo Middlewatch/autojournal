@@ -4,7 +4,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  buildPayload,
   eventTimeFromEntries,
   formatImportSummary,
   importableSessionHeader,
@@ -13,22 +12,10 @@ import {
   parsePiSession,
   piSessionsRoot,
   readFirstLine,
-  resolveBinary,
-  runBinary,
+  runCli,
   sessionIdFromFile,
   SESSION_POLICY_ENTRY,
 } from "../index.ts";
-
-const e2eBinary = resolveBinary({
-  AUTOJOURNAL_BIN: path.join(
-    import.meta.dirname,
-    "..",
-    "bin",
-    `${process.platform}-${process.arch}`,
-    "autojournal",
-  ),
-  PATH: process.env.PATH,
-});
 
 function jsonl(entries: unknown[]): string {
   return entries.map((e) => JSON.stringify(e)).join("\n") + "\n";
@@ -104,7 +91,7 @@ test("parsePiSession pairs turns and pins identity at the final assistant entry"
   assert.equal(first.turnId, "a2");
   assert.equal(first.eventTimeMs, Date.parse("2026-07-01T10:01:10.000Z"));
   assert.equal(first.summary.userText, "first question");
-  assert.equal(first.summary.assistantText, "first answer");
+  assert.equal(first.summary.assistantText, "working\n\nfirst answer", "pi-visible-v2 keeps every visible segment");
   assert.deepEqual(first.summary.toolNames, ["bash", "read"]);
   assert.ok(!first.summary.assistantText.includes("raw output"));
 
@@ -223,17 +210,14 @@ test("formatImportSummary reports failure detail only when something failed", ()
 
 test(
   "e2e: import publishes once, re-import dedups, live-captured turns are not doubled",
-  { skip: e2eBinary === null },
   async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aj-import-e2e-"));
     const previous = {
-      bin: process.env.AUTOJOURNAL_BIN,
       config: process.env.AUTOJOURNAL_CONFIG,
       xdgConfig: process.env.XDG_CONFIG_HOME,
       data: process.env.XDG_DATA_HOME,
       state: process.env.XDG_STATE_HOME,
     };
-    process.env.AUTOJOURNAL_BIN = e2eBinary as string;
     delete process.env.AUTOJOURNAL_CONFIG;
     process.env.XDG_CONFIG_HOME = path.join(tmp, "config");
     process.env.XDG_DATA_HOME = path.join(tmp, "data");
@@ -258,31 +242,37 @@ test(
       );
 
       const selection = { world: "main", scope: "default" };
-      const binary = e2eBinary as string;
 
       // Simulate the second turn having been captured live before the
       // import: same session/turn identity and the same leaf-entry event
       // time live capture derives, so the import's re-delivery must resolve
       // as already present, not a fresh publish.
-      const livePayload = buildPayload({
-        summary: { userText: "live question", assistantText: "live answer", toolNames: [] },
-        sessionId: sessionIdFromFile(sessionFile),
-        turnId: "a2",
-        eventTimeMs: Date.parse("2026-07-01T10:02:10.000Z"),
-        selection,
-      });
-      const liveRun = await runBinary(binary, ["capture"], { stdin: JSON.stringify(livePayload) });
+      const liveRun = runCli(["capture"], JSON.stringify({
+        schema_version: 1,
+        world: "main",
+        scope: "default",
+        lane: "conversation",
+        harness: "pi",
+        adapter_version: "2.0.0",
+        session_id: sessionIdFromFile(sessionFile),
+        turn_id: "a2",
+        event_time_ms: Date.parse("2026-07-01T10:02:10.000Z"),
+        capture_policy: "pi-visible-v2",
+        turn_outcome: "completed",
+        user_content: "live question",
+        assistant_result: "live answer",
+      }));
       assert.equal((JSON.parse(liveRun.stdout) as { outcome: string }).outcome, "published");
 
       const files = listPiSessionFiles(path.join(tmp, "sessions"));
-      const first = await importPiHistory({ binary, selection, files });
+      const first = await importPiHistory({ selection, files });
       assert.equal(first.files, 1);
       assert.equal(first.skippedFiles, 1, "subagent session file is not importable");
       assert.equal(first.published, 1, "only the turn not captured live publishes");
       assert.equal(first.existing, 1, "live-captured turn resolves as already present");
       assert.equal(first.failed, 0);
 
-      const again = await importPiHistory({ binary, selection, files });
+      const again = await importPiHistory({ selection, files });
       assert.equal(again.published, 0, "re-import publishes nothing");
       assert.equal(again.existing, 2);
       assert.equal(again.failed, 0);
@@ -290,22 +280,58 @@ test(
       // Cross-date redelivery: same identity with an event time on another
       // day shards to a different path, so only the core's corpus-wide
       // identity check stands between this and a silent second copy.
-      const crossDate = buildPayload({
-        summary: { userText: "live question", assistantText: "live answer", toolNames: [] },
-        sessionId: sessionIdFromFile(sessionFile),
-        turnId: "a2",
-        eventTimeMs: Date.parse("2026-07-02T10:02:10.000Z"),
-        selection,
-      });
-      const crossRun = await runBinary(binary, ["capture"], { stdin: JSON.stringify(crossDate) });
+      const crossRun = runCli(["capture"], JSON.stringify({
+        schema_version: 1,
+        world: "main",
+        scope: "default",
+        lane: "conversation",
+        harness: "pi",
+        adapter_version: "2.0.0",
+        session_id: sessionIdFromFile(sessionFile),
+        turn_id: "a2",
+        event_time_ms: Date.parse("2026-07-02T10:02:10.000Z"),
+        capture_policy: "pi-visible-v2",
+        turn_outcome: "completed",
+        user_content: "live question",
+        assistant_result: "live answer",
+      }));
       assert.equal(
         (JSON.parse(crossRun.stdout) as { outcome: string }).outcome,
         "conflict",
         "cross-date redelivery of an existing identity must not publish",
       );
+
+      // Policy-aware dedupe: a turn captured live under the v1 policy
+      // re-identifies under v2, so import must recognize it through the
+      // prior-policy check instead of double-storing it.
+      const v1Run = runCli(["capture"], JSON.stringify({
+        schema_version: 1,
+        world: "main",
+        scope: "default",
+        lane: "conversation",
+        harness: "pi",
+        adapter_version: "1.2.0",
+        session_id: sessionIdFromFile(sessionFile),
+        turn_id: "a9",
+        event_time_ms: Date.parse("2026-07-01T10:09:10.000Z"),
+        capture_policy: "pi-default-v1",
+        turn_outcome: "completed",
+        user_content: "v1 era question",
+        assistant_result: "v1 era answer",
+      }));
+      assert.equal((JSON.parse(v1Run.stdout) as { outcome: string }).outcome, "published");
+      fs.appendFileSync(
+        sessionFile,
+        jsonl([
+          userMsg("u9", "2026-07-01T10:09:00.000Z", "v1 era question"),
+          assistantMsg("a9", "2026-07-01T10:09:10.000Z", "v1 era answer"),
+        ]),
+      );
+      const withPrior = await importPiHistory({ selection, files });
+      assert.equal(withPrior.published, 0, "the v1-captured turn must not double-store under v2");
+      assert.equal(withPrior.existing, 3);
+      assert.equal(withPrior.failed, 0);
     } finally {
-      if (previous.bin === undefined) delete process.env.AUTOJOURNAL_BIN;
-      else process.env.AUTOJOURNAL_BIN = previous.bin;
       if (previous.config === undefined) delete process.env.AUTOJOURNAL_CONFIG;
       else process.env.AUTOJOURNAL_CONFIG = previous.config;
       if (previous.xdgConfig === undefined) delete process.env.XDG_CONFIG_HOME;
@@ -342,17 +368,14 @@ test("importableSessionHeader includes subagent logs only when asked", () => {
 
 test(
   "e2e: import follows the subagent capture lever",
-  { skip: e2eBinary === null },
   async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aj-import-lever-"));
     const previous = {
-      bin: process.env.AUTOJOURNAL_BIN,
       config: process.env.AUTOJOURNAL_CONFIG,
       xdgConfig: process.env.XDG_CONFIG_HOME,
       data: process.env.XDG_DATA_HOME,
       state: process.env.XDG_STATE_HOME,
     };
-    process.env.AUTOJOURNAL_BIN = e2eBinary as string;
     delete process.env.AUTOJOURNAL_CONFIG;
     process.env.XDG_CONFIG_HOME = path.join(tmp, "config");
     process.env.XDG_DATA_HOME = path.join(tmp, "data");
@@ -368,20 +391,17 @@ test(
           assistantMsg("a1", "2026-07-01T10:01:10.000Z", "subagent import answer"),
         ]),
       );
-      const binary = e2eBinary as string;
       const selection = { world: "main", scope: "default" };
       const files = listPiSessionFiles(path.join(tmp, "sessions"));
 
-      const off = await importPiHistory({ binary, selection, files });
+      const off = await importPiHistory({ selection, files });
       assert.equal(off.skippedFiles, 1, "lever off: subagent log is not importable");
       assert.equal(off.published, 0);
 
-      const on = await importPiHistory({ binary, selection, files, includeSubagents: true });
+      const on = await importPiHistory({ selection, files, includeSubagents: true });
       assert.equal(on.published, 1, "lever on: the subagent turn imports");
       assert.equal(on.failed, 0);
     } finally {
-      if (previous.bin === undefined) delete process.env.AUTOJOURNAL_BIN;
-      else process.env.AUTOJOURNAL_BIN = previous.bin;
       if (previous.config === undefined) delete process.env.AUTOJOURNAL_CONFIG;
       else process.env.AUTOJOURNAL_CONFIG = previous.config;
       if (previous.xdgConfig === undefined) delete process.env.XDG_CONFIG_HOME;

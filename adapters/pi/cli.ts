@@ -227,39 +227,14 @@ export function run(args: string[], io: CliIo): number {
 
   if (command === "default") return defaultCommand(cfg, o, io);
 
-  // Root resolution: explicit command override, an owner configuration
-  // that names a root, a deprecated host fallback for pre-release
-  // adapters, then AutoJournal's host-neutral XDG data default.
-  let rootPath: string;
-  let rootSource = "autojournal_default";
-  if (o.root !== undefined) {
-    rootPath = o.root;
-    rootSource = "explicit";
-  } else if (cfg.journalRoot !== "") {
-    rootPath = cfg.journalRoot;
-    rootSource = "owner_config";
-  } else if (o.defaultRoot !== undefined) {
-    rootPath = o.defaultRoot;
-    rootSource = "host_default";
-  } else {
-    try {
-      rootPath = defaultJournalRoot(io.env);
-    } catch {
-      io.stderr("cannot resolve the default journal root (no HOME)\n");
-      return EXIT_FAILURE;
-    }
+  let resolved: ResolvedPaths;
+  try {
+    resolved = resolveJournalPaths(io.env, cfg, { root: o.root, defaultRoot: o.defaultRoot, index: o.index });
+  } catch {
+    io.stderr("cannot resolve the journal root or index path (no HOME)\n");
+    return EXIT_FAILURE;
   }
-  let indexPath: string;
-  if (o.index !== undefined) {
-    indexPath = o.index;
-  } else {
-    try {
-      indexPath = defaultIndexPath(io.env, rootPath);
-    } catch {
-      io.stderr("cannot resolve the default index path (no HOME)\n");
-      return EXIT_FAILURE;
-    }
-  }
+  const { rootPath, indexPath, rootSource } = resolved;
 
   switch (command) {
     case "capture":
@@ -554,6 +529,42 @@ function getCommand(rootPath: string, indexPath: string, o: Opts, io: CliIo): nu
     io.stdout(`get failed: ${out.outcome}${sep}${out.detail}\n`);
   }
   return outcomeExit(out.outcome);
+}
+
+/**
+ * The one root/index resolution every caller shares: explicit command
+ * override, an owner configuration that names a root, a deprecated host
+ * fallback for pre-release adapters, then AutoJournal's host-neutral XDG
+ * data default. The in-process extension resolves through this same
+ * function so the CLI and the host can never address different corpora.
+ */
+export interface ResolvedPaths {
+  rootPath: string;
+  indexPath: string;
+  rootSource: "explicit" | "owner_config" | "host_default" | "autojournal_default";
+}
+
+export function resolveJournalPaths(
+  env: Environ,
+  cfg: Config,
+  overrides: { root?: string; defaultRoot?: string; index?: string } = {},
+): ResolvedPaths {
+  let rootPath: string;
+  let rootSource: ResolvedPaths["rootSource"] = "autojournal_default";
+  if (overrides.root !== undefined) {
+    rootPath = overrides.root;
+    rootSource = "explicit";
+  } else if (cfg.journalRoot !== "") {
+    rootPath = cfg.journalRoot;
+    rootSource = "owner_config";
+  } else if (overrides.defaultRoot !== undefined) {
+    rootPath = overrides.defaultRoot;
+    rootSource = "host_default";
+  } else {
+    rootPath = defaultJournalRoot(env);
+  }
+  const indexPath = overrides.index ?? defaultIndexPath(env, rootPath);
+  return { rootPath, indexPath, rootSource };
 }
 
 function sourcePathFor(rootSource: string, io: CliIo, o: Opts): string | null {

@@ -6,7 +6,7 @@ import path from "node:path";
 import {
   adapterStatePath,
   default as autojournalExtension,
-  buildPayload,
+  buildRawPayload,
   captureFromEntries,
   DEFAULT_SELECTION,
   EvidenceReferenceStore,
@@ -17,8 +17,7 @@ import {
   readSubagentCapture,
   renderGetResult,
   renderSearchResults,
-  resolveBinary,
-  runBinary,
+  runCli,
   sanitizeToken,
   selectionFromEntries,
   sessionHeaderIsSubagent,
@@ -27,54 +26,26 @@ import {
   summarizeRun,
   syncResultBody,
   writeSubagentCapture,
-  QUERY_TIMEOUT_MS,
-  SYNC_TIMEOUT_MS,
   validScope,
   validWorld,
 } from "../index.ts";
 
-const e2eBinary = resolveBinary({
-  AUTOJOURNAL_BIN: path.join(
-    import.meta.dirname,
-    "..",
-    "bin",
-    `${process.platform}-${process.arch}`,
-    "autojournal",
-  ),
-  PATH: process.env.PATH,
-});
-
-test("sync runs on a maintenance budget, not the query budget", () => {
-  // Regression: a 4k-episode rebuild takes ~36s; under the 15s query budget
-  // the adapter SIGKILLed it and reported "(sync produced no output)".
-  assert.ok(SYNC_TIMEOUT_MS > QUERY_TIMEOUT_MS);
-});
-
-test("syncResultBody names the timeout instead of blaming the binary", () => {
-  const timedOut = { code: null, stdout: "", stderr: "", timedOut: true };
-  assert.match(syncResultBody(timedOut), /timed out after 600s/);
-  assert.match(syncResultBody(timedOut), /rolled back unchanged/);
-  const ok = { code: 0, stdout: "indexed: 3\n", stderr: "", timedOut: false };
-  assert.equal(syncResultBody(ok), "indexed: 3");
-  const stderrOnly = { code: 1, stdout: "", stderr: "boom\n", timedOut: false };
-  assert.equal(syncResultBody(stderrOnly), "boom");
-  const silent = { code: 0, stdout: "", stderr: "", timedOut: false };
-  assert.equal(syncResultBody(silent), "(sync produced no output)");
+test("syncResultBody prefers stdout, then stderr, then a placeholder", () => {
+  assert.equal(syncResultBody({ code: 0, stdout: "indexed: 3\n", stderr: "" }), "indexed: 3");
+  assert.equal(syncResultBody({ code: 1, stdout: "", stderr: "root missing" }), "root missing");
+  assert.equal(syncResultBody({ code: 0, stdout: "", stderr: "" }), "(sync produced no output)");
 });
 
 test(
   "/autojournal sync owns the footer status for its duration, then clears it",
-  { skip: e2eBinary === null },
   async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aj-syncstatus-"));
     const previous = {
-      bin: process.env.AUTOJOURNAL_BIN,
       config: process.env.AUTOJOURNAL_CONFIG,
       xdgConfig: process.env.XDG_CONFIG_HOME,
       data: process.env.XDG_DATA_HOME,
       state: process.env.XDG_STATE_HOME,
     };
-    process.env.AUTOJOURNAL_BIN = e2eBinary as string;
     delete process.env.AUTOJOURNAL_CONFIG;
     process.env.XDG_CONFIG_HOME = path.join(tmp, "config");
     process.env.XDG_DATA_HOME = path.join(tmp, "data");
@@ -110,8 +81,6 @@ test(
       assert.equal(statuses[statuses.length - 1], undefined, "status must be cleared at the end");
       assert.ok(notices.some((n) => n.type === "info" && n.msg.includes("indexed:")));
     } finally {
-      if (previous.bin === undefined) delete process.env.AUTOJOURNAL_BIN;
-      else process.env.AUTOJOURNAL_BIN = previous.bin;
       if (previous.config === undefined) delete process.env.AUTOJOURNAL_CONFIG;
       else process.env.AUTOJOURNAL_CONFIG = previous.config;
       if (previous.xdgConfig === undefined) delete process.env.XDG_CONFIG_HOME;
@@ -140,7 +109,7 @@ test("extractText handles strings, blocks, and junk", () => {
   assert.equal(extractText(42), "");
 });
 
-test("summarizeRun keeps last assistant text and dedups tool names", () => {
+test("summarizeRun keeps every visible assistant segment and dedups tool names", () => {
   const summary = summarizeRun([
     { role: "user", content: "do the thing" },
     {
@@ -161,7 +130,7 @@ test("summarizeRun keeps last assistant text and dedups tool names", () => {
     },
   ]);
   assert.equal(summary.userText, "do the thing");
-  assert.equal(summary.assistantText, "final answer");
+  assert.equal(summary.assistantText, "working\n\nfinal answer");
   assert.deepEqual(summary.toolNames, ["bash", "read"]);
 });
 
@@ -186,8 +155,8 @@ test("stableTurnId uses Pi's durable leaf id and deterministic fallback", () => 
   );
 });
 
-test("buildPayload carries selected world/scope and sanitizes identities", () => {
-  const payload = buildPayload({
+test("buildRawPayload carries selected world/scope and sanitizes identities", () => {
+  const payload = buildRawPayload({
     summary: { userText: "u", assistantText: "a", toolNames: ["weird tool!"] },
     sessionId: "2026-07-29 bad id",
     turnId: "t/1",
@@ -197,8 +166,10 @@ test("buildPayload carries selected world/scope and sanitizes identities", () =>
   assert.equal(payload.world, "isolated-work");
   assert.equal(payload.scope, "client:a");
   assert.equal(payload.lane, "conversation");
-  assert.equal(payload.session_id, "2026-07-29-bad-id");
-  assert.equal(payload.turn_id, "t/1");
+  assert.equal(payload.sessionId, "2026-07-29-bad-id");
+  assert.equal(payload.turnId, "t/1");
+  assert.equal(payload.eventTimeMs, 123n);
+  assert.equal(payload.capturePolicy, "pi-visible-v2");
   assert.deepEqual(payload.tools, [{ name: "weird-tool-" }]);
 });
 
@@ -218,7 +189,7 @@ test("originHost reports the short machine name, or nothing it cannot label", ()
   assert.equal(originHost("x".repeat(129)), null);
 });
 
-test("buildPayload labels the originating machine and omits it when unknown", () => {
+test("buildRawPayload labels the originating machine and omits it when unknown", () => {
   const base = {
     summary: { userText: "u", assistantText: "a", toolNames: [] },
     sessionId: "s",
@@ -226,8 +197,8 @@ test("buildPayload labels the originating machine and omits it when unknown", ()
     eventTimeMs: 1,
     selection: DEFAULT_SELECTION,
   };
-  assert.equal(buildPayload({ ...base, host: "stealth" }).host, "stealth");
-  assert.ok(!("host" in buildPayload({ ...base, host: null })));
+  assert.equal(buildRawPayload({ ...base, host: "stealth" }).host, "stealth");
+  assert.equal(buildRawPayload({ ...base, host: null }).host, null);
 });
 
 test("renderSearchResults covers match, no_match, and typed failures", () => {
@@ -312,45 +283,16 @@ test("evidence references are bounded and restore from search tool details", () 
 
 test("memory_get resolves short references and keeps legacy calls compatible", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aj-evidence-ref-"));
-  const previousBin = process.env.AUTOJOURNAL_BIN;
-  const previousLog = process.env.AUTOJOURNAL_TEST_LOG;
-  const script = path.join(tmp, "fake-autojournal");
-  const log = path.join(tmp, "args.log");
-  const episode = "aj1-0123456789abcdef0123456789abcdef";
-  const revision = `sha256:${"a".repeat(64)}`;
-  fs.writeFileSync(
-    script,
-    `#!/bin/sh\n` +
-      `printf '%s\\n' "$*" >> "$AUTOJOURNAL_TEST_LOG"\n` +
-      `case "$1" in\n` +
-      `  search) [ "$2" = "slow" ] && sleep 0.1; printf '%s\\n' '${JSON.stringify({
-        outcome: "match",
-        total: 1,
-        results: [{
-          episode_id: episode,
-          revision,
-          path: `2026/08/12/${episode}.md`,
-          line: 7,
-          snippet: "reference sentinel",
-          score: 1,
-        }],
-        index: { freshness: "fresh" },
-      })}' ;;\n` +
-      `  get) printf '%s\\n' '${JSON.stringify({
-        outcome: "match",
-        episode_id: episode,
-        revision,
-        path: `2026/08/12/${episode}.md`,
-        line_start: 7,
-        line_end: 8,
-        content: "reference sentinel",
-      })}' ;;\n` +
-      `  *) printf '%s\\n' '{"pairs":[{"world":"main","scope":"default"}]}' ;;\n` +
-      `esac\n`,
-  );
-  fs.chmodSync(script, 0o755);
-  process.env.AUTOJOURNAL_BIN = script;
-  process.env.AUTOJOURNAL_TEST_LOG = log;
+  const previous = {
+    config: process.env.AUTOJOURNAL_CONFIG,
+    xdgConfig: process.env.XDG_CONFIG_HOME,
+    data: process.env.XDG_DATA_HOME,
+    state: process.env.XDG_STATE_HOME,
+  };
+  delete process.env.AUTOJOURNAL_CONFIG;
+  process.env.XDG_CONFIG_HOME = path.join(tmp, "config");
+  process.env.XDG_DATA_HOME = path.join(tmp, "data");
+  process.env.XDG_STATE_HOME = path.join(tmp, "state");
 
   type ToolResult = {
     content: Array<{ type: string; text: string }>;
@@ -373,6 +315,25 @@ test("memory_get resolves short references and keeps legacy calls compatible", a
   };
 
   try {
+    // A real episode in a real corpus: the tools run the engine in-process.
+    const captured = runCli(["capture"], JSON.stringify({
+      schema_version: 1,
+      world: "main",
+      scope: "default",
+      lane: "conversation",
+      harness: "pi",
+      adapter_version: "2.0.0",
+      session_id: "ref-session",
+      turn_id: "ref-turn-1",
+      event_time_ms: Date.parse("2026-08-12T10:00:00.000Z"),
+      capture_policy: "pi-visible-v2",
+      turn_outcome: "completed",
+      user_content: "where is the reference sentinel",
+      assistant_result: "the reference sentinel lives here",
+    }));
+    const report = JSON.parse(captured.stdout) as { outcome: string; episode_id: string };
+    assert.equal(report.outcome, "published");
+
     autojournalExtension(fakePi as never);
     const search = tools.get("memory_search") as ToolSpec;
     const get = tools.get("memory_get") as ToolSpec;
@@ -383,19 +344,34 @@ test("memory_get resolves short references and keeps legacy calls compatible", a
 
     const searched = await search.execute("search-1", { query: "reference sentinel" } as never);
     assert.match(searched.content[0].text, /\[reference 1\]/);
-    const searchDetails = searched.details as { evidence_references: Array<{ reference: number }> };
+    const searchDetails = searched.details as {
+      evidence_references: Array<{ reference: number; episode_id: string; revision: string }>;
+    };
     assert.equal(searchDetails.evidence_references[0].reference, 1);
+    assert.equal(searchDetails.evidence_references[0].episode_id, report.episode_id);
 
-    const opened = await get.execute("get-1", { reference: 1, lines: "7-8" } as never);
+    const opened = await get.execute("get-1", { reference: 1 } as never);
     assert.match(opened.content[0].text, /reference sentinel/);
-    assert.match(
-      fs.readFileSync(log, "utf8"),
-      new RegExp(`get --episode ${episode} --revision ${revision} --json --world main --scope default --lines 7-8`),
-    );
+    assert.match(opened.content[0].text, /untrusted data/);
 
-    // A resumed branch restores references from durable tool-result details.
-    // The reference retains the world/scope where search found it even when
-    // the branch's active selection later changes.
+    // A legacy resumed call folds episode_id/revision into a fresh
+    // reference under the *current* selection, so it runs before the
+    // branch switch below moves the session to another world.
+    const identity = searchDetails.evidence_references[0];
+    const prepared = get.prepareArguments?.({
+      episode_id: identity.episode_id,
+      revision: identity.revision,
+      lines: "1-400",
+    });
+    assert.ok(prepared);
+    assert.equal(typeof prepared.reference, "number");
+    const legacy = await get.execute("get-legacy", prepared as never);
+    assert.match(legacy.content[0].text, /reference sentinel/);
+
+    // A resumed branch restores references from durable tool-result
+    // details. The reference retains the world/scope where search found it
+    // even when the branch's active selection later changes — the get
+    // still resolves (a get bound to the changed selection would be gone).
     const sessionTree = events.get("session_tree");
     assert.ok(sessionTree);
     const resumedContext = {
@@ -415,39 +391,21 @@ test("memory_get resolves short references and keeps legacy calls compatible", a
       },
     };
     await sessionTree({}, resumedContext);
-    await get.execute("get-resumed", { reference: 1 } as never);
-    const resumedCall = fs.readFileSync(log, "utf8").trim().split("\n").at(-1);
-    assert.match(resumedCall ?? "", /--world main --scope default/);
+    const resumed = await get.execute("get-resumed", { reference: 1 } as never);
+    assert.match(resumed.content[0].text, /reference sentinel/, "restored reference keeps its own world/scope");
 
-    const delayedSearch = search.execute("search-slow", { query: "slow" } as never);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    await sessionTree({}, resumedContext);
-    const abandoned = await delayedSearch;
-    assert.match(abandoned.content[0].text, /branch changed while search was running/);
-    const beforeAbandonedGet = fs.readFileSync(log, "utf8");
-    const abandonedGet = await get.execute("get-abandoned", { reference: 2 } as never);
-    assert.match(abandonedGet.content[0].text, /run memory_search again/);
-    assert.equal(fs.readFileSync(log, "utf8"), beforeAbandonedGet);
-
-    const beforeUnknown = fs.readFileSync(log, "utf8");
     const unknown = await get.execute("get-2", { reference: 999 } as never);
     assert.match(unknown.content[0].text, /run memory_search again/);
-    assert.equal(fs.readFileSync(log, "utf8"), beforeUnknown, "unknown references must not invoke the core");
 
-    const prepared = get.prepareArguments?.({
-      episode_id: episode,
-      revision,
-      lines: "9-10",
-    });
-    assert.ok(prepared);
-    assert.equal(typeof prepared.reference, "number");
-    await get.execute("get-legacy", prepared as never);
-    assert.match(fs.readFileSync(log, "utf8"), /--lines 9-10/);
   } finally {
-    if (previousBin === undefined) delete process.env.AUTOJOURNAL_BIN;
-    else process.env.AUTOJOURNAL_BIN = previousBin;
-    if (previousLog === undefined) delete process.env.AUTOJOURNAL_TEST_LOG;
-    else process.env.AUTOJOURNAL_TEST_LOG = previousLog;
+    if (previous.config === undefined) delete process.env.AUTOJOURNAL_CONFIG;
+    else process.env.AUTOJOURNAL_CONFIG = previous.config;
+    if (previous.xdgConfig === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = previous.xdgConfig;
+    if (previous.data === undefined) delete process.env.XDG_DATA_HOME;
+    else process.env.XDG_DATA_HOME = previous.data;
+    if (previous.state === undefined) delete process.env.XDG_STATE_HOME;
+    else process.env.XDG_STATE_HOME = previous.state;
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
@@ -536,17 +494,14 @@ test("/autojournal menu title exposes resolved journal directory and source", ()
 
 test(
   "/autojournal menu creates and persists a session world",
-  { skip: e2eBinary === null },
   async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aj-menu-"));
     const previous = {
-      bin: process.env.AUTOJOURNAL_BIN,
       config: process.env.AUTOJOURNAL_CONFIG,
       xdgConfig: process.env.XDG_CONFIG_HOME,
       data: process.env.XDG_DATA_HOME,
       state: process.env.XDG_STATE_HOME,
     };
-    process.env.AUTOJOURNAL_BIN = e2eBinary as string;
     delete process.env.AUTOJOURNAL_CONFIG;
     process.env.XDG_CONFIG_HOME = path.join(tmp, "config");
     process.env.XDG_DATA_HOME = path.join(tmp, "data");
@@ -597,8 +552,6 @@ test(
       );
       assert.deepEqual(savedConfig.capture, { world: "isolated-work", scope: "default" });
     } finally {
-      if (previous.bin === undefined) delete process.env.AUTOJOURNAL_BIN;
-      else process.env.AUTOJOURNAL_BIN = previous.bin;
       if (previous.config === undefined) delete process.env.AUTOJOURNAL_CONFIG;
       else process.env.AUTOJOURNAL_CONFIG = previous.config;
       if (previous.xdgConfig === undefined) delete process.env.XDG_CONFIG_HOME;
@@ -614,17 +567,14 @@ test(
 
 test(
   "test_pi_menu_offers_reseal",
-  { skip: e2eBinary === null },
   async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aj-reseal-menu-"));
     const previous = {
-      bin: process.env.AUTOJOURNAL_BIN,
       config: process.env.AUTOJOURNAL_CONFIG,
       xdgConfig: process.env.XDG_CONFIG_HOME,
       data: process.env.XDG_DATA_HOME,
       state: process.env.XDG_STATE_HOME,
     };
-    process.env.AUTOJOURNAL_BIN = e2eBinary as string;
     delete process.env.AUTOJOURNAL_CONFIG;
     process.env.XDG_CONFIG_HOME = path.join(tmp, "config");
     process.env.XDG_DATA_HOME = path.join(tmp, "data");
@@ -675,8 +625,6 @@ test(
         `no reseal report was rendered: ${JSON.stringify(notices)}`,
       );
     } finally {
-      if (previous.bin === undefined) delete process.env.AUTOJOURNAL_BIN;
-      else process.env.AUTOJOURNAL_BIN = previous.bin;
       if (previous.config === undefined) delete process.env.AUTOJOURNAL_CONFIG;
       else process.env.AUTOJOURNAL_CONFIG = previous.config;
       if (previous.xdgConfig === undefined) delete process.env.XDG_CONFIG_HOME;
@@ -692,17 +640,14 @@ test(
 
 test(
   "capture skips headless/subagent modes and publishes interactive turns",
-  { skip: e2eBinary === null },
   async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aj-mode-"));
     const previous = {
-      bin: process.env.AUTOJOURNAL_BIN,
       config: process.env.AUTOJOURNAL_CONFIG,
       xdgConfig: process.env.XDG_CONFIG_HOME,
       data: process.env.XDG_DATA_HOME,
       state: process.env.XDG_STATE_HOME,
     };
-    process.env.AUTOJOURNAL_BIN = e2eBinary as string;
     delete process.env.AUTOJOURNAL_CONFIG;
     process.env.XDG_CONFIG_HOME = path.join(tmp, "config");
     process.env.XDG_DATA_HOME = path.join(tmp, "data");
@@ -740,8 +685,6 @@ test(
       await handlers.get("agent_settled")!({}, { ...ctx, mode: "tui" });
       assert.equal(fs.existsSync(journals), true);
     } finally {
-      if (previous.bin === undefined) delete process.env.AUTOJOURNAL_BIN;
-      else process.env.AUTOJOURNAL_BIN = previous.bin;
       if (previous.config === undefined) delete process.env.AUTOJOURNAL_CONFIG;
       else process.env.AUTOJOURNAL_CONFIG = previous.config;
       if (previous.xdgConfig === undefined) delete process.env.XDG_CONFIG_HOME;
@@ -757,17 +700,14 @@ test(
 
 test(
   "menu capture toggle suppresses publishing for the session and persists as policy",
-  { skip: e2eBinary === null },
   async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aj-toggle-"));
     const previous = {
-      bin: process.env.AUTOJOURNAL_BIN,
       config: process.env.AUTOJOURNAL_CONFIG,
       xdgConfig: process.env.XDG_CONFIG_HOME,
       data: process.env.XDG_DATA_HOME,
       state: process.env.XDG_STATE_HOME,
     };
-    process.env.AUTOJOURNAL_BIN = e2eBinary as string;
     delete process.env.AUTOJOURNAL_CONFIG;
     process.env.XDG_CONFIG_HOME = path.join(tmp, "config");
     process.env.XDG_DATA_HOME = path.join(tmp, "data");
@@ -840,8 +780,6 @@ test(
       await handlers.get("agent_settled")!({}, { ...ctx, mode: "tui" });
       assert.equal(fs.existsSync(journals), true);
     } finally {
-      if (previous.bin === undefined) delete process.env.AUTOJOURNAL_BIN;
-      else process.env.AUTOJOURNAL_BIN = previous.bin;
       if (previous.config === undefined) delete process.env.AUTOJOURNAL_CONFIG;
       else process.env.AUTOJOURNAL_CONFIG = previous.config;
       if (previous.xdgConfig === undefined) delete process.env.XDG_CONFIG_HOME;
@@ -866,239 +804,147 @@ test("legacyPiJournalRoot follows Pi's agent directory override", () => {
   );
 });
 
-test("resolveBinary honors AUTOJOURNAL_BIN and rejects missing paths", () => {
-  // A dead override is never returned; resolution falls through to the
-  // bundled platform binary when one is present, else null.
-  const fallback = resolveBinary({ AUTOJOURNAL_BIN: "/nonexistent/bin", PATH: "" });
-  assert.notEqual(fallback, "/nonexistent/bin");
-  if (fallback !== null) assert.ok(fs.existsSync(fallback));
-  const self = process.execPath; // any existing file works for the override
-  assert.equal(resolveBinary({ AUTOJOURNAL_BIN: self, PATH: "" }), self);
-});
-
 // End-to-end against the real binary: capture with an active selection, then
 // search and get through the same CLI surface the extension uses. Skipped
 // when no binary is available (e.g. a consumer running tests before install).
-test("end-to-end capture -> search -> get through the binary", { skip: e2eBinary === null }, async () => {
-  const bin = e2eBinary as string;
+test("end-to-end capture -> search -> get through the in-process engine", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aj-adapter-"));
-  const index = path.join(tmp, "index.sqlite");
+  const index = path.join(tmp, "index.v2.json");
   const thesaurus = path.join(tmp, "thesaurus.json");
   fs.writeFileSync(thesaurus, "{}");
   // Isolate from any real owner config/thesaurus on the host.
-  const env = {
-    AUTOJOURNAL_THESAURUS: thesaurus,
-    AUTOJOURNAL_MISS_LOG: path.join(tmp, "misses.jsonl"),
-    XDG_CONFIG_HOME: path.join(tmp, "config"),
-    XDG_DATA_HOME: path.join(tmp, "data"),
+  const previous = {
+    thesaurus: process.env.AUTOJOURNAL_THESAURUS,
+    missLog: process.env.AUTOJOURNAL_MISS_LOG,
+    config: process.env.AUTOJOURNAL_CONFIG,
+    xdgConfig: process.env.XDG_CONFIG_HOME,
+    data: process.env.XDG_DATA_HOME,
   };
+  process.env.AUTOJOURNAL_THESAURUS = thesaurus;
+  process.env.AUTOJOURNAL_MISS_LOG = path.join(tmp, "misses.jsonl");
+  delete process.env.AUTOJOURNAL_CONFIG;
+  process.env.XDG_CONFIG_HOME = path.join(tmp, "config");
+  process.env.XDG_DATA_HOME = path.join(tmp, "data");
   try {
-    const payload = buildPayload({
-      summary: {
-        userText: "how did the quokka enclosure fare",
-        assistantText: "the quokka enclosure needed reindexing today",
-        toolNames: ["bash"],
-      },
-      sessionId: "e2e-session",
-      turnId: "e2e-turn-1",
-      eventTimeMs: Date.now(),
-      selection: DEFAULT_SELECTION,
-    });
-    // Capture resolves the root the way every fresh host does: no config and
-    // the host-neutral XDG data default.
-    const captured = await runBinary(bin, ["capture", "--index", index], {
-      stdin: JSON.stringify(payload),
-      env,
-    });
+    const wire = (over: Record<string, unknown>): string =>
+      JSON.stringify({
+        schema_version: 1,
+        world: "main",
+        scope: "default",
+        lane: "conversation",
+        harness: "pi",
+        adapter_version: "2.0.0",
+        session_id: "e2e-session",
+        turn_id: "e2e-turn-1",
+        event_time_ms: Date.now(),
+        capture_policy: "pi-visible-v2",
+        turn_outcome: "completed",
+        user_content: "how did the quokka enclosure fare",
+        assistant_result: "the quokka enclosure needed reindexing today",
+        tools: [{ name: "bash" }],
+        ...over,
+      });
+    // Capture resolves the root the way every fresh host does: no config
+    // and the host-neutral XDG data default.
+    const captured = runCli(["capture", "--index", index], wire({}));
     const report = JSON.parse(captured.stdout);
     assert.equal(report.outcome, "published");
     assert.match(report.path, /^\d{4}\/\d{2}\/\d{2}\//);
-    assert.equal(fs.existsSync(path.join(env.XDG_DATA_HOME, "autojournal", "journals", report.path)), true);
+    assert.equal(
+      fs.existsSync(path.join(process.env.XDG_DATA_HOME as string, "autojournal", "journals", report.path)),
+      true,
+    );
 
     for (const [harness, turn, sentinel] of [
       ["claude-code", "claude-turn", "claudecrossharness"],
       ["codex", "codex-turn", "codexcrossharness"],
     ] as const) {
-      const crossHarness = {
-        ...payload,
-        harness,
-        session_id: `${harness}-session`,
-        turn_id: turn,
-        user_content: `remember ${sentinel}`,
-        assistant_result: `${sentinel} was captured through the shared core`,
-      };
-      const crossCapture = await runBinary(bin, ["capture", "--index", index], {
-        stdin: JSON.stringify(crossHarness),
-        env,
-      });
-      assert.equal(JSON.parse(crossCapture.stdout).outcome, "published");
-      const crossSearch = await runBinary(
-        bin,
-        [
-          "search", sentinel, "--world", "main", "--scope", "default",
-          "--index", index, "--json",
-        ],
-        { env },
+      const crossCapture = runCli(
+        ["capture", "--index", index],
+        wire({
+          harness,
+          session_id: `${harness}-session`,
+          turn_id: turn,
+          user_content: `remember ${sentinel}`,
+          assistant_result: `${sentinel} was captured through the shared engine`,
+        }),
       );
+      assert.equal(JSON.parse(crossCapture.stdout).outcome, "published");
+      const crossSearch = runCli([
+        "search", sentinel, "--world", "main", "--scope", "default",
+        "--index", index, "--json",
+      ]);
       assert.equal(JSON.parse(crossSearch.stdout).outcome, "match");
     }
 
     // No --world: an unconfigured search falls back to the capture world.
-    const searched = await runBinary(bin, [
-      "search", "quokka", "--index", index, "--json",
-    ], { timeoutMs: 15000, env });
+    const searched = runCli(["search", "quokka", "--index", index, "--json"]);
     const result = JSON.parse(searched.stdout);
     assert.equal(result.outcome, "match");
     const hit = result.results[0];
     const rendered = renderSearchResults(result);
     assert.match(rendered, /quokka/);
     // Guard the wire contract, not just the snippet text: the header must
-    // render the binary's index object without leaking a stringified value.
+    // render the engine's index object without leaking a stringified value.
     assert.match(rendered, /^\d+ of \d+ matching result\(s\):/);
     assert.doesNotMatch(rendered, /object Object/);
 
-    const isolatedPayload = buildPayload({
-      summary: {
-        userText: "record the platypus release checklist",
-        assistantText: "the platypus release remains isolated",
-        toolNames: [],
-      },
-      sessionId: "e2e-session",
-      turnId: "e2e-turn-2",
-      eventTimeMs: Date.now(),
-      selection: { world: "isolated-work", scope: "client:a" },
-    });
-    const isolatedCapture = await runBinary(bin, ["capture", "--index", index], {
-      stdin: JSON.stringify(isolatedPayload),
-      env,
-    });
+    const isolatedCapture = runCli(
+      ["capture", "--index", index],
+      wire({
+        world: "isolated-work",
+        scope: "client:a",
+        turn_id: "e2e-turn-2",
+        user_content: "record the platypus release checklist",
+        assistant_result: "the platypus release remains isolated",
+        tools: [],
+      }),
+    );
     assert.match(
       JSON.parse(isolatedCapture.stdout).path,
       /^worlds\/isolated-work\/scopes\/client:a\/\d{4}\/\d{2}\/\d{2}\//,
     );
-    const hiddenFromDefault = await runBinary(
-      bin,
+    const hiddenFromDefault = runCli(
       ["search", "platypus", "--world", "main", "--scope", "default", "--index", index, "--json"],
-      { env },
     );
     assert.equal(JSON.parse(hiddenFromDefault.stdout).outcome, "no_match");
-    const visibleInSelection = await runBinary(
-      bin,
-      [
-        "search", "platypus", "--world", "isolated-work", "--scope", "client:a",
-        "--index", index, "--json",
-      ],
-      { env },
-    );
+    const visibleInSelection = runCli([
+      "search", "platypus", "--world", "isolated-work", "--scope", "client:a",
+      "--index", index, "--json",
+    ]);
     assert.equal(JSON.parse(visibleInSelection.stdout).outcome, "match");
-    const catalog = await runBinary(bin, ["catalog", "--index", index, "--json"], { env });
-    assert.deepEqual(JSON.parse(catalog.stdout).pairs, [
+    const catalogRun = runCli(["catalog", "--index", index, "--json"]);
+    assert.deepEqual(JSON.parse(catalogRun.stdout).pairs, [
       { world: "main", scope: "default" },
       { world: "isolated-work", scope: "client:a" },
     ]);
 
-    const got = await runBinary(bin, [
+    const got = runCli([
       "get", "--episode", hit.episode_id, "--revision", hit.revision,
       "--index", index, "--json",
-    ], { env });
+    ]);
     const opened = JSON.parse(got.stdout);
     assert.equal(opened.outcome, "match");
     assert.match(renderGetResult(opened), /quokka/);
-    const isolatedGet = await runBinary(bin, [
+    const isolatedGet = runCli([
       "get", "--episode", hit.episode_id, "--revision", hit.revision,
       "--world", "isolated-work", "--scope", "client:a",
       "--index", index, "--json",
-    ], { env });
+    ]);
     assert.equal(JSON.parse(isolatedGet.stdout).outcome, "gone");
   } finally {
+    if (previous.thesaurus === undefined) delete process.env.AUTOJOURNAL_THESAURUS;
+    else process.env.AUTOJOURNAL_THESAURUS = previous.thesaurus;
+    if (previous.missLog === undefined) delete process.env.AUTOJOURNAL_MISS_LOG;
+    else process.env.AUTOJOURNAL_MISS_LOG = previous.missLog;
+    if (previous.config === undefined) delete process.env.AUTOJOURNAL_CONFIG;
+    else process.env.AUTOJOURNAL_CONFIG = previous.config;
+    if (previous.xdgConfig === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = previous.xdgConfig;
+    if (previous.data === undefined) delete process.env.XDG_DATA_HOME;
+    else process.env.XDG_DATA_HOME = previous.data;
     fs.rmSync(tmp, { recursive: true, force: true });
   }
-});
-
-// One helper for the outcome-tolerance pair: a fake binary that reports a
-// chosen capture outcome, a driven extension, and the notifications plus the
-// /autojournal status line it produced.
-async function driveCaptureWithOutcome(outcome: string): Promise<{
-  notifications: string[];
-  statusLine: string;
-}> {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aj-outcome-"));
-  const previousBin = process.env.AUTOJOURNAL_BIN;
-  const script = path.join(tmp, "fake-autojournal");
-  fs.writeFileSync(
-    script,
-    `#!/bin/sh\necho '{"outcome":"${outcome}","index":"fresh"}'\n`,
-  );
-  fs.chmodSync(script, 0o755);
-  process.env.AUTOJOURNAL_BIN = script;
-  try {
-    const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<void>>();
-    let commandHandler: ((args: string, ctx: unknown) => Promise<void>) | null = null;
-    const fakePi = {
-      on(name: string, handler: (event: unknown, ctx: unknown) => Promise<void>) {
-        handlers.set(name, handler);
-      },
-      registerTool() {},
-      registerCommand(_name: string, spec: { handler(args: string, ctx: unknown): Promise<void> }) {
-        commandHandler = spec.handler;
-      },
-      appendEntry() {},
-    };
-    autojournalExtension(fakePi as never);
-
-    const notifications: string[] = [];
-    const ctx = {
-      mode: "tui",
-      hasUI: false,
-      sessionManager: {
-        getLeafId: () => "leaf-outcome",
-        getBranch: () => [1],
-        getEntries: () => [],
-      },
-      ui: {
-        notify(message: string) {
-          notifications.push(message);
-        },
-      },
-    };
-    await handlers.get("agent_end")!(
-      {
-        messages: [
-          { role: "user", content: "outcome tolerance sentinel" },
-          { role: "assistant", content: [{ type: "text", text: "done" }] },
-        ],
-      },
-      ctx,
-    );
-    await handlers.get("agent_settled")!({}, ctx);
-
-    const before = notifications.length;
-    await commandHandler!("status", ctx);
-    const statusLine = notifications.slice(before).join("\n");
-    return { notifications: notifications.slice(0, before), statusLine };
-  } finally {
-    if (previousBin === undefined) delete process.env.AUTOJOURNAL_BIN;
-    else process.env.AUTOJOURNAL_BIN = previousBin;
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
-}
-
-test("test_pi_adapter_counts_superseded_as_success", async () => {
-  const { notifications, statusLine } = await driveCaptureWithOutcome("superseded");
-  for (const message of notifications) {
-    assert.ok(!message.includes("capture failing"), `failure notification: ${message}`);
-  }
-  assert.match(statusLine, /1 superseded/);
-  assert.match(statusLine, /0 failed/);
-});
-
-test("test_pi_adapter_does_not_fail_on_an_unknown_outcome", async () => {
-  const { notifications, statusLine } = await driveCaptureWithOutcome("archived_v9");
-  for (const message of notifications) {
-    assert.ok(!message.includes("capture failing"), `failure notification: ${message}`);
-  }
-  assert.match(statusLine, /0 failed/);
-  assert.match(statusLine, /1 with an outcome this adapter does not know/);
 });
 
 test("adapterStatePath resolves beside the resolved owner config", () => {
@@ -1152,17 +998,14 @@ test("menu title announces subagent capture only while the lever is on", () => {
 
 test(
   "menu subagent toggle writes the adapter state file and the next title shows it",
-  { skip: e2eBinary === null },
   async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aj-lever-menu-"));
     const previous = {
-      bin: process.env.AUTOJOURNAL_BIN,
       config: process.env.AUTOJOURNAL_CONFIG,
       xdgConfig: process.env.XDG_CONFIG_HOME,
       data: process.env.XDG_DATA_HOME,
       state: process.env.XDG_STATE_HOME,
     };
-    process.env.AUTOJOURNAL_BIN = e2eBinary as string;
     delete process.env.AUTOJOURNAL_CONFIG;
     process.env.XDG_CONFIG_HOME = path.join(tmp, "config");
     process.env.XDG_DATA_HOME = path.join(tmp, "data");
@@ -1200,8 +1043,6 @@ test(
       assert.equal(readSubagentCapture(stateFile), true, "toggle wrote the lever");
       assert.match(titles[1], /Subagent capture: ON/, "next menu render reflects the lever");
     } finally {
-      if (previous.bin === undefined) delete process.env.AUTOJOURNAL_BIN;
-      else process.env.AUTOJOURNAL_BIN = previous.bin;
       if (previous.config === undefined) delete process.env.AUTOJOURNAL_CONFIG;
       else process.env.AUTOJOURNAL_CONFIG = previous.config;
       if (previous.xdgConfig === undefined) delete process.env.XDG_CONFIG_HOME;
@@ -1217,17 +1058,14 @@ test(
 
 test(
   "subagent sessions publish only when the lever is on",
-  { skip: e2eBinary === null },
   async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aj-subgate-"));
     const previous = {
-      bin: process.env.AUTOJOURNAL_BIN,
       config: process.env.AUTOJOURNAL_CONFIG,
       xdgConfig: process.env.XDG_CONFIG_HOME,
       data: process.env.XDG_DATA_HOME,
       state: process.env.XDG_STATE_HOME,
     };
-    process.env.AUTOJOURNAL_BIN = e2eBinary as string;
     delete process.env.AUTOJOURNAL_CONFIG;
     process.env.XDG_CONFIG_HOME = path.join(tmp, "config");
     process.env.XDG_DATA_HOME = path.join(tmp, "data");
@@ -1280,8 +1118,6 @@ test(
       await handlers.get("agent_settled")!({}, { ...ctx, mode: "print" });
       assert.equal(fs.existsSync(journals), true);
     } finally {
-      if (previous.bin === undefined) delete process.env.AUTOJOURNAL_BIN;
-      else process.env.AUTOJOURNAL_BIN = previous.bin;
       if (previous.config === undefined) delete process.env.AUTOJOURNAL_CONFIG;
       else process.env.AUTOJOURNAL_CONFIG = previous.config;
       if (previous.xdgConfig === undefined) delete process.env.XDG_CONFIG_HOME;
@@ -1297,17 +1133,14 @@ test(
 
 test(
   "headless owner runs stay skipped even with the lever on",
-  { skip: e2eBinary === null },
   async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aj-headless-"));
     const previous = {
-      bin: process.env.AUTOJOURNAL_BIN,
       config: process.env.AUTOJOURNAL_CONFIG,
       xdgConfig: process.env.XDG_CONFIG_HOME,
       data: process.env.XDG_DATA_HOME,
       state: process.env.XDG_STATE_HOME,
     };
-    process.env.AUTOJOURNAL_BIN = e2eBinary as string;
     delete process.env.AUTOJOURNAL_CONFIG;
     process.env.XDG_CONFIG_HOME = path.join(tmp, "config");
     process.env.XDG_DATA_HOME = path.join(tmp, "data");
@@ -1349,8 +1182,6 @@ test(
       await handlers.get("agent_settled")!({}, { ...ctx, mode: "print" });
       assert.equal(fs.existsSync(journals), false);
     } finally {
-      if (previous.bin === undefined) delete process.env.AUTOJOURNAL_BIN;
-      else process.env.AUTOJOURNAL_BIN = previous.bin;
       if (previous.config === undefined) delete process.env.AUTOJOURNAL_CONFIG;
       else process.env.AUTOJOURNAL_CONFIG = previous.config;
       if (previous.xdgConfig === undefined) delete process.env.XDG_CONFIG_HOME;

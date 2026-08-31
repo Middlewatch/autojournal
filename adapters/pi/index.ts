@@ -1,47 +1,52 @@
-// AutoJournal Pi adapter: thin lifecycle translation over the standalone
-// `autojournal` binary.
+// AutoJournal Pi extension: lifecycle translation over the in-process
+// TypeScript engine.
 //
-// Capture: `agent_end` stashes the run's messages; `agent_settled` publishes
-// exactly one completed turn as one episode (a retried run overwrites the
-// stashed one, so only the final run is captured). Subagent sessions publish
-// only when the owner turns on Subagent capture in /autojournal. Recall:
-// `memory_search` and `memory_get` tools shell to the binary with `--json`.
+// Capture: `agent_end` stashes the run's messages; `agent_settled`
+// publishes exactly one completed turn as one episode (a retried run
+// overwrites the stashed one, so only the final run is captured).
+// Subagent sessions publish only when the owner turns on Subagent capture
+// in /autojournal. Recall: `memory_search` and `memory_get` run the same
+// engine the CLI wires, in this process — no subprocess, no bundled
+// binary, no timeouts.
 //
-// The adapter invents no memory policy. It transports an explicit
+// The extension invents no memory policy. It transports an explicit
 // owner-selected session world/scope when present; otherwise it uses the
-// core's owner-configured or built-in defaults.
+// engine's owner-configured or built-in defaults. Index residency
+// (settled by the port's S3 measurement): the snapshot is loaded per
+// query — ~0.13 s against the real corpus — rather than cached resident,
+// trading a small per-search cost for a process that never pins the
+// 200+ MiB postings graph.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-export const ADAPTER_VERSION = "1.2.0";
+import { run as runCliCommand, clockFromEnv, resolveJournalPaths, type CliIo } from "./cli.ts";
+import { defaultConfig, loadConfig, ConfigError, type Config } from "./engine/config.ts";
+import { processEnviron, rootDigestHex } from "./engine/paths.ts";
+import { capture as engineCapture, findPriorPolicyCapture } from "./engine/store.ts";
+import { openSnapshot, type Snapshot } from "./engine/index.ts";
+import type { RawPayload } from "./engine/contracts.ts";
+
+export const ADAPTER_VERSION = "2.0.0";
 const HARNESS = "pi";
-const CAPTURE_POLICY = "pi-default-v1";
-const CAPTURE_TIMEOUT_MS = 10_000;
-export const QUERY_TIMEOUT_MS = 15_000;
-// Sync is a full corpus rebuild, not a query: measured ~9 ms/episode
-// (4,040 episodes -> 36 s). Run it under the query budget and a mid-rebuild
-// SIGKILL reports the misleading "(sync produced no output)" and the rolled-
-// back projection still needs the whole rebuild next time. 10 min covers
-// ~65k episodes; the README already flags the six-figure crossover as
-// unmeasured, and this budget is part of what revisits it.
-export const SYNC_TIMEOUT_MS = 10 * 60 * 1000;
+// pi-visible-v2 (owner ruling 2026-08-31): every nonempty visible
+// assistant text segment is kept in turn order, replacing v1's
+// last-nonempty-wins rule. The policy token participates in episode
+// identity, so v1 and v2 captures of one turn are distinct episodes —
+// which is why import's dedupe is policy-aware (see importPiHistory).
+const CAPTURE_POLICY = "pi-visible-v2";
+const PRIOR_CAPTURE_POLICIES = ["pi-default-v1"];
 const DEFAULT_SEARCH_LIMIT = 6;
 const MAX_EVIDENCE_REFERENCES = 256;
-// Binary-side cap is 2 MiB per content field; truncate below it so an
-// oversized turn degrades to a marked partial capture instead of a failure.
-const MAX_CONTENT_BYTES = 1_500_000;
-const TRUNCATION_MARKER = "\n[content truncated by capture policy]";
 
-// --- Binary location and invocation ---
+// --- In-process engine invocation ---
 
 // Pre-release adapters defaulted journals into Pi's agent directory via
-// --default-root. The core now resolves a host-neutral XDG default, so a
+// --default-root. The engine now resolves a host-neutral XDG default, so a
 // corpus left at the old location would silently stop being found; the
 // session-start check below detects that and tells the owner what to do.
 export function legacyPiJournalRoot(env: NodeJS.ProcessEnv = process.env): string {
@@ -52,86 +57,58 @@ export function legacyPiJournalRoot(env: NodeJS.ProcessEnv = process.env): strin
   return path.join(agentDir, "journals");
 }
 
-export function resolveBinary(env: NodeJS.ProcessEnv = process.env): string | null {
-  const override = env.AUTOJOURNAL_BIN;
-  if (override && fs.existsSync(override)) return override;
-
-  const exe = process.platform === "win32" ? "autojournal.exe" : "autojournal";
-  const bundled = path.join(
-    import.meta.dirname,
-    "bin",
-    `${process.platform}-${process.arch}`,
-    exe,
-  );
-  if (fs.existsSync(bundled)) return bundled;
-
-  for (const dir of (env.PATH ?? "").split(path.delimiter)) {
-    if (dir === "") continue;
-    const candidate = path.join(dir, exe);
-    try {
-      fs.accessSync(candidate, fs.constants.X_OK);
-      return candidate;
-    } catch {
-      // not here; keep looking
-    }
-  }
-  return null;
-}
-
 export interface RunResult {
-  code: number | null;
+  code: number;
   stdout: string;
   stderr: string;
-  timedOut: boolean;
 }
 
-export function runBinary(
-  bin: string,
-  args: string[],
-  options: { stdin?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv } = {},
-): Promise<RunResult> {
-  return new Promise((resolve) => {
-    const child = spawn(bin, args, {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: options.env ? { ...process.env, ...options.env } : process.env,
-    });
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGKILL");
-    }, options.timeoutMs ?? QUERY_TIMEOUT_MS);
+/**
+ * Runs one CLI verb in this process: the same wiring, flags, wire shapes,
+ * and exit codes the standalone `autojournal` command exposes, without a
+ * subprocess. This is the extension's one seam onto the engine's command
+ * surface, so the menu's text bodies and the tools' --json reports cannot
+ * drift from what the owner sees in a shell.
+ */
+export function runCli(args: string[], stdin?: string): RunResult {
+  let stdout = "";
+  let stderr = "";
+  const io: CliIo = {
+    env: processEnviron,
+    stdin: () => (stdin === undefined ? new Uint8Array() : new TextEncoder().encode(stdin)),
+    stdout: (t) => {
+      stdout += t;
+    },
+    stderr: (t) => {
+      stderr += t;
+    },
+    nowMs: clockFromEnv(processEnviron),
+  };
+  let code: number;
+  try {
+    code = runCliCommand(args, io);
+  } catch (err) {
+    // Engine faults surface as a failed command, never a host crash.
+    stderr += String(err) + "\n";
+    code = 1;
+  }
+  return { code, stdout, stderr };
+}
 
-    child.stdout.on("data", (d: Buffer) => (stdout += d.toString("utf8")));
-    child.stderr.on("data", (d: Buffer) => (stderr += d.toString("utf8")));
-    child.on("error", (err) => {
-      clearTimeout(timer);
-      resolve({ code: null, stdout, stderr: String(err), timedOut });
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      resolve({ code, stdout, stderr, timedOut });
-    });
-
-    // A binary that dies before draining stdin emits EPIPE here; swallowing
-    // it keeps capture failure a counted diagnostic, never a host crash.
-    child.stdin.on("error", () => {});
-    if (options.stdin !== undefined) child.stdin.write(options.stdin);
-    child.stdin.end();
-  });
+// loadOwnerConfig resolves the owner configuration the way the CLI does; a
+// missing, malformed, or unreadable file degrades to the built-in
+// defaults and the affected operation reports through its own channel.
+function loadOwnerConfig(): Config {
+  try {
+    return loadConfig(processEnviron, "").config;
+  } catch {
+    return defaultConfig();
+  }
 }
 
 // --- Turn summarization (Pi messages -> completed-turn facts) ---
 
 export function syncResultBody(run: RunResult): string {
-  if (run.timedOut) {
-    return (
-      `autojournal: sync timed out after ${Math.round(SYNC_TIMEOUT_MS / 1000)}s — ` +
-      "a full corpus rebuild scales with episode count; the projection was rolled " +
-      "back unchanged, so run `autojournal sync` from a shell and let it finish"
-    );
-  }
   return run.stdout.trim() || run.stderr.trim() || "(sync produced no output)";
 }
 
@@ -244,7 +221,7 @@ export function captureFromEntries(entries: unknown[], fallback = true): boolean
 
 export function summarizeRun(messages: unknown[]): RunSummary {
   const userParts: string[] = [];
-  let assistantText = "";
+  const assistantParts: string[] = [];
   const toolNames: string[] = [];
   for (const raw of messages) {
     const msg = raw as { role?: string; content?: unknown };
@@ -252,8 +229,13 @@ export function summarizeRun(messages: unknown[]): RunSummary {
       const text = extractText(msg.content);
       if (text !== "") userParts.push(text);
     } else if (msg.role === "assistant") {
+      // pi-visible-v2: every nonempty visible assistant segment survives
+      // in turn order. Measured on 50 sampled turns (see the spec's dated
+      // note): mid-turn text exists in 32/50, adds 22% over final-reply
+      // bytes, and is 100% novel — goal statements, measured results,
+      // verdicts, commit hashes — none of it restated in the final reply.
       const text = extractText(msg.content);
-      if (text !== "") assistantText = text; // last nonempty assistant text wins
+      if (text !== "") assistantParts.push(text);
       if (Array.isArray(msg.content)) {
         for (const block of msg.content as ContentBlock[]) {
           if (block.type === "toolCall" && typeof block.name === "string") {
@@ -263,7 +245,7 @@ export function summarizeRun(messages: unknown[]): RunSummary {
       }
     }
   }
-  return { userText: userParts.join("\n\n"), assistantText, toolNames };
+  return { userText: userParts.join("\n\n"), assistantText: assistantParts.join("\n\n"), toolNames };
 }
 
 // The capture outcome vocabulary is an interface-tier contract that grows by
@@ -335,15 +317,14 @@ export function stableTurnId(
   return `turn-${digest}`;
 }
 
-function truncateContent(text: string): string {
-  if (Buffer.byteLength(text, "utf8") <= MAX_CONTENT_BYTES) return text;
-  let cut = Buffer.from(text, "utf8").subarray(0, MAX_CONTENT_BYTES).toString("utf8");
-  // toString on a mid-codepoint cut yields a replacement char; drop it.
-  if (cut.endsWith("�")) cut = cut.slice(0, -1);
-  return cut + TRUNCATION_MARKER;
-}
-
-export function buildPayload(input: {
+/**
+ * Builds the engine-facing raw payload for one completed turn. No
+ * adapter-side truncation: the engine's oversize policy tail-truncates
+ * with recorded per-side drop counts, which a marker string could only
+ * obscure. In-process there is no wire, so arbitrarily large turns reach
+ * that policy intact.
+ */
+export function buildRawPayload(input: {
   summary: RunSummary;
   sessionId: string;
   turnId: string;
@@ -351,24 +332,26 @@ export function buildPayload(input: {
   selection: SessionSelection;
   adapterVersion?: string;
   host?: string | null;
-}): Record<string, unknown> {
+}): RawPayload {
   const host = input.host === undefined ? originHost() : input.host;
   return {
-    schema_version: 1,
-    ...(host === null ? {} : { host }),
+    schemaVersion: 1,
     world: input.selection.world,
     scope: input.selection.scope,
     lane: "conversation",
     harness: HARNESS,
-    adapter_version: input.adapterVersion ?? ADAPTER_VERSION,
-    session_id: sanitizeToken(input.sessionId, "unknown-session"),
-    turn_id: sanitizeToken(input.turnId, "unknown-turn"),
-    event_time_ms: input.eventTimeMs,
-    capture_policy: CAPTURE_POLICY,
-    turn_outcome: "completed",
-    user_content: truncateContent(input.summary.userText),
-    assistant_result: truncateContent(input.summary.assistantText),
+    adapterVersion: input.adapterVersion ?? ADAPTER_VERSION,
+    sessionId: sanitizeToken(input.sessionId, "unknown-session"),
+    turnId: sanitizeToken(input.turnId, "unknown-turn"),
+    eventTimeMs: BigInt(Math.max(0, Math.trunc(input.eventTimeMs))),
+    capturePolicy: CAPTURE_POLICY,
+    turnOutcome: "completed",
+    userContent: input.summary.userText,
+    assistantResult: input.summary.assistantText,
     tools: input.summary.toolNames.map((name) => ({ name: sanitizeToken(name, "tool") })),
+    workspaceRoot: null,
+    branchOf: null,
+    host,
   };
 }
 
@@ -571,8 +554,42 @@ export interface ImportCounts {
   firstFailure: string | null;
 }
 
+// runCapture is the one capture transaction both live capture and import
+// use: owner config and journal paths are resolved fresh per call, so a
+// config edit or default change reaches running sessions.
+function runCapture(raw: RawPayload): { outcome: string } {
+  try {
+    const cfg = loadOwnerConfig();
+    const { rootPath, indexPath } = resolveJournalPaths(processEnviron, cfg);
+    return engineCapture({ rootPath, indexPath, raw, defaults: cfg.capture, captureTimeMs: Date.now() });
+  } catch {
+    return { outcome: "unavailable" };
+  }
+}
+
+// openSnapshotForDedupe loads the projection import's policy-aware dedupe
+// reads, syncing first when it is absent or unusable. Null means import
+// proceeds without prior-policy knowledge (same-policy identity dedupe
+// still applies at the store).
+function openSnapshotForDedupe(): Snapshot | null {
+  let cfg: Config;
+  let paths: { rootPath: string; indexPath: string };
+  try {
+    cfg = loadOwnerConfig();
+    paths = resolveJournalPaths(processEnviron, cfg);
+  } catch {
+    return null;
+  }
+  const digest = rootDigestHex(paths.rootPath);
+  let opened = openSnapshot(paths.indexPath, digest);
+  if (opened.kind !== "ok") {
+    runCli(["sync"]);
+    opened = openSnapshot(paths.indexPath, digest);
+  }
+  return opened.kind === "ok" ? opened.snapshot : null;
+}
+
 export async function importPiHistory(options: {
-  binary: string;
   selection: SessionSelection;
   files: string[];
   includeSubagents?: boolean;
@@ -587,6 +604,12 @@ export async function importPiHistory(options: {
     failed: 0,
     firstFailure: null,
   };
+  // Policy-aware dedupe: capture_policy participates in episode identity,
+  // so a turn captured live under a prior policy would re-derive a new
+  // identity here and store twice. Before publishing, import checks the
+  // projection for the same session/turn under each prior policy and
+  // counts a hit as already present.
+  const dedupeSnapshot = openSnapshotForDedupe();
   for (const file of options.files) {
     let text: string;
     try {
@@ -604,7 +627,7 @@ export async function importPiHistory(options: {
     counts.skippedTurns += parsed.skippedTurns;
     const sessionId = sessionIdFromFile(file);
     for (const turn of parsed.turns) {
-      const payload = buildPayload({
+      const raw = buildRawPayload({
         summary: turn.summary,
         sessionId,
         turnId: turn.turnId,
@@ -612,19 +635,28 @@ export async function importPiHistory(options: {
         selection: options.selection,
         adapterVersion: IMPORT_ADAPTER_VERSION,
       });
-      const run = await runBinary(options.binary, ["capture"], {
-        stdin: JSON.stringify(payload),
-        timeoutMs: CAPTURE_TIMEOUT_MS,
-      });
-      const report = parseJsonOutput(run);
-      const outcome = typeof report?.outcome === "string" ? report.outcome : "unreadable-report";
-      if (outcome === "published" || outcome === "superseded") counts.published += 1;
+      if (
+        dedupeSnapshot !== null &&
+        findPriorPolicyCapture(
+          dedupeSnapshot,
+          {
+            harness: raw.harness,
+            sessionId: raw.sessionId,
+            turnId: raw.turnId,
+            world: options.selection.world,
+          },
+          PRIOR_CAPTURE_POLICIES,
+        ) !== null
+      ) {
+        counts.existing += 1;
+        continue;
+      }
+      const outcome = runCapture(raw).outcome;
+      if (outcome === "published") counts.published += 1;
       else if (outcome === "duplicate" || outcome === "conflict") counts.existing += 1;
-      else if (run.timedOut || CAPTURE_FAILURE_OUTCOMES.has(outcome)) {
+      else if (CAPTURE_FAILURE_OUTCOMES.has(outcome)) {
         counts.failed += 1;
-        if (counts.firstFailure === null) {
-          counts.firstFailure = run.timedOut ? "timeout" : outcome;
-        }
+        if (counts.firstFailure === null) counts.firstFailure = outcome;
       } else {
         counts.unrecognized += 1;
       }
@@ -834,7 +866,6 @@ export function renderGetResult(json: GetResultJson): string {
 }
 
 function parseJsonOutput(run: RunResult): Record<string, unknown> | null {
-  if (run.timedOut) return null;
   try {
     return JSON.parse(run.stdout) as Record<string, unknown>;
   } catch {
@@ -932,8 +963,6 @@ export function sessionHeaderIsSubagent(firstLine: string | null): boolean {
 // --- Extension entry point ---
 
 export default function autojournalExtension(pi: ExtensionAPI): void {
-  const binary = resolveBinary();
-
   let sessionId = `ephemeral-${Date.now()}`;
   let pendingRun: unknown[] | null = null;
   let activeSelection: SessionSelection = DEFAULT_SELECTION;
@@ -944,7 +973,6 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
   const counters = {
     published: 0,
     duplicate: 0,
-    superseded: 0,
     unrecognized: 0,
     skipped: 0,
     failed: 0,
@@ -961,9 +989,8 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
     }
   }
 
-  async function catalog(): Promise<Array<SessionSelection>> {
-    if (binary === null) return [DEFAULT_SELECTION];
-    const run = await runBinary(binary, ["catalog", "--json"]);
+  function catalog(): Array<SessionSelection> {
+    const run = runCli(["catalog", "--json"]);
     const json = parseJsonOutput(run) as { pairs?: unknown[] } | null;
     const pairs: SessionSelection[] = [];
     for (const raw of json?.pairs ?? []) {
@@ -983,7 +1010,7 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
   async function restoreSessionState(ctx: {
     sessionManager: { getBranch?(): unknown[]; getEntries(): unknown[] };
   }) {
-    const known = await catalog();
+    const known = catalog();
     const entries = ctx.sessionManager.getBranch?.() ?? ctx.sessionManager.getEntries();
     activeSelection = selectionFromEntries(entries, known[0] ?? DEFAULT_SELECTION);
     captureEnabled = captureFromEntries(entries);
@@ -1008,17 +1035,10 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
       isSubagentSession = false;
     }
     await restoreSessionState(ctx);
-    if (binary === null && !degradationNotified) {
-      degradationNotified = true;
-      ctx.ui.notify(
-        "autojournal: binary not found (set AUTOJOURNAL_BIN or install the bundled platform build); capture and recall are disabled",
-        "warning",
-      );
-    }
     const legacy = legacyPiJournalRoot();
     const wantLegacyCheck = !legacyNotified && fs.existsSync(legacy);
-    if (binary !== null && (wantLegacyCheck || !importNoticeShown)) {
-      const run = await runBinary(binary, ["status", "--json"]);
+    if (wantLegacyCheck || !importNoticeShown) {
+      const run = runCli(["status", "--json"]);
       const status = parseJsonOutput(run) as StatusJson | null;
       if (wantLegacyCheck) {
         if (status?.root_source === "autojournal_default") {
@@ -1065,7 +1085,7 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
   pi.on("agent_settled", async (_event, ctx) => {
     const run = pendingRun;
     pendingRun = null;
-    if (run === null || binary === null) return;
+    if (run === null) return;
 
     // Headless owner runs (print/json modes) are synthetic work products
     // and never publish. Subagent sessions (the session log header carries
@@ -1092,46 +1112,34 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
       return;
     }
     const branch = ctx.sessionManager.getBranch();
-    const payload = buildPayload({
+    const raw = buildRawPayload({
       summary,
       sessionId,
       turnId: stableTurnId(sessionId, ctx.sessionManager.getLeafId(), branch.length, summary),
       eventTimeMs: eventTimeFromEntries(branch) ?? Date.now(),
       selection: activeSelection,
     });
-    const run_ = await runBinary(binary, ["capture"], {
-      stdin: JSON.stringify(payload),
-      timeoutMs: CAPTURE_TIMEOUT_MS,
-    });
-    const report = parseJsonOutput(run_);
-    const outcome = typeof report?.outcome === "string" ? report.outcome : "unreadable-report";
+    const outcome = runCapture(raw).outcome;
     if (outcome === "published") counters.published += 1;
     else if (outcome === "duplicate") counters.duplicate += 1;
-    else if (outcome === "superseded") counters.superseded += 1;
-    else if (run_.timedOut || CAPTURE_FAILURE_OUTCOMES.has(outcome)) {
-      noteFailure(ctx, run_.timedOut ? "timeout" : outcome);
+    else if (CAPTURE_FAILURE_OUTCOMES.has(outcome)) {
+      noteFailure(ctx, outcome);
     } else {
       counters.unrecognized += 1;
     }
   });
 
   const searchExecute = async (_id: string, params: { query: string; limit?: number }) => {
-    if (binary === null) {
-      return {
-        content: [{ type: "text" as const, text: "autojournal binary unavailable; recall is disabled" }],
-        details: undefined,
-      };
-    }
     const limit = Math.max(1, Math.min(params.limit ?? DEFAULT_SEARCH_LIMIT, 25));
     const searchSelection = { ...activeSelection };
     const searchGeneration = sessionGeneration;
-    const run = await runBinary(binary, [
+    const run = runCli([
       "search", params.query, "--json", "--limit", String(limit),
       "--world", searchSelection.world, "--scope", searchSelection.scope,
     ]);
     const json = parseJsonOutput(run);
     if (json === null) {
-      const reason = run.timedOut ? "timed out" : (run.stderr.trim() || "unreadable output");
+      const reason = run.stderr.trim() || "unreadable output";
       return {
         content: [{ type: "text" as const, text: `memory_search unavailable: ${reason}` }],
         details: undefined,
@@ -1227,12 +1235,6 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
         : { reference: saved.reference, lines: input.lines }) as MemoryGetParams;
     },
     async execute(_id, params: MemoryGetParams) {
-      if (binary === null) {
-        return {
-          content: [{ type: "text" as const, text: "autojournal binary unavailable; recall is disabled" }],
-          details: undefined,
-        };
-      }
       const identity = evidenceReferences.resolve(params.reference);
       if (identity === undefined) {
         const detail =
@@ -1248,10 +1250,10 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
       ];
       args.push("--world", identity.world, "--scope", identity.scope);
       if (params.lines !== undefined) args.push("--lines", params.lines);
-      const run = await runBinary(binary, args);
+      const run = runCli(args);
       const json = parseJsonOutput(run);
       if (json === null) {
-        const reason = run.timedOut ? "timed out" : (run.stderr.trim() || "unreadable output");
+        const reason = run.stderr.trim() || "unreadable output";
         return {
           content: [{ type: "text" as const, text: `memory_get unavailable: ${reason}` }],
           details: undefined,
@@ -1274,27 +1276,21 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
       }
       const adapterLine =
         `adapter: ${counters.published} published, ${counters.duplicate} duplicate, ` +
-        `${counters.superseded} superseded, ${counters.skipped} skipped, ` +
+        `${counters.skipped} skipped, ` +
         `${counters.failed} failed this session` +
         (counters.unrecognized > 0
           ? ` (+${counters.unrecognized} with an outcome this adapter does not know)`
           : "");
-      if (binary === null) {
-        ctx.ui.notify(`autojournal binary not found\n${adapterLine}`, "warning");
-        return;
-      }
       if (sub === "status" || sub === "sync" || !ctx.hasUI) {
         const command = sub === "" ? "status" : sub;
         const endStatus = command === "sync" ? beginSyncStatus(ctx) : () => {};
         try {
-          const run = await runBinary(binary, [command], {
-            timeoutMs: command === "sync" ? SYNC_TIMEOUT_MS : QUERY_TIMEOUT_MS,
-          });
+          const run = runCli([command]);
           const body =
             command === "sync"
               ? syncResultBody(run)
               : run.stdout.trim() || run.stderr.trim() || `(${command} produced no output)`;
-          ctx.ui.notify(`${body}\n${adapterLine}`, run.code === 0 && !run.timedOut ? "info" : "warning");
+          ctx.ui.notify(`${body}\n${adapterLine}`, run.code === 0 ? "info" : "warning");
         } finally {
           endStatus();
         }
@@ -1302,7 +1298,7 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
       }
 
       while (true) {
-        const statusRun = await runBinary(binary, ["status", "--json"]);
+        const statusRun = runCli(["status", "--json"]);
         const status = parseJsonOutput(statusRun) as StatusJson | null;
         const subagentCapture = readSubagentCapture(adapterStatePath());
         const title = formatMenuTitle(status, activeSelection, captureEnabled, subagentCapture);
@@ -1347,7 +1343,7 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
           continue;
         }
         if (choice === "Save world/scope as default for new sessions") {
-          const run = await runBinary(binary, [
+          const run = runCli([
             "default",
             "--world", activeSelection.world,
             "--scope", activeSelection.scope,
@@ -1357,7 +1353,7 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
           continue;
         }
         if (choice === "Show diagnostics") {
-          const run = await runBinary(binary, ["status"]);
+          const run = runCli(["status"]);
           const body = run.stdout.trim() || run.stderr.trim() || "(status unavailable)";
           ctx.ui.notify(`${body}\n${adapterLine}`, run.code === 0 ? "info" : "warning");
           continue;
@@ -1365,8 +1361,8 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
         if (choice === "Sync index") {
           const endStatus = beginSyncStatus(ctx);
           try {
-            const run = await runBinary(binary, ["sync"], { timeoutMs: SYNC_TIMEOUT_MS });
-            ctx.ui.notify(syncResultBody(run), run.code === 0 && !run.timedOut ? "info" : "warning");
+            const run = runCli(["sync"]);
+            ctx.ui.notify(syncResultBody(run), run.code === 0 ? "info" : "warning");
           } finally {
             endStatus();
           }
@@ -1374,12 +1370,10 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
         }
         if (choice === "Reseal edited episodes") {
           // Owner operation only: this menu is the sole adapter path to
-          // reseal — no tool, hook, or agent-reachable surface shells it.
-          // Reseal rewrites corpus files and then syncs, so it runs on the
-          // maintenance budget, not the query budget.
-          const run = await runBinary(binary, ["reseal"], { timeoutMs: SYNC_TIMEOUT_MS });
+          // reseal — no tool, hook, or agent-reachable surface runs it.
+          const run = runCli(["reseal"]);
           const body = run.stdout.trim() || run.stderr.trim() || "(reseal produced no output)";
-          ctx.ui.notify(body, run.code === 0 && !run.timedOut ? "info" : "warning");
+          ctx.ui.notify(body, run.code === 0 ? "info" : "warning");
           continue;
         }
         if (choice === "Import Pi session history") {
@@ -1395,7 +1389,7 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
             ctx.ui.notify(`autojournal: no importable Pi session logs under ${root}`, "info");
             continue;
           }
-          const pairs = [activeSelection, ...(await catalog())].filter(
+          const pairs = [activeSelection, ...catalog()].filter(
             (pair, i, all) =>
               all.findIndex((p) => p.world === pair.world && p.scope === pair.scope) === i,
           );
@@ -1411,7 +1405,6 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
             "info",
           );
           const imported = await importPiHistory({
-            binary,
             selection,
             files: candidates,
             includeSubagents: readSubagentCapture(adapterStatePath()),
@@ -1421,17 +1414,13 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
             const endStatus = beginSyncStatus(ctx);
             let syncRun;
             try {
-              syncRun = await runBinary(binary, ["sync"], { timeoutMs: SYNC_TIMEOUT_MS });
+              syncRun = runCli(["sync"]);
             } finally {
               endStatus();
             }
-            if (syncRun.code === 0 && !syncRun.timedOut) {
-              indexLine = "\nindex synced";
-            } else {
-              indexLine = syncRun.timedOut
-                ? "\nindex rebuild timed out — run /autojournal sync to finish it"
-                : "\nindex sync failed — run /autojournal sync to finish it";
-            }
+            indexLine = syncRun.code === 0
+              ? "\nindex synced"
+              : "\nindex sync failed — run /autojournal sync to finish it";
           }
           ctx.ui.notify(
             formatImportSummary(imported) + indexLine,
@@ -1442,7 +1431,7 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
           continue;
         }
 
-        const known = await catalog();
+        const known = catalog();
         if (choice.startsWith("World:")) {
           const worlds = [...new Set(known.map((pair) => pair.world))];
           if (!worlds.includes(activeSelection.world)) worlds.unshift(activeSelection.world);

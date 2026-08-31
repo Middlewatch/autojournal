@@ -169,22 +169,23 @@ test("status, sync, catalog, and reseal verbs speak the wire shapes", () => {
     const seed = fakeIo(env, payloadBytes("basic"));
     assert.equal(run(["capture", ...rootArg], seed.io), EXIT_OK);
 
-    // Status before any sync: not_built (exit 0 — an unbuilt projection
-    // is a first-run state, not a health failure).
+    // Capture birthed the projection (matching the v1 engine's
+    // create-at-first-capture): status is already fresh, and the sync
+    // below reports the episode unchanged rather than newly indexed.
     const before = fakeIo(env);
     assert.equal(run(["status", "--json", ...rootArg], before.io), EXIT_OK);
     const beforeReport = JSON.parse(before.stdout());
     assert.equal(beforeReport.root_ok, true);
     assert.equal(beforeReport.episodes, 1);
-    assert.equal(beforeReport.index.freshness, "not_built");
+    assert.equal(beforeReport.index.freshness, "fresh");
     assert.equal(beforeReport.index.path, path.join(dir, "index.v2.json"));
     assert.equal(beforeReport.root_source, "explicit");
 
     const syncOut = fakeIo(env);
     assert.equal(run(["sync", "--json", ...rootArg], syncOut.io), EXIT_OK);
     assert.deepEqual(JSON.parse(syncOut.stdout()), {
-      indexed: 1,
-      unchanged: 0,
+      indexed: 0,
+      unchanged: 1,
       removed: 0,
       skipped_malformed: 0,
       duplicate_ids: 0,

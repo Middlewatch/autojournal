@@ -150,7 +150,7 @@ byte-identically. The Go tree is deleted only after that gate passes.
       confidence, corpus-bound cursor, alias expansion, streamed top-K,
       revision-verified `search`/`get` on the bin; search goldens re-minted
       under the new scorer version. (after S3)
-- [ ] S5 Extension in-process: subprocess supervision replaced by direct
+- [x] S5 Extension in-process: subprocess supervision replaced by direct
       engine calls; menu, session tools, import, capture toggle; capture
       policy v2 (all visible assistant text) with policy-aware import
       dedupe; the adapter suite green against the in-process engine.
@@ -166,9 +166,11 @@ byte-identically. The Go tree is deleted only after that gate passes.
 
 ## Open questions
 
-- Index residency in the Pi process: load-per-search versus a cached
-  snapshot invalidated by the freshness signature. S3 measured in Node
-  (below); S5 decides against Pi's responsiveness.
+- ~~Index residency~~ Settled in S5: load-per-search. 0.13 s warm against
+  the real corpus is inside a tool call the agent is already awaiting,
+  and the alternative pins a 200+ MiB postings graph in the Pi process
+  for its whole life. The escalation, if search latency ever hurts, is a
+  signature-validated cache over a typed-array snapshot layout.
 - ~~Snapshot encoding~~ Settled by S3 measurement: compact JSON, no gzip.
 - ~~Directory fsync on Windows~~ Settled in S2: syncDir is a documented
   no-op on win32; publication degrades to write-then-rename durability.

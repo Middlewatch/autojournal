@@ -250,6 +250,26 @@ export function checkRedelivery(root: JournalRoot, snap: Snapshot, payload: Payl
   return { outcome: "conflict", relPath: row.relPath };
 }
 
+/**
+ * Finds a stored capture of the same turn under a prior capture-policy
+ * version. capture_policy participates in episode identity, so a policy
+ * bump re-identifies future captures of a turn; an importer redelivering
+ * an old session must treat the prior-policy episode as already present
+ * or it would double-store every turn captured live before the bump.
+ * Returns the stored episode's relPath, or null.
+ */
+export function findPriorPolicyCapture(
+  snap: Snapshot,
+  turn: { harness: string; sessionId: string; turnId: string; world: string },
+  priorPolicies: string[],
+): string | null {
+  for (const capturePolicy of priorPolicies) {
+    const row = lookupEpisode(snap, episodeId({ ...turn, capturePolicy }));
+    if (row !== null) return row.relPath;
+  }
+  return null;
+}
+
 /** One whole capture transaction's input. */
 export interface CaptureInput {
   rootPath: string;
@@ -374,7 +394,10 @@ export function capture(input: CaptureInput): CaptureResult {
   if (published.outcome !== "conflict" && input.indexPath !== "") {
     if (opened?.kind === "foreign") {
       indexState = "unavailable";
-    } else if (opened?.kind === "ok") {
+    } else {
+      // ok or not_built alike: the incremental update grows an existing
+      // snapshot or births an empty one, matching the v1 engine's
+      // create-at-first-capture behavior.
       try {
         const covered = indexEpisodeIncremental(root, input.indexPath, digest, published.relPath, published.content);
         indexState = covered ? "fresh" : "stale";
@@ -382,7 +405,6 @@ export function capture(input: CaptureInput): CaptureResult {
         indexState = "stale";
       }
     }
-    // A not-built projection stays not built: sync is where it is born.
   }
   return {
     outcome: published.outcome,
