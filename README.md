@@ -198,7 +198,11 @@ cli.ts               owner CLI over the same engine
 test/                the whole suite (engine, CLI, extension)
 testdata/            golden byte pins, conformance corpus, fuzz seeds
 docs/                architecture map, search tuning, ADRs, specs
-scripts/             verification and release gates
+scripts/             verification and release gates, plus two owner
+                     utilities outside the gate: corpus-junk-report.py
+                     (recall-hygiene ranking of sessions by junk mass) and
+                     retrieval-eval.py (ranking metrics over a private
+                     judged query set)
 ~~~
 
 ~~~sh
