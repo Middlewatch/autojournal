@@ -155,7 +155,7 @@ byte-identically. The Go tree is deleted only after that gate passes.
       policy v2 (all visible assistant text) with policy-aware import
       dedupe; the adapter suite green against the in-process engine.
       (after S4)
-- [ ] S6 Search quality: miss-log capture and aggregation in the engine, the
+- [x] S6 Search quality: miss-log capture and aggregation in the engine, the
       menu section with weak queries, candidates, and confirmed add/remove;
       `alias` verbs on the bin. (after S5)
 - [ ] S7 Parity gate and deletion wave: live-corpus sweep recorded; Go tree,

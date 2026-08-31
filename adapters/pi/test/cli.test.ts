@@ -272,3 +272,73 @@ test("search and get verbs speak the wire shapes", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("alias verbs curate the thesaurus and surface miss candidates", () => {
+  const dir = tempDir();
+  try {
+    const env = {
+      HOME: dir,
+      AUTOJOURNAL_THESAURUS: path.join(dir, "thesaurus.json"),
+      AUTOJOURNAL_MISS_LOG: path.join(dir, "misses.jsonl"),
+    };
+    const add = fakeIo(env);
+    assert.equal(run(["alias", "add", "firmware", "fwupd", "lvfs"], add.io), EXIT_OK);
+    assert.match(add.stdout(), /added: firmware -> fwupd lvfs/);
+
+    const list = fakeIo(env);
+    assert.equal(run(["alias", "list", "--json"], list.io), EXIT_OK);
+    const listed = JSON.parse(list.stdout());
+    assert.deepEqual(listed.entries, [{ key: "firmware", values: ["fwupd", "lvfs"] }]);
+    assert.equal(listed.merged_keys, 0);
+    assert.ok(/^[0-9a-f]{64}$/.test(listed.alias_digest));
+
+    const badTerm = fakeIo(env);
+    assert.equal(run(["alias", "add", "the", "fwupd"], badTerm.io), EXIT_MALFORMED);
+
+    const removeValue = fakeIo(env);
+    assert.equal(run(["alias", "remove", "firmware", "lvfs"], removeValue.io), EXIT_OK);
+    assert.match(removeValue.stdout(), /removed value: firmware/);
+    const removeEntry = fakeIo(env);
+    assert.equal(run(["alias", "remove", "firmware"], removeEntry.io), EXIT_OK);
+    assert.match(removeEntry.stdout(), /removed entry: firmware/);
+    const missing = fakeIo(env);
+    assert.equal(run(["alias", "remove", "firmware"], missing.io), EXIT_FAILURE);
+
+    // No miss log yet: a friendly pointer, not an error.
+    const none = fakeIo(env);
+    assert.equal(run(["alias", "candidates"], none.io), EXIT_OK);
+    assert.match(none.stdout(), /no candidates yet/);
+    fs.writeFileSync(
+      path.join(dir, "misses.jsonl"),
+      JSON.stringify({ ts: "t", query: "weak query", terms: ["weak", "query"], best: 0, top: null }) + "\n",
+    );
+    const cands = fakeIo(env);
+    assert.equal(run(["alias", "candidates", "--json"], cands.io), EXIT_OK);
+    assert.deepEqual(JSON.parse(cands.stdout()).candidates, [{ query: "weak query", count: 1, terms: ["query", "weak"] }]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("weak searches feed the opt-in miss log through the search verb", () => {
+  const dir = tempDir();
+  try {
+    const missLog = path.join(dir, "misses.jsonl");
+    fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ miss_log: true }));
+    const env = {
+      HOME: dir,
+      AUTOJOURNAL_CONFIG: path.join(dir, "config.json"),
+      AUTOJOURNAL_MISS_LOG: missLog,
+      AUTOJOURNAL_THESAURUS: path.join(dir, "thesaurus.json"),
+    };
+    const rootArg = ["--root", path.join(dir, "journal"), "--index", path.join(dir, "index.v2.json")];
+    const seed = fakeIo(env, payloadBytes("basic"));
+    assert.equal(run(["capture", ...rootArg], seed.io), EXIT_OK);
+    const miss = fakeIo(env);
+    assert.equal(run(["search", "--world", "testworld", ...rootArg, "unfindable", "topic"], miss.io), EXIT_OK);
+    assert.ok(fs.existsSync(missLog), "a weak query lands in the miss log");
+    assert.match(fs.readFileSync(missLog, "utf8"), /"query":"unfindable topic"/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

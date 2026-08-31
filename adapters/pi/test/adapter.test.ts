@@ -1194,3 +1194,82 @@ test(
     }
   },
 );
+
+test("menu search-quality section promotes a weak query into an alias behind a confirm", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aj-quality-"));
+  const previous = {
+    config: process.env.AUTOJOURNAL_CONFIG,
+    thesaurus: process.env.AUTOJOURNAL_THESAURUS,
+    missLog: process.env.AUTOJOURNAL_MISS_LOG,
+    xdgConfig: process.env.XDG_CONFIG_HOME,
+    data: process.env.XDG_DATA_HOME,
+    state: process.env.XDG_STATE_HOME,
+  };
+  delete process.env.AUTOJOURNAL_CONFIG;
+  process.env.AUTOJOURNAL_THESAURUS = path.join(tmp, "thesaurus.json");
+  process.env.AUTOJOURNAL_MISS_LOG = path.join(tmp, "misses.jsonl");
+  process.env.XDG_CONFIG_HOME = path.join(tmp, "config");
+  process.env.XDG_DATA_HOME = path.join(tmp, "data");
+  process.env.XDG_STATE_HOME = path.join(tmp, "state");
+  try {
+    fs.writeFileSync(
+      path.join(tmp, "misses.jsonl"),
+      JSON.stringify({ ts: "t", query: "weak firmware query", terms: ["weak", "firmware", "query"], best: 0, top: null }) + "\n",
+    );
+    let command: ((args: string, ctx: unknown) => Promise<void>) | undefined;
+    const fakePi = {
+      on() {},
+      registerTool() {},
+      registerCommand(_name: string, spec: { handler: typeof command }) {
+        command = spec.handler;
+      },
+      appendEntry() {},
+    };
+    autojournalExtension(fakePi as never);
+    assert.ok(command);
+    const titles: string[] = [];
+    let selects = 0;
+    await command("", {
+      hasUI: true,
+      ui: {
+        notify() {},
+        async select(title: string, options: string[]) {
+          titles.push(title);
+          selects += 1;
+          if (selects === 1) return "Search quality";
+          if (selects === 2) {
+            assert.ok(options.some((o) => o.startsWith('Promote: "weak firmware query" (1x)')), options.join("|"));
+            return options.find((o) => o.startsWith("Promote:"));
+          }
+          if (selects === 3) return "Add it"; // the confirm step
+          if (selects === 4) return "Back";
+          return "Close";
+        },
+        async input(title: string) {
+          return title.startsWith("Casual term") ? "firmware" : "fwupd lvfs";
+        },
+      },
+    });
+    assert.match(titles[1], /Miss log: off/);
+    assert.match(titles[1], /Weak queries: 1/);
+    const written = JSON.parse(fs.readFileSync(path.join(tmp, "thesaurus.json"), "utf8"));
+    assert.deepEqual(written, { firmware: ["fwupd", "lvfs"] });
+    // The refreshed section (rendered again before "Back") now lists the
+    // alias for confirmed removal.
+    assert.match(titles[3] ?? "", /Aliases: 1/);
+  } finally {
+    if (previous.config === undefined) delete process.env.AUTOJOURNAL_CONFIG;
+    else process.env.AUTOJOURNAL_CONFIG = previous.config;
+    if (previous.thesaurus === undefined) delete process.env.AUTOJOURNAL_THESAURUS;
+    else process.env.AUTOJOURNAL_THESAURUS = previous.thesaurus;
+    if (previous.missLog === undefined) delete process.env.AUTOJOURNAL_MISS_LOG;
+    else process.env.AUTOJOURNAL_MISS_LOG = previous.missLog;
+    if (previous.xdgConfig === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = previous.xdgConfig;
+    if (previous.data === undefined) delete process.env.XDG_DATA_HOME;
+    else process.env.XDG_DATA_HOME = previous.data;
+    if (previous.state === undefined) delete process.env.XDG_STATE_HOME;
+    else process.env.XDG_STATE_HOME = previous.state;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

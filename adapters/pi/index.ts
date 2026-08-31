@@ -960,6 +960,80 @@ export function sessionHeaderIsSubagent(firstLine: string | null): boolean {
   }
 }
 
+// --- Search quality menu ---
+
+interface QualityUi {
+  ui: {
+    notify(msg: string, type?: "info" | "warning" | "error"): void;
+    select(title: string, options: string[]): Promise<string | undefined>;
+    input(title: string, placeholder?: string): Promise<string | undefined>;
+  };
+}
+
+// The search-quality section: weak-query aggregation from the miss log
+// and the curated aliases, with add/remove behind the same explicit
+// owner-confirmation pattern reseal uses — a deliberate menu selection
+// plus a final confirm step, never an agent-reachable surface.
+async function searchQualityMenu(ctx: QualityUi): Promise<void> {
+  for (;;) {
+    const missLogOn = loadOwnerConfig().missLog;
+    const candJson = parseJsonOutput(runCli(["alias", "candidates", "--json"])) as {
+      candidates?: Array<{ query: string; count: number; terms: string[] }>;
+    } | null;
+    const candidates = candJson?.candidates ?? [];
+    const listJson = parseJsonOutput(runCli(["alias", "list", "--json"])) as {
+      entries?: Array<{ key: string; values: string[] }>;
+    } | null;
+    const aliases = listJson?.entries ?? [];
+
+    const title = [
+      "AutoJournal — search quality",
+      `Miss log: ${missLogOn ? "on" : 'off (enable with "miss_log": true in config.json)'}`,
+      `Weak queries: ${candidates.length} · Aliases: ${aliases.length}`,
+    ].join("\n");
+    const promote = candidates.slice(0, 8).map((c) => `Promote: "${c.query}" (${c.count}x)`);
+    const removals = aliases.slice(0, 8).map((a) => `Remove alias: ${a.key} -> ${a.values.join(" ")}`);
+    const choice = await ctx.ui.select(title, [...promote, ...removals, "Back"]);
+    if (choice === undefined || choice === "Back") return;
+
+    if (choice.startsWith("Promote:")) {
+      const candidate = candidates[promote.indexOf(choice)];
+      if (candidate === undefined) continue;
+      const term = (await ctx.ui.input(
+        `Casual term to promote (from "${candidate.query}")`,
+        candidate.terms[0] ?? "",
+      ))?.trim();
+      if (term === undefined || term === "") continue;
+      const values = (await ctx.ui.input(
+        `Canonical journal term(s) "${term}" should also search (space-separated)`,
+        "",
+      ))?.trim();
+      if (values === undefined || values === "") continue;
+      const confirmed = await ctx.ui.select(
+        `Add alias ${term} -> ${values}?`,
+        ["Add it", "Cancel"],
+      );
+      if (confirmed !== "Add it") continue;
+      const run = runCli(["alias", "add", term, ...values.split(/\s+/)]);
+      ctx.ui.notify(run.stdout.trim() || run.stderr.trim() || "(no output)", run.code === 0 ? "info" : "warning");
+      continue;
+    }
+
+    if (choice.startsWith("Remove alias:")) {
+      const alias = aliases[removals.indexOf(choice)];
+      if (alias === undefined) continue;
+      const confirmed = await ctx.ui.select(
+        `Remove alias ${alias.key} -> ${alias.values.join(" ")}?`,
+        ["Remove it", "Cancel"],
+      );
+      if (confirmed !== "Remove it") continue;
+      const run = runCli(["alias", "remove", alias.key]);
+      ctx.ui.notify(run.stdout.trim() || run.stderr.trim() || "(no output)", run.code === 0 ? "info" : "warning");
+      continue;
+    }
+  }
+}
+
 // --- Extension entry point ---
 
 export default function autojournalExtension(pi: ExtensionAPI): void {
@@ -1310,6 +1384,7 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
           "Save world/scope as default for new sessions",
           "Sync index",
           "Reseal edited episodes",
+          "Search quality",
           "Import Pi session history",
           "Show diagnostics",
           "Close",
@@ -1374,6 +1449,10 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
           const run = runCli(["reseal"]);
           const body = run.stdout.trim() || run.stderr.trim() || "(reseal produced no output)";
           ctx.ui.notify(body, run.code === 0 ? "info" : "warning");
+          continue;
+        }
+        if (choice === "Search quality") {
+          await searchQualityMenu(ctx);
           continue;
         }
         if (choice === "Import Pi session history") {

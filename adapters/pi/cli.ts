@@ -41,6 +41,14 @@ import {
   type Hit,
 } from "./engine/search.ts";
 import { loadAliasMapFile } from "./engine/aliases.ts";
+import {
+  addAlias,
+  removeAlias,
+  aggregateMisses,
+  logSearchMiss,
+  AliasError,
+} from "./engine/ops-alias.ts";
+import { missLogPath } from "./engine/paths.ts";
 import { openExistingRoot, type JournalRoot } from "./engine/corpus.ts";
 import { rootDigestHex, thesaurusPath } from "./engine/paths.ts";
 import { isoFromMs } from "./engine/render.ts";
@@ -54,6 +62,8 @@ commands:
   capture   read one completed-turn JSON payload on stdin and publish it
   search    ranked, bounded recall: autojournal search <query words...>
   get       open one evidence reference exactly
+  alias     thesaurus upkeep: list | add <term> <canonical...> |
+            remove <term> [canonical] | candidates
   default   show or set the owner default world/scope (--world/--scope)
   status    report journal root, corpus, and index health
   catalog   list discovered worlds and scopes
@@ -226,6 +236,7 @@ export function run(args: string[], io: CliIo): number {
   }
 
   if (command === "default") return defaultCommand(cfg, o, io);
+  if (command === "alias") return aliasCommand(cfg, o, io);
 
   let resolved: ResolvedPaths;
   try {
@@ -257,6 +268,136 @@ export function run(args: string[], io: CliIo): number {
       io.stderr(USAGE);
       return EXIT_MALFORMED;
   }
+}
+
+// --- alias ---
+
+function aliasCommand(cfg: Config, o: Opts, io: CliIo): number {
+  const pos = o.positionals;
+  if (pos.length === 0) {
+    io.stderr("alias needs a subcommand: list | add <term> <canonical...> | remove <term> [canonical] | candidates\n");
+    return EXIT_MALFORMED;
+  }
+  const sub = pos[0];
+  let thesaurus: string;
+  try {
+    thesaurus = thesaurusPath(io.env, cfg.thesaurusPath);
+  } catch {
+    io.stderr("cannot resolve the thesaurus path (no HOME)\n");
+    return EXIT_FAILURE;
+  }
+
+  switch (sub) {
+    case "list": {
+      const m = loadAliasMapFile(thesaurus);
+      if (o.json) {
+        emitJson(io, {
+          path: thesaurus,
+          alias_digest: m.digestHex,
+          merged_keys: m.mergedKeys,
+          entries: m.entries.map((e) => ({ key: e.key, values: e.values })),
+        });
+        return EXIT_OK;
+      }
+      let text = `${m.entries.length} alias(es) in ${thesaurus}\n`;
+      for (const entry of m.entries) {
+        text += `  ${entry.key} ->` + entry.values.map((v) => ` ${v}`).join("") + "\n";
+      }
+      text += "edit freely in any text editor; changes apply on the next search\n";
+      io.stdout(text);
+      return EXIT_OK;
+    }
+
+    case "add": {
+      if (pos.length < 3) {
+        io.stderr("alias add <term> <canonical...>\n");
+        return EXIT_MALFORMED;
+      }
+      try {
+        addAlias(thesaurus, pos[1], pos.slice(2));
+      } catch (err) {
+        if (err instanceof AliasError && err.code === "invalid_term") {
+          io.stderr("term must be a searchable word: longer than 2 letters, [a-z0-9_], not a stop word\n");
+          return EXIT_MALFORMED;
+        }
+        if (err instanceof AliasError && err.code === "invalid_value") {
+          io.stderr("canonical values must be 2..128 chars of [A-Za-z0-9._:+/@-]\n");
+          return EXIT_MALFORMED;
+        }
+        if (err instanceof AliasError && err.code === "malformed") {
+          io.stderr("thesaurus file is not a JSON object; fix it by hand first\n");
+          return EXIT_FAILURE;
+        }
+        io.stderr("cannot write thesaurus file\n");
+        return EXIT_FAILURE;
+      }
+      io.stdout(`added: ${pos[1]} -> ${pos.slice(2).join(" ")} (${thesaurus})\n`);
+      return EXIT_OK;
+    }
+
+    case "remove": {
+      if (pos.length < 2 || pos.length > 3) {
+        io.stderr("alias remove <term> [canonical]\n");
+        return EXIT_MALFORMED;
+      }
+      let removed: string;
+      try {
+        removed = removeAlias(thesaurus, pos[1], pos.length === 3 ? pos[2] : undefined);
+      } catch (err) {
+        if (err instanceof AliasError && err.code === "not_found") {
+          io.stderr("no such alias entry\n");
+          return EXIT_FAILURE;
+        }
+        if (err instanceof AliasError && err.code === "malformed") {
+          io.stderr("thesaurus file is not a JSON object; fix it by hand first\n");
+          return EXIT_FAILURE;
+        }
+        io.stderr("cannot write thesaurus file\n");
+        return EXIT_FAILURE;
+      }
+      io.stdout(`removed ${removed}: ${pos[1]}\n`);
+      return EXIT_OK;
+    }
+
+    case "candidates": {
+      let logPath: string;
+      try {
+        logPath = missLogPath(io.env);
+      } catch {
+        io.stderr("cannot resolve the miss-log path (no HOME)\n");
+        return EXIT_FAILURE;
+      }
+      let data: string;
+      try {
+        const raw = fs.readFileSync(logPath);
+        if (raw.byteLength > 16 * 1024 * 1024) throw new Error("over budget");
+        data = raw.toString("utf8");
+      } catch {
+        io.stdout(`no candidates yet (${logPath}); enable with "miss_log": true in config.json\n`);
+        return EXIT_OK;
+      }
+      const agg = aggregateMisses(data);
+      if (o.json) {
+        emitJson(io, {
+          path: logPath,
+          candidates: agg.map((c) => ({ query: c.query, count: c.count, terms: c.terms })),
+        });
+        return EXIT_OK;
+      }
+      const limit = o.limit ?? 20;
+      const shown = Math.min(limit, agg.length);
+      const plural = agg.length === 1 ? "y" : "ies";
+      let text = `${agg.length} distinct weak quer${plural}, most frequent first:\n`;
+      for (const cand of agg.slice(0, shown)) {
+        text += `  [${cand.count}x] ${cand.query}\n        terms:` + cand.terms.map((t) => ` ${t}`).join("") + "\n";
+      }
+      text += "for each: if the journal really covers it, promote with\n  autojournal alias add <casual term> <canonical term>\n";
+      io.stdout(text);
+      return EXIT_OK;
+    }
+  }
+  io.stderr("unknown alias subcommand; use list | add | remove | candidates\n");
+  return EXIT_MALFORMED;
 }
 
 // --- search / get ---
@@ -384,6 +525,7 @@ function searchCommand(cfg: Config, rootPath: string, indexPath: string, o: Opts
       confidenceFloor: cfg.confidenceFloor,
     },
   });
+  logSearchMiss(io.env, cfg, query, io.nowMs(), out);
   if (o.json) renderSearchJson(world, query, out, io);
   else renderSearchText(query, out, io);
   return outcomeExit(out.outcome);

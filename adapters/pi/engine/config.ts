@@ -542,13 +542,17 @@ export function saveCaptureDefaults(env: Environ, explicitPath: string, world: s
   const out = writeCanonicalJson(root, 0);
   // Never publish a config this engine would refuse to load.
   parseConfig(out);
-  writeAtomicConfig(configPath, out);
+  writeAtomicJsonFile(configPath, out);
   return configPath;
 }
 
-// writeAtomicConfig writes text plus a trailing newline via a sibling temp
-// file and rename, creating the parent directory if needed.
-function writeAtomicConfig(configPath: string, text: string): void {
+/**
+ * Writes a canonical JSON text plus a trailing newline via a sibling temp
+ * file and rename, creating the parent directory if needed. Shared by the
+ * config rewrite and the thesaurus curation path, which both promise the
+ * owner an atomically replaced, hand-editable file.
+ */
+export function writeAtomicJsonFile(configPath: string, text: string): void {
   const dir = path.dirname(configPath);
   const tmpPath = path.join(dir, "." + path.basename(configPath) + ".tmp");
   try {
