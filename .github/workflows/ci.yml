@@ -55,6 +55,33 @@ jobs:
           path: adapters/pi/bin/
           if-no-files-found: error
 
+  # Windows is a claimed, tested target for the TypeScript engine (2.0
+  # port). Until the deletion slice reshapes the full gate, this job runs
+  # the engine's own suite — golden byte pins, conformance cases,
+  # parse-boundary properties — on windows-latest; the adapter suite still
+  # depends on the Go binary and joins at the port's deletion slice.
+  engine-windows:
+    if: github.event_name != 'schedule'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install adapter dependencies
+        working-directory: adapters/pi
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: adapters/pi
+        run: npm run typecheck
+
+      - name: Engine tests
+        working-directory: adapters/pi
+        run: node --experimental-strip-types --test "engine/test/*.test.ts"
+
   e2e:
     if: github.event_name != 'schedule'
     needs: build

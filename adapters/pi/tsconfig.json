@@ -1,6 +1,7 @@
 {
   "compilerOptions": {
     "target": "es2022",
+    "lib": ["es2024"],
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "strict": true,
@@ -9,5 +10,5 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["index.ts", "test/**/*.ts"]
+  "include": ["index.ts", "test/**/*.ts", "engine/**/*.ts"]
 }

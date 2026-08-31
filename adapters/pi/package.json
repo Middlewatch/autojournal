@@ -28,7 +28,7 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "test": "node --experimental-strip-types --test test/*.test.ts engine/test/*.test.ts",
     "prepack": "node scripts/check-package.mjs",
     "prepublishOnly": "../../scripts/release-check.sh"
   },

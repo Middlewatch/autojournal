@@ -134,7 +134,7 @@ byte-identically. The Go tree is deleted only after that gate passes.
 
 ## Slices
 
-- [ ] S1 Format core in TS: contracts, identity, render, parse, paths,
+- [x] S1 Format core in TS: contracts, identity, render, parse, paths,
       config. Golden byte pins and the identity/render/config conformance
       cases green; parse-boundary properties running with the fuzz seeds as
       fixtures; the Windows CI job exists from this slice.
