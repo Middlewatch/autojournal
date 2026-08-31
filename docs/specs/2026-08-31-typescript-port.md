@@ -138,7 +138,7 @@ byte-identically. The Go tree is deleted only after that gate passes.
       config. Golden byte pins and the identity/render/config conformance
       cases green; parse-boundary properties running with the fuzz seeds as
       fixtures; the Windows CI job exists from this slice.
-- [ ] S2 Corpus and store: containment walk, atomic publication,
+- [x] S2 Corpus and store: containment walk, atomic publication,
       duplicate/conflict classification (supersede dropped), truncation
       policy with its frontmatter fields; `capture` and `default` on the node
       bin. (after S1)

@@ -32,6 +32,13 @@ export interface Episode {
   turnOutcome: string;
   digestHex: string;
   /**
+   * Oversize-policy accounting: bytes the capture run dropped from each
+   * side's tail. Zero when the optional frontmatter keys are absent,
+   * which is every episode from a turn that fit its budget.
+   */
+  userDroppedBytes: number;
+  assistantDroppedBytes: number;
+  /**
    * 1-based line number of the first line after the closing `---`.
    * Frontmatter is metadata, not memory: indexing and snippet clamping
    * start here.
@@ -70,6 +77,8 @@ export function parseEpisode(content: string): Episode | null {
   const fields: Record<string, string> = {};
   let eventTimeMs = 0;
   let captureTimeMs = 0;
+  let userDroppedBytes = 0;
+  let assistantDroppedBytes = 0;
   let digestHex = "";
   const seen = new Set<string>();
   const required = new Set<string>(REQUIRED_EPISODE_KEYS);
@@ -113,6 +122,18 @@ export function parseEpisode(content: string): Episode | null {
         const n = parseFrontmatterUint(value);
         if (n === null) return null;
         captureTimeMs = n;
+        break;
+      }
+      case "user_dropped_bytes": {
+        const n = parseFrontmatterUint(value);
+        if (n === null) return null;
+        userDroppedBytes = n;
+        break;
+      }
+      case "assistant_dropped_bytes": {
+        const n = parseFrontmatterUint(value);
+        if (n === null) return null;
+        assistantDroppedBytes = n;
         break;
       }
       case "payload_digest": {
@@ -161,6 +182,8 @@ export function parseEpisode(content: string): Episode | null {
     capturePolicy: fields.capture_policy,
     turnOutcome: fields.turn_outcome,
     digestHex,
+    userDroppedBytes,
+    assistantDroppedBytes,
     bodyLine: lineNo + 1,
     bodyOffset: offset,
   };

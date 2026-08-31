@@ -20,6 +20,14 @@ export interface RenderInput {
   episodeId: string;
   digestHex: string;
   captureTimeMs: number;
+  /**
+   * Oversize-policy accounting (v2): bytes deterministically dropped from
+   * the tail of each side before validation. Rendered as optional
+   * frontmatter only when nonzero, so episodes from turns that fit stay
+   * byte-identical to the v1 rendering.
+   */
+  userDroppedBytes?: number;
+  assistantDroppedBytes?: number;
 }
 
 /**
@@ -45,6 +53,11 @@ export function render(input: RenderInput): string {
     `capture_time_ms: ${input.captureTimeMs}\n` +
     `capture_policy: ${p.capturePolicy}\n` +
     `turn_outcome: ${p.turnOutcome}\n`;
+  // Truncation accounting renders before provenance: like capture_time it
+  // describes this capture run, and like provenance it is absent from
+  // the digest, so a faithful redelivery still dedupes.
+  if ((input.userDroppedBytes ?? 0) > 0) out += `user_dropped_bytes: ${input.userDroppedBytes}\n`;
+  if ((input.assistantDroppedBytes ?? 0) > 0) out += `assistant_dropped_bytes: ${input.assistantDroppedBytes}\n`;
   // Optional provenance keys render only when the payload carried them, so
   // episodes from adapters that do not know them stay byte-identical to the
   // pre-provenance rendering.
