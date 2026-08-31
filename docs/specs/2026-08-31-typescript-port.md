@@ -1,6 +1,6 @@
 # typescript-port
 
-Date: 2026-08-31   Status: draft
+Date: 2026-08-31   Status: done
 
 ## Problem
 
