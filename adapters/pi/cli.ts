@@ -27,8 +27,11 @@ import {
   ConfigError,
   type Config,
 } from "./engine/config.ts";
-import { defaultJournalRoot, MissingHomeError, processEnviron, type Environ } from "./engine/paths.ts";
+import { defaultJournalRoot, defaultIndexPath, MissingHomeError, processEnviron, type Environ } from "./engine/paths.ts";
 import { capture, type CaptureResult } from "./engine/store.ts";
+import { statusOf, sync, reseal, catalog, SyncError } from "./engine/ops.ts";
+import { SNAPSHOT_FORMAT_VERSION } from "./engine/index.ts";
+import { TOKENIZER_VERSION } from "./engine/retrieval.ts";
 
 export const CLI_VERSION = "2.0.0";
 
@@ -37,6 +40,10 @@ const USAGE = `usage: autojournal <command> [options]
 commands:
   capture   read one completed-turn JSON payload on stdin and publish it
   default   show or set the owner default world/scope (--world/--scope)
+  status    report journal root, corpus, and index health
+  catalog   list discovered worlds and scopes
+  sync      rebuild/repair the index snapshot from the Markdown corpus
+  reseal    re-attest owner-edited episodes (--preview to only list them)
   version   print version and schema identities
 
 options:
@@ -70,6 +77,7 @@ interface Opts {
   world?: string;
   scope?: string;
   json: boolean;
+  preview: boolean;
   positionals: string[];
 }
 
@@ -93,7 +101,7 @@ export function run(args: string[], io: CliIo): number {
   }
   const command = args[0];
 
-  const o: Opts = { json: false, positionals: [] };
+  const o: Opts = { json: false, preview: false, positionals: [] };
   const rest = args.slice(1);
   const valueSlots: Record<string, (v: string) => void> = {
     "--config": (v) => (o.config = v),
@@ -109,6 +117,10 @@ export function run(args: string[], io: CliIo): number {
     const arg = rest[i];
     if (arg === "--json") {
       o.json = true;
+      continue;
+    }
+    if (arg === "--preview") {
+      o.preview = true;
       continue;
     }
     if (!arg.startsWith("--")) {
@@ -129,7 +141,9 @@ export function run(args: string[], io: CliIo): number {
   }
 
   if (command === "version") {
-    io.stdout(`autojournal ${CLI_VERSION} (payload schema v${PAYLOAD_SCHEMA_VERSION}, episode schema ${EPISODE_SCHEMA})\n`);
+    io.stdout(
+      `autojournal ${CLI_VERSION} (payload schema v${PAYLOAD_SCHEMA_VERSION}, episode schema ${EPISODE_SCHEMA}, snapshot format v${SNAPSHOT_FORMAT_VERSION}, ${TOKENIZER_VERSION})\n`,
+    );
     return EXIT_OK;
   }
 
@@ -168,10 +182,17 @@ export function run(args: string[], io: CliIo): number {
   // that names a root, a deprecated host fallback for pre-release
   // adapters, then AutoJournal's host-neutral XDG data default.
   let rootPath: string;
-  if (o.root !== undefined) rootPath = o.root;
-  else if (cfg.journalRoot !== "") rootPath = cfg.journalRoot;
-  else if (o.defaultRoot !== undefined) rootPath = o.defaultRoot;
-  else {
+  let rootSource = "autojournal_default";
+  if (o.root !== undefined) {
+    rootPath = o.root;
+    rootSource = "explicit";
+  } else if (cfg.journalRoot !== "") {
+    rootPath = cfg.journalRoot;
+    rootSource = "owner_config";
+  } else if (o.defaultRoot !== undefined) {
+    rootPath = o.defaultRoot;
+    rootSource = "host_default";
+  } else {
     try {
       rootPath = defaultJournalRoot(io.env);
     } catch {
@@ -179,14 +200,157 @@ export function run(args: string[], io: CliIo): number {
       return EXIT_FAILURE;
     }
   }
+  let indexPath: string;
+  if (o.index !== undefined) {
+    indexPath = o.index;
+  } else {
+    try {
+      indexPath = defaultIndexPath(io.env, rootPath);
+    } catch {
+      io.stderr("cannot resolve the default index path (no HOME)\n");
+      return EXIT_FAILURE;
+    }
+  }
 
   switch (command) {
     case "capture":
-      return captureCommand(cfg, rootPath, io);
+      return captureCommand(cfg, rootPath, indexPath, io);
+    case "status":
+      return statusCommand(rootPath, indexPath, rootSource, sourcePathFor(rootSource, io, o), o.json, io);
+    case "catalog": {
+      emitJson(io, { pairs: catalog(rootPath, indexPath, cfg.capture) });
+      return EXIT_OK;
+    }
+    case "sync":
+      return syncCommand(rootPath, indexPath, o, io);
+    case "reseal":
+      return resealCommand(rootPath, indexPath, o, io);
     default:
       io.stderr(USAGE);
       return EXIT_MALFORMED;
   }
+}
+
+function sourcePathFor(rootSource: string, io: CliIo, o: Opts): string | null {
+  if (rootSource !== "owner_config") return null;
+  try {
+    return loadConfig(io.env, o.config ?? "").sourcePath;
+  } catch {
+    return null;
+  }
+}
+
+function statusCommand(
+  rootPath: string,
+  indexPath: string,
+  rootSource: string,
+  rootSourcePath: string | null,
+  asJson: boolean,
+  io: CliIo,
+): number {
+  const report = statusOf(rootPath, indexPath);
+  if (asJson) {
+    emitJson(io, {
+      journal_root: rootPath,
+      root_source: rootSource,
+      root_source_path: rootSourcePath,
+      root_ok: report.rootOk,
+      episodes: report.episodes,
+      index: {
+        freshness: report.freshness,
+        indexed: report.indexed,
+        truncated: report.truncated,
+        path: indexPath,
+      },
+    });
+  } else if (!report.rootOk) {
+    io.stdout(`journal_root: ${rootPath} (missing)\nepisodes: 0\nindex: not_built\n`);
+  } else {
+    io.stdout(
+      `journal_root: ${rootPath} (ok)\nepisodes: ${report.episodes}\nindex: ${report.freshness} (${report.indexed} indexed, ${report.truncated} truncated, ${indexPath})\n`,
+    );
+  }
+  if (!report.rootOk || report.freshness === "stale" || report.freshness === "unavailable") return EXIT_FAILURE;
+  return EXIT_OK;
+}
+
+function syncFailure(err: unknown, io: CliIo): number {
+  if (err instanceof SyncError) {
+    switch (err.code) {
+      case "shared_directory":
+        io.stderr(SHARED_DIR_MESSAGE + "\n");
+        return EXIT_FAILURE;
+      case "root_missing":
+        io.stderr("journal root missing; nothing to sync\n");
+        return EXIT_FAILURE;
+      case "sync_failed":
+        io.stderr("sync failed; the previous snapshot stands\n");
+        return EXIT_FAILURE;
+    }
+  }
+  io.stderr("cannot open index snapshot\n");
+  return EXIT_FAILURE;
+}
+
+function syncCommand(rootPath: string, indexPath: string, o: Opts, io: CliIo): number {
+  try {
+    const report = sync(rootPath, indexPath);
+    if (o.json) {
+      emitJson(io, {
+        indexed: report.indexed,
+        unchanged: report.unchanged,
+        removed: report.removed,
+        skipped_malformed: report.skippedMalformed,
+        duplicate_ids: report.duplicateIds,
+        digest_mismatch: report.digestMismatch,
+        unreadable: report.unreadable,
+        truncated: report.truncated,
+      });
+    } else {
+      io.stdout(
+        `indexed: ${report.indexed}\nunchanged: ${report.unchanged}\nremoved: ${report.removed}\n` +
+          `skipped_malformed: ${report.skippedMalformed}\nduplicate_ids: ${report.duplicateIds}\n` +
+          `digest_mismatch: ${report.digestMismatch}\nunreadable: ${report.unreadable}\ntruncated: ${report.truncated}\n`,
+      );
+    }
+    return EXIT_OK;
+  } catch (err) {
+    return syncFailure(err, io);
+  }
+}
+
+function resealCommand(rootPath: string, indexPath: string, o: Opts, io: CliIo): number {
+  let report;
+  try {
+    report = reseal(rootPath, indexPath, o.preview);
+  } catch (err) {
+    return syncFailure(err, io);
+  }
+  // A write failure is exit 1, but only after the sweep finished and the
+  // sync rebaselined what did reseal: the failure exit reports incomplete
+  // work, never work undone.
+  let exit = EXIT_OK;
+  if (report.writeFailures > 0) {
+    io.stderr(
+      `${report.writeFailures} file(s) could not be rewritten; everything resealed was synced — fix permissions and rerun reseal\n`,
+    );
+    exit = EXIT_FAILURE;
+  }
+  if (o.json) {
+    emitJson(io, {
+      scanned: report.scanned,
+      resealed: report.resealed,
+      refused: report.refused,
+      write_failures: report.writeFailures,
+      paths: report.paths,
+    });
+  } else {
+    io.stdout(
+      `scanned: ${report.scanned}\nresealed: ${report.resealed}\nrefused: ${report.refused}\nwrite_failures: ${report.writeFailures}\n` +
+        report.paths.map((p) => `  ${p}\n`).join(""),
+    );
+  }
+  return exit;
 }
 
 // --- capture ---
@@ -207,7 +371,7 @@ function emitJson(io: CliIo, v: unknown): void {
 const SHARED_DIR_MESSAGE =
   "journal root sits under a shared (group- or world-writable) directory; chmod g-w,o-w the parent or configure journal_root to a private location";
 
-function captureCommand(cfg: Config, rootPath: string, io: CliIo): number {
+function captureCommand(cfg: Config, rootPath: string, indexPath: string, io: CliIo): number {
   const reportMalformed = (detail: string): number => {
     emitJson(io, {
       outcome: "malformed",
@@ -236,6 +400,7 @@ function captureCommand(cfg: Config, rootPath: string, io: CliIo): number {
   // reads stdin, parses, and renders.
   const result = capture({
     rootPath,
+    indexPath,
     raw,
     defaults: cfg.capture,
     captureTimeMs: io.nowMs(),

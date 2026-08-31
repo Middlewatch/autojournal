@@ -45,7 +45,15 @@ import {
   TempCollisionError,
   type JournalRoot,
 } from "./corpus.ts";
-import { resolveJournalRoot } from "./paths.ts";
+import { resolveJournalRoot, rootDigestHex } from "./paths.ts";
+import {
+  openSnapshot,
+  lookupEpisode,
+  indexEpisodeIncremental,
+  type Snapshot,
+} from "./index.ts";
+import { readContained } from "./corpus.ts";
+import { parseEpisode } from "./episode.ts";
 
 /** The result of one publish call. */
 export interface Published {
@@ -208,9 +216,45 @@ function truncateTail(s: string): [string, number] {
   return [kept, total - cut];
 }
 
+/**
+ * A prior capture of the same episode identity, found corpus-wide. The
+ * projection knows every shard, so it answers "does this episode id exist
+ * anywhere" — but the file it names stays the authority: the outcome is
+ * classified from that file's own frontmatter, and any index miss, stale
+ * row, unreadable file, or identity mismatch returns null so the caller
+ * proceeds to publish (the store's own same-path check still applies).
+ * A digest mismatch at the very path this payload derives also returns
+ * null: only publish's own same-path classification rules there.
+ */
+export interface Redelivery {
+  outcome: "duplicate" | "conflict";
+  relPath: string;
+}
+
+export function checkRedelivery(root: JournalRoot, snap: Snapshot, payload: Payload): Redelivery | null {
+  const id = episodeId(payload);
+  const digestHex = payloadDigestHex(payload);
+  const row = lookupEpisode(snap, id);
+  if (row === null) return null;
+  let content: string;
+  try {
+    content = readContained(root, row.relPath);
+  } catch {
+    return null;
+  }
+  const ep = parseEpisode(content);
+  if (ep === null || ep.episodeId !== id) return null;
+  if (ep.digestHex === digestHex) return { outcome: "duplicate", relPath: row.relPath };
+  const derived = [...layoutComponents(payload), id + ".md"].join("/");
+  if (row.relPath === derived) return null;
+  return { outcome: "conflict", relPath: row.relPath };
+}
+
 /** One whole capture transaction's input. */
 export interface CaptureInput {
   rootPath: string;
+  /** Snapshot path; empty skips the projection entirely (tests only). */
+  indexPath: string;
   raw: RawPayload;
   /** Owner capture defaults, for world/scope fill. */
   defaults: CaptureDefaults;
@@ -240,12 +284,12 @@ export interface CaptureResult {
  * Composes the whole capture transaction so the extension and the CLI run
  * the same code rather than the same intent: defaults fill, the oversize
  * policy, validate, root canonicalization, shared-directory refusal,
- * atomic publication. The order is part of the contract: shared-directory
- * refusal is decided before the root is opened (a refused root is never
- * created), and validate before either.
- *
- * The index projection joins this composition at the snapshot-index slice;
- * until then successful publication honestly reports a stale projection.
+ * corpus-wide redelivery classification, atomic publication, index
+ * update, and the index-failure freshness downgrade. Source publication
+ * succeeding while indexing fails is a success with a downgraded index
+ * state, never a failure. The order is part of the contract: shared-
+ * directory refusal is decided before the root is opened (a refused root
+ * is never created), and validate before either.
  */
 export function capture(input: CaptureInput): CaptureResult {
   const failure = (outcome: CaptureOutcome, detail: CaptureErrorCode, sharedDirectory = false): CaptureResult => ({
@@ -284,6 +328,27 @@ export function capture(input: CaptureInput): CaptureResult {
     return failure("unavailable", storeErrorCode(err));
   }
 
+  // The snapshot is consulted best-effort: an absent or unhelpful
+  // projection skips the corpus-wide check (the store's own same-path
+  // classification still applies) and downgrades freshness after
+  // publication.
+  const digest = rootDigestHex(rootPath);
+  const opened = input.indexPath === "" ? null : openSnapshot(input.indexPath, digest);
+  if (opened?.kind === "ok") {
+    const existing = checkRedelivery(root, opened.snapshot, payload);
+    if (existing !== null) {
+      return {
+        outcome: existing.outcome,
+        episodeId: episodeId(payload),
+        digestHex: payloadDigestHex(payload),
+        relPath: existing.relPath,
+        indexState: existing.outcome === "duplicate" ? "fresh" : "stale",
+        detail: "",
+        sharedDirectory: false,
+      };
+    }
+  }
+
   let published: Published;
   try {
     published = publish(root, payload, input.captureTimeMs, sized.drops);
@@ -301,12 +366,30 @@ export function capture(input: CaptureInput): CaptureResult {
     return failure("unavailable", "Unavailable");
   }
 
+  // Source publication is already durable; the projection update is
+  // best-effort and repairable via sync, so its failure downgrades
+  // freshness only and never changes the outcome. A conflict wrote
+  // nothing; there is nothing to index.
+  let indexState: IndexFreshness = "stale";
+  if (published.outcome !== "conflict" && input.indexPath !== "") {
+    if (opened?.kind === "foreign") {
+      indexState = "unavailable";
+    } else if (opened?.kind === "ok") {
+      try {
+        const covered = indexEpisodeIncremental(root, input.indexPath, digest, published.relPath, published.content);
+        indexState = covered ? "fresh" : "stale";
+      } catch {
+        indexState = "stale";
+      }
+    }
+    // A not-built projection stays not built: sync is where it is born.
+  }
   return {
     outcome: published.outcome,
     episodeId: published.episodeId,
     digestHex: published.digestHex,
     relPath: published.relPath,
-    indexState: "stale",
+    indexState,
     detail: "",
     sharedDirectory: false,
   };

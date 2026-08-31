@@ -160,3 +160,64 @@ test("usage, version, and the pinned clock", () => {
   assert.equal(clockFromEnv((k) => (k === "AUTOJOURNAL_NOW_MS" ? "12345" : undefined))(), 12345);
   assert.ok(clockFromEnv(() => undefined)() > 0);
 });
+
+test("status, sync, catalog, and reseal verbs speak the wire shapes", () => {
+  const dir = tempDir();
+  try {
+    const env = { HOME: path.join(dir, "home") };
+    const rootArg = ["--root", path.join(dir, "journal"), "--index", path.join(dir, "index.v2.json")];
+    const seed = fakeIo(env, payloadBytes("basic"));
+    assert.equal(run(["capture", ...rootArg], seed.io), EXIT_OK);
+
+    // Status before any sync: not_built (exit 0 — an unbuilt projection
+    // is a first-run state, not a health failure).
+    const before = fakeIo(env);
+    assert.equal(run(["status", "--json", ...rootArg], before.io), EXIT_OK);
+    const beforeReport = JSON.parse(before.stdout());
+    assert.equal(beforeReport.root_ok, true);
+    assert.equal(beforeReport.episodes, 1);
+    assert.equal(beforeReport.index.freshness, "not_built");
+    assert.equal(beforeReport.index.path, path.join(dir, "index.v2.json"));
+    assert.equal(beforeReport.root_source, "explicit");
+
+    const syncOut = fakeIo(env);
+    assert.equal(run(["sync", "--json", ...rootArg], syncOut.io), EXIT_OK);
+    assert.deepEqual(JSON.parse(syncOut.stdout()), {
+      indexed: 1,
+      unchanged: 0,
+      removed: 0,
+      skipped_malformed: 0,
+      duplicate_ids: 0,
+      digest_mismatch: 0,
+      unreadable: 0,
+      truncated: 0,
+    });
+
+    const after = fakeIo(env);
+    assert.equal(run(["status", "--json", ...rootArg], after.io), EXIT_OK);
+    assert.equal(JSON.parse(after.stdout()).index.freshness, "fresh");
+    assert.equal(JSON.parse(after.stdout()).index.indexed, 1);
+
+    const cat = fakeIo(env);
+    assert.equal(run(["catalog", ...rootArg], cat.io), EXIT_OK);
+    const pairs = JSON.parse(cat.stdout()).pairs;
+    assert.deepEqual(pairs[0], { world: "main", scope: "default" });
+    assert.ok(pairs.some((p: { world: string }) => p.world === "testworld"));
+
+    const resealOut = fakeIo(env);
+    assert.equal(run(["reseal", "--json", ...rootArg], resealOut.io), EXIT_OK);
+    assert.deepEqual(JSON.parse(resealOut.stdout()), {
+      scanned: 1,
+      resealed: 0,
+      refused: 0,
+      write_failures: 0,
+      paths: [],
+    });
+
+    const missing = fakeIo(env);
+    assert.equal(run(["sync", "--root", path.join(dir, "nope"), "--index", path.join(dir, "i.json")], missing.io), EXIT_FAILURE);
+    assert.match(missing.stderr(), /journal root missing/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -142,7 +142,7 @@ byte-identically. The Go tree is deleted only after that gate passes.
       duplicate/conflict classification (supersede dropped), truncation
       policy with its frontmatter fields; `capture` and `default` on the node
       bin. (after S1)
-- [ ] S3 Snapshot index: build, incremental sync, lock-file writers,
+- [x] S3 Snapshot index: build, incremental sync, lock-file writers,
       stat-walk freshness, `status`/`catalog`/`sync`/`reseal` on the bin;
       build time, RSS, and snapshot size measured on the real corpus and
       recorded here. (after S2)
@@ -166,13 +166,22 @@ byte-identically. The Go tree is deleted only after that gate passes.
 
 ## Open questions
 
-- Index residency in the Pi process: load-per-search (evoker measured 0.09 s
-  warm in Go) versus a cached snapshot invalidated by the freshness
-  signature. S3 measures in Node; S5 decides against Pi's responsiveness.
-- Snapshot encoding: compact JSON versus length-framed binary, gzip or not.
-  S3 decides by measurement; the encoding is Derived tier either way.
-- Whether directory fsync degrades gracefully on Windows (unsupported there);
-  S2 settles the guard and the Windows CI job proves the behavior.
+- Index residency in the Pi process: load-per-search versus a cached
+  snapshot invalidated by the freshness signature. S3 measured in Node
+  (below); S5 decides against Pi's responsiveness.
+- ~~Snapshot encoding~~ Settled by S3 measurement: compact JSON, no gzip.
+- ~~Directory fsync on Windows~~ Settled in S2: syncDir is a documented
+  no-op on win32; publication degrades to write-then-rename durability.
+
+2026-08-31 (S3 measurement) — real corpus copy, 4,208 episodes / 32 MiB,
+node 22 on this machine: cold snapshot build 2.0 s, warm resync 1.17 s,
+snapshot 16.8 MiB compact JSON holding 40,072 terms; load 0.13 s warm /
+0.29 s in a fresh process; stat-walk freshness signature 0.02 s;
+load-only process RSS 236 MiB (the Map-of-arrays postings graph — a
+typed-array layout is the escalation if S5's residency decision needs a
+smaller resident set). Gzip: 5.8 MiB on disk but +0.39 s per write and
+0.22 s decompress+parse versus 0.13 s plain load — rejected; disk is
+cheap, search latency is not. Artifacts: scratchpad measure-s3.mjs.
 
 2026-08-31 (capture-policy study) — 50 pi episodes sampled at random from the
 1,520 whose session JSONL still exists, each turn reconstructed from the log

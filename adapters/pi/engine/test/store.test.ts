@@ -215,6 +215,7 @@ test("an oversized turn captures with visible accounting and verifies", () => {
     const over: RawPayload = { ...base, assistantResult: "a".repeat(MAX_CONTENT_BYTES + 100) };
     const result = capture({
       rootPath: path.join(dir, "journal"),
+      indexPath: "",
       raw: over,
       defaults: { world: "main", scope: "default" },
       captureTimeMs: 1785240000000,
@@ -230,6 +231,7 @@ test("an oversized turn captures with visible accounting and verifies", () => {
     // Determinism: redelivering the same oversized turn dedupes.
     const again = capture({
       rootPath: path.join(dir, "journal"),
+      indexPath: "",
       raw: over,
       defaults: { world: "main", scope: "default" },
       captureTimeMs: 1785240000999,
@@ -248,6 +250,7 @@ test("capture refuses a root under a shared directory", { skip: onWindows }, () 
     const base = parsePayload(fs.readFileSync(path.join(PAYLOADS_DIR, "basic.json")));
     const result = capture({
       rootPath: path.join(dir, "journal"),
+      indexPath: "",
       raw: base,
       defaults: { world: "main", scope: "default" },
       captureTimeMs: 1785240000000,
@@ -270,6 +273,7 @@ test("capture reports validation failures with their typed detail", () => {
     const bad: RawPayload = { ...base, lane: "unknown" };
     const result = capture({
       rootPath: dir,
+      indexPath: "",
       raw: bad,
       defaults: { world: "main", scope: "default" },
       captureTimeMs: 1785240000000,

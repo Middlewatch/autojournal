@@ -92,6 +92,16 @@ export function rootDigestHex(rootPath: string): string {
 }
 
 /**
+ * Where the index snapshot lives for a given journal root: outside the
+ * root (the corpus stays a clean git-trackable tree), in the state
+ * directory, keyed by the root digest so distinct roots never share one.
+ */
+export function defaultIndexPath(env: Environ, rootPath: string): string {
+  const digest = rootDigestHex(rootPath);
+  return stateDir(env) + "/autojournal/index-" + digest.slice(0, INDEX_DIGEST_NAME_LEN) + ".v2.json";
+}
+
+/**
  * The hand-editable thesaurus: owner config first, the legacy environment
  * override second, the XDG default last. A product rule, not a CLI
  * convenience: a caller that resolved this differently would silently read
