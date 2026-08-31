@@ -30,8 +30,21 @@ import {
 import { defaultJournalRoot, defaultIndexPath, MissingHomeError, processEnviron, type Environ } from "./engine/paths.ts";
 import { capture, type CaptureResult } from "./engine/store.ts";
 import { statusOf, sync, reseal, catalog, SyncError } from "./engine/ops.ts";
-import { SNAPSHOT_FORMAT_VERSION } from "./engine/index.ts";
-import { TOKENIZER_VERSION } from "./engine/retrieval.ts";
+import { SNAPSHOT_FORMAT_VERSION, openSnapshot, type Snapshot } from "./engine/index.ts";
+import { TOKENIZER_VERSION, SCORER_VERSION, CONFIDENCE_POLICY_VERSION } from "./engine/retrieval.ts";
+import {
+  search,
+  get,
+  DEFAULT_LANES,
+  type SearchOutput,
+  type CreditMode,
+  type Hit,
+} from "./engine/search.ts";
+import { loadAliasMapFile } from "./engine/aliases.ts";
+import { openExistingRoot, type JournalRoot } from "./engine/corpus.ts";
+import { rootDigestHex, thesaurusPath } from "./engine/paths.ts";
+import { isoFromMs } from "./engine/render.ts";
+import { MAX_QUERY_BYTES, MAX_RESULTS_LIMIT, type Lane } from "./engine/contracts.ts";
 
 export const CLI_VERSION = "2.0.0";
 
@@ -39,6 +52,8 @@ const USAGE = `usage: autojournal <command> [options]
 
 commands:
   capture   read one completed-turn JSON payload on stdin and publish it
+  search    ranked, bounded recall: autojournal search <query words...>
+  get       open one evidence reference exactly
   default   show or set the owner default world/scope (--world/--scope)
   status    report journal root, corpus, and index health
   catalog   list discovered worlds and scopes
@@ -50,8 +65,17 @@ options:
   --config <path>    explicit config file (default: XDG lookup)
   --root <path>      journal root override (bypasses config/default)
   --index <path>     index snapshot override (default: XDG state dir)
-  --world <id>       world value for default
-  --scope <token>    scope value for default
+  --world <id>       world to search / world value for default
+  --scope <token>    restrict search to one scope / scope for default
+  --lanes <a,b>      lanes to search (default:
+                     conversation,delegated_work,imported_legacy)
+  --limit <n>        page size (default from config, cap 100)
+  --cursor <c>       continue a previous search page
+  --credit-mode <m>  term crediting: substring | word_start | whole_word
+  --episode <id>     (get) evidence episode id
+  --revision <r>     (get) sha256:<hex> revision the evidence had
+  --path <rel>       (get) path hint from a search result
+  --lines <a-b>      (get) explicit line bounds
   --json             machine-readable output
 `;
 
@@ -76,6 +100,14 @@ interface Opts {
   index?: string;
   world?: string;
   scope?: string;
+  lanes?: string;
+  limit?: number;
+  cursor?: string;
+  episode?: string;
+  revision?: string;
+  path?: string;
+  lines?: string;
+  creditMode?: string;
   json: boolean;
   preview: boolean;
   positionals: string[];
@@ -112,6 +144,13 @@ export function run(args: string[], io: CliIo): number {
     "--index": (v) => (o.index = v),
     "--world": (v) => (o.world = v),
     "--scope": (v) => (o.scope = v),
+    "--lanes": (v) => (o.lanes = v),
+    "--cursor": (v) => (o.cursor = v),
+    "--episode": (v) => (o.episode = v),
+    "--revision": (v) => (o.revision = v),
+    "--path": (v) => (o.path = v),
+    "--lines": (v) => (o.lines = v),
+    "--credit-mode": (v) => (o.creditMode = v),
   };
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i];
@@ -125,6 +164,16 @@ export function run(args: string[], io: CliIo): number {
     }
     if (!arg.startsWith("--")) {
       o.positionals.push(arg);
+      continue;
+    }
+    if (arg === "--limit") {
+      i++;
+      const value = rest[i];
+      if (value === undefined || !/^[0-9]+$/.test(value)) {
+        io.stderr("--limit must be a positive integer\n");
+        return EXIT_MALFORMED;
+      }
+      o.limit = Number(value);
       continue;
     }
     const slot = valueSlots[arg];
@@ -142,7 +191,7 @@ export function run(args: string[], io: CliIo): number {
 
   if (command === "version") {
     io.stdout(
-      `autojournal ${CLI_VERSION} (payload schema v${PAYLOAD_SCHEMA_VERSION}, episode schema ${EPISODE_SCHEMA}, snapshot format v${SNAPSHOT_FORMAT_VERSION}, ${TOKENIZER_VERSION})\n`,
+      `autojournal ${CLI_VERSION} (payload schema v${PAYLOAD_SCHEMA_VERSION}, episode schema ${EPISODE_SCHEMA}, index schema v${SNAPSHOT_FORMAT_VERSION}, ${TOKENIZER_VERSION}, ${SCORER_VERSION}, ${CONFIDENCE_POLICY_VERSION})\n`,
     );
     return EXIT_OK;
   }
@@ -225,10 +274,286 @@ export function run(args: string[], io: CliIo): number {
       return syncCommand(rootPath, indexPath, o, io);
     case "reseal":
       return resealCommand(rootPath, indexPath, o, io);
+    case "search":
+      return searchCommand(cfg, rootPath, indexPath, o, io);
+    case "get":
+      return getCommand(rootPath, indexPath, o, io);
     default:
       io.stderr(USAGE);
       return EXIT_MALFORMED;
   }
+}
+
+// --- search / get ---
+
+function parseLanes(text: string): Lane[] | null {
+  const lanes: Lane[] = [];
+  for (const tag of text.split(",")) {
+    const trimmed = tag.trim();
+    if (trimmed === "") continue;
+    if (
+      trimmed !== "conversation" &&
+      trimmed !== "delegated_work" &&
+      trimmed !== "evaluation" &&
+      trimmed !== "imported_legacy"
+    ) {
+      return null;
+    }
+    if (lanes.includes(trimmed)) continue;
+    if (lanes.length >= 4) return null;
+    lanes.push(trimmed);
+  }
+  return lanes.length === 0 ? null : lanes;
+}
+
+function parseLineSpan(text: string): { start: number; end: number } | null {
+  const parse = (s: string): number | null => (/^[0-9]{1,9}$/.test(s) ? Number(s) : null);
+  const dash = text.indexOf("-");
+  if (dash >= 0) {
+    const start = parse(text.slice(0, dash));
+    const end = parse(text.slice(dash + 1));
+    if (start === null || end === null || start === 0 || end < start) return null;
+    return { start, end };
+  }
+  const line = parse(text);
+  if (line === null || line === 0) return null;
+  return { start: line, end: line };
+}
+
+function openForRecall(rootPath: string, indexPath: string, io: CliIo): { root: JournalRoot; snapshot: Snapshot | null } | null {
+  let root: JournalRoot;
+  try {
+    root = openExistingRoot(rootPath);
+  } catch {
+    io.stderr("journal root missing or unreadable\n");
+    return null;
+  }
+  const opened = openSnapshot(indexPath, rootDigestHex(rootPath));
+  if (opened.kind === "foreign") {
+    io.stderr("index at this path belongs to a different journal root; run sync to rebuild it\n");
+    return null;
+  }
+  return { root, snapshot: opened.kind === "ok" ? opened.snapshot : null };
+}
+
+function outcomeExit(outcome: string): number {
+  switch (outcome) {
+    // A typed empty result is a successful answer, not an error.
+    case "match":
+    case "no_match":
+      return EXIT_OK;
+    case "malformed":
+      return EXIT_MALFORMED;
+    case "conflict":
+      return EXIT_CONFLICT;
+    default:
+      return EXIT_FAILURE;
+  }
+}
+
+function searchCommand(cfg: Config, rootPath: string, indexPath: string, o: Opts, io: CliIo): number {
+  if (o.positionals.length === 0) {
+    io.stderr("search needs query words: autojournal search <query...>\n");
+    return EXIT_MALFORMED;
+  }
+  const query = o.positionals.join(" ");
+  if (Buffer.byteLength(query, "utf8") > MAX_QUERY_BYTES) {
+    io.stderr("query exceeds max_query_bytes\n");
+    return EXIT_MALFORMED;
+  }
+  // World fallback mirrors capture: an unconfigured install searches the
+  // world capture publishes into.
+  let world = cfg.capture.world;
+  if (cfg.defaultWorld !== "") world = cfg.defaultWorld;
+  if (o.world !== undefined) world = o.world;
+
+  let lanes: Lane[] = [...DEFAULT_LANES];
+  if (o.lanes !== undefined) {
+    const parsed = parseLanes(o.lanes);
+    if (parsed === null) {
+      io.stderr("--lanes takes a comma list of: conversation, delegated_work, evaluation, imported_legacy\n");
+      return EXIT_MALFORMED;
+    }
+    lanes = parsed;
+  }
+  let creditMode: CreditMode = "word_start";
+  if (o.creditMode !== undefined) {
+    if (o.creditMode !== "substring" && o.creditMode !== "word_start" && o.creditMode !== "whole_word") {
+      io.stderr("--credit-mode takes: substring, word_start, whole_word\n");
+      return EXIT_MALFORMED;
+    }
+    creditMode = o.creditMode;
+  }
+  const recall = openForRecall(rootPath, indexPath, io);
+  if (recall === null) return EXIT_FAILURE;
+  const aliasMap = loadAliasMapFile(thesaurusPath(io.env, cfg.thesaurusPath));
+
+  // An explicit --limit 0 resolves to the default page size while the
+  // config's max_results: 0 stays malformed: a persisted config stating a
+  // meaningless page size is an error worth surfacing, and a one-off flag
+  // resolves to what the user meant.
+  const chosen = o.limit ?? cfg.maxResults;
+  const out = search(recall.root, recall.snapshot, aliasMap, {
+    query,
+    world,
+    scope: o.scope,
+    lanes,
+    creditMode,
+    limit: Math.min(chosen, MAX_RESULTS_LIMIT),
+    cursor: o.cursor,
+    nowMs: io.nowMs(),
+    knobs: {
+      contextWindow: cfg.contextWindow,
+      recencyBoost: cfg.recencyBoost,
+      minScore: cfg.minScore,
+      confidenceFloor: cfg.confidenceFloor,
+    },
+  });
+  if (o.json) renderSearchJson(world, query, out, io);
+  else renderSearchText(query, out, io);
+  return outcomeExit(out.outcome);
+}
+
+function renderSearchJson(world: string, query: string, out: SearchOutput, io: CliIo): void {
+  emitJson(io, {
+    outcome: out.outcome,
+    query,
+    query_terms: out.queryTerms,
+    alias_terms: out.aliasTerms,
+    folded_terms: out.foldedTerms,
+    results: out.hits.map((hit) => ({
+      episode_id: hit.episodeId,
+      revision: hit.revision,
+      path: hit.path,
+      world,
+      scope: hit.scope,
+      lane: hit.lane,
+      capture_policy: hit.capturePolicy,
+      event_time: isoFromMs(hit.eventTimeMs),
+      line: hit.line,
+      snippet_start: hit.snippetStart,
+      snippet_end: hit.snippetEnd,
+      snippet: hit.snippet,
+      matched_terms: hit.matchedTerms,
+      score: hit.score,
+      confidence: hit.confidence,
+    })),
+    total: out.total,
+    cursor: out.nextCursor === "" ? null : out.nextCursor,
+    identities: {
+      scorer: SCORER_VERSION,
+      tokenizer: TOKENIZER_VERSION,
+      confidence_policy: CONFIDENCE_POLICY_VERSION,
+      alias_digest: out.aliasDigest,
+      index_schema: SNAPSHOT_FORMAT_VERSION,
+    },
+    index: {
+      freshness: out.freshness,
+      indexed: out.indexed,
+      source: out.source,
+      edited_excluded: out.editedExcluded,
+    },
+    detail: out.detail === "" ? null : out.detail,
+  });
+}
+
+// matchLine extracts the matched line from a hit's snippet (the snippet
+// spans context lines; the hit's own line is the evidence).
+function matchLine(hit: Hit): string {
+  if (hit.snippet === "") return "(source changed since indexing)";
+  let lineNo = hit.snippetStart;
+  for (const line of hit.snippet.split("\n")) {
+    if (lineNo === hit.line) return line;
+    lineNo++;
+  }
+  return hit.snippet;
+}
+
+function renderSearchText(query: string, out: SearchOutput, io: CliIo): void {
+  if (out.outcome === "no_match") {
+    let text = `no match for "${query}" (index ${out.freshness}, ${out.indexed} indexed)\n`;
+    if (out.editedExcluded > 0) {
+      text += `note: ${out.editedExcluded} candidate(s) excluded as edited since indexing; run sync\n`;
+    }
+    io.stdout(text);
+    return;
+  }
+  if (out.outcome !== "match") {
+    let text = `search failed: ${out.outcome}`;
+    if (out.detail !== "") text += ` (${out.detail})`;
+    io.stdout(text + "\n");
+    return;
+  }
+  let text = `${out.hits.length} of ${out.total} result(s) for "${query}" — index ${out.freshness}\n`;
+  if (out.aliasTerms.length > 0) text += "aliases applied: " + out.aliasTerms.join(" ") + "\n";
+  out.hits.forEach((hit, i) => {
+    text += `${String(i + 1).padStart(2)}. [${hit.score.toFixed(2)} ${hit.confidence}] ${hit.path}:${hit.line} (${isoFromMs(hit.eventTimeMs).slice(0, 10)})\n`;
+    text += `    ${matchLine(hit)}\n`;
+    text += `    id ${hit.episodeId} rev ${hit.revision}\n`;
+  });
+  if (out.nextCursor !== "") text += `more: add --cursor ${out.nextCursor}\n`;
+  if (out.detail !== "") text += `note: ${out.detail}\n`;
+  io.stdout(text);
+}
+
+function getCommand(rootPath: string, indexPath: string, o: Opts, io: CliIo): number {
+  if (o.episode === undefined) {
+    io.stderr("get needs --episode <id> and --revision <sha256:hex>\n");
+    return EXIT_MALFORMED;
+  }
+  if (o.revision === undefined) {
+    io.stderr("get needs --revision <sha256:hex> (from a search result)\n");
+    return EXIT_MALFORMED;
+  }
+  let span = { start: 0, end: 0 };
+  if (o.lines !== undefined) {
+    const parsed = parseLineSpan(o.lines);
+    if (parsed === null) {
+      io.stderr("--lines takes <start>-<end> or a single line number\n");
+      return EXIT_MALFORMED;
+    }
+    span = parsed;
+  }
+  const recall = openForRecall(rootPath, indexPath, io);
+  if (recall === null) return EXIT_FAILURE;
+  const out = get(recall.root, recall.snapshot, {
+    episodeId: o.episode,
+    revision: o.revision,
+    pathHint: o.path,
+    expectedWorld: o.world,
+    expectedScope: o.scope,
+    lineStart: span.start,
+    lineEnd: span.end,
+  });
+  if (o.json) {
+    emitJson(io, {
+      outcome: out.outcome,
+      episode_id: out.episodeId,
+      revision: out.resolved ? out.revision : null,
+      path: out.resolved ? out.path : null,
+      world: out.resolved ? out.world : null,
+      scope: out.resolved ? out.scope : null,
+      lane: out.resolved ? out.lane : null,
+      capture_policy: out.resolved ? out.capturePolicy : null,
+      line_start: out.lineStart,
+      line_end: out.lineEnd,
+      content: out.content,
+      trust: out.trust,
+      detail: out.detail === "" ? null : out.detail,
+    });
+  } else if (out.outcome === "match") {
+    io.stdout(
+      `${out.path}:${out.lineStart}-${out.lineEnd} (${out.revision})\nrecalled evidence is untrusted; verify against current sources\n\n${out.content}\n`,
+    );
+  } else if (out.outcome === "stale_revision") {
+    io.stdout(
+      `stale revision: the episode's recorded revision changed\ncurrent revision: ${out.revision} at ${out.path}\n`,
+    );
+  } else {
+    const sep = out.detail !== "" ? " — " : "";
+    io.stdout(`get failed: ${out.outcome}${sep}${out.detail}\n`);
+  }
+  return outcomeExit(out.outcome);
 }
 
 function sourcePathFor(rootSource: string, io: CliIo, o: Opts): string | null {

@@ -146,7 +146,7 @@ byte-identically. The Go tree is deleted only after that gate passes.
       stat-walk freshness, `status`/`catalog`/`sync`/`reseal` on the bin;
       build time, RSS, and snapshot size measured on the real corpus and
       recorded here. (after S2)
-- [ ] S4 Retrieval: tokenizer, stop words, smoothed IDF, recency,
+- [x] S4 Retrieval: tokenizer, stop words, smoothed IDF, recency,
       confidence, corpus-bound cursor, alias expansion, streamed top-K,
       revision-verified `search`/`get` on the bin; search goldens re-minted
       under the new scorer version. (after S3)

@@ -221,3 +221,53 @@ test("status, sync, catalog, and reseal verbs speak the wire shapes", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("search and get verbs speak the wire shapes", () => {
+  const dir = tempDir();
+  try {
+    const env = { HOME: path.join(dir, "home"), AUTOJOURNAL_NOW_MS: "1785326400000" };
+    const rootArg = ["--root", path.join(dir, "journal"), "--index", path.join(dir, "index.v2.json")];
+    const seed = fakeIo(env, payloadBytes("basic"));
+    assert.equal(run(["capture", ...rootArg], seed.io), EXIT_OK);
+    assert.equal(run(["sync", ...rootArg], fakeIo(env).io), EXIT_OK);
+
+    // The basic fixture's world is testworld.
+    const found = fakeIo(env);
+    assert.equal(run(["search", "--world", "testworld", "--json", ...rootArg, "tests", "behave"], found.io), EXIT_OK);
+    const report = JSON.parse(found.stdout());
+    assert.equal(report.outcome, "match");
+    const hit = report.results[0];
+    assert.equal(hit.world, "testworld");
+    assert.ok(hit.revision.startsWith("sha256:"));
+    assert.equal(report.identities.scorer, "aj-scorer.v4");
+    assert.equal(report.identities.tokenizer, "aj-tok.v1");
+    assert.equal(report.index.freshness, "fresh");
+    const got = fakeIo(env);
+    assert.equal(
+      run(["get", "--json", "--episode", hit.episode_id, "--revision", hit.revision, "--path", hit.path, ...rootArg], got.io),
+      EXIT_OK,
+    );
+    const gotReport = JSON.parse(got.stdout());
+    assert.equal(gotReport.outcome, "match");
+    assert.equal(gotReport.trust, "untrusted_evidence");
+
+    const noMatch = fakeIo(env);
+    assert.equal(run(["search", "--world", "testworld", "--json", ...rootArg, "xylophone", "zeppelin"], noMatch.io), EXIT_OK);
+    assert.equal(JSON.parse(noMatch.stdout()).outcome, "no_match");
+
+    const badLanes = fakeIo(env);
+    assert.equal(run(["search", "--lanes", "bogus", ...rootArg, "word"], badLanes.io), EXIT_MALFORMED);
+    const noQuery = fakeIo(env);
+    assert.equal(run(["search", ...rootArg], noQuery.io), EXIT_MALFORMED);
+    const badGet = fakeIo(env);
+    assert.equal(run(["get", ...rootArg], badGet.io), EXIT_MALFORMED);
+    const staleGet = fakeIo(env);
+    assert.equal(
+      run(["get", "--json", "--episode", "aj1-" + "0".repeat(32), "--revision", "sha256:" + "0".repeat(64), ...rootArg], staleGet.io),
+      EXIT_FAILURE,
+    );
+    assert.equal(JSON.parse(staleGet.stdout()).outcome, "gone");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
