@@ -28,6 +28,8 @@ opt-in miss log and alias add/remove behind explicit confirms. `alias list` and
 - The `autojournal` CLI installs as a real npm bin over the in-process engine, with
 the same verbs and `--json` interface as 1.x.
 - Windows is a claimed, tested target: CI runs the suite on windows-latest.
+One platform limit: NTFS forbids `:` and a few other characters in file
+names, so world and scope names using them exist only in POSIX corpora.
 
 ### Changed
 

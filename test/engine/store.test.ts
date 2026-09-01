@@ -25,9 +25,10 @@ import {
   type WalkEntry,
 } from "../../src/corpus.ts";
 import { publish, capture, applyOversizePolicy } from "../../src/store.ts";
-import { GOLDEN_DIR, PAYLOADS_DIR } from "./helpers.ts";
+import { GOLDEN_DIR, PAYLOADS_DIR, fsRepresentable } from "./helpers.ts";
 
 const onWindows = process.platform === "win32";
+const colonSkip = "world/scope not representable on NTFS";
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "aj-store-"));
@@ -58,7 +59,8 @@ const vectors: Record<string, CaptureVector> = JSON.parse(
 test("golden publish replay", async (t) => {
   for (const [name, vec] of Object.entries(vectors)) {
     if (vec.outcome !== "published") continue;
-    await t.test(name, () => {
+    const pinned = loadPayload(name);
+    await t.test(name, { skip: !fsRepresentable(pinned.world, pinned.scope) && colonSkip }, () => {
       const dir = tempDir();
       try {
         const golden = fs.readFileSync(path.join(GOLDEN_DIR, "episodes", name + ".md"));
@@ -87,7 +89,7 @@ test("golden publish replay", async (t) => {
 // once per settled turn, so a same-identity redelivery with different
 // bytes only ever means divergence. First-write-wins: the stored bytes are
 // untouched.
-test("same-identity redelivery with different bytes is a conflict", () => {
+test("same-identity redelivery with different bytes is a conflict", { skip: onWindows && colonSkip }, () => {
   for (const [baseName, otherName] of [
     ["supersede-base", "supersede-extended"],
     ["divergent-base", "divergent-other"],
@@ -151,7 +153,7 @@ test("a symlinked shard component is a containment violation", { skip: onWindows
   }
 });
 
-test("corpus walk visibility rule", () => {
+test("corpus walk visibility rule", { skip: onWindows && colonSkip }, () => {
   const dir = tempDir();
   try {
     const root = openJournalRoot(dir);
@@ -231,6 +233,9 @@ test("an oversized turn captures with visible accounting and verifies", () => {
   const dir = tempDir();
   try {
     const base = parsePayload(fs.readFileSync(path.join(PAYLOADS_DIR, "basic.json")));
+    // NTFS cannot represent the fixture's colon scope; the truncation logic
+    // runs under a portable name on Windows.
+    if (onWindows && base.scope !== null) base.scope = base.scope.replace(/:/g, "-");
     const over: RawPayload = { ...base, assistantResult: "a".repeat(MAX_CONTENT_BYTES + 100) };
     const result = capture({
       rootPath: path.join(dir, "journal"),

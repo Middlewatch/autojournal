@@ -13,6 +13,15 @@ export const GOLDEN_DIR = path.join(TESTDATA, "golden");
 export const PAYLOADS_DIR = path.join(TESTDATA, "payloads");
 export const FUZZ_SEED_DIR = path.join(REPO_ROOT, "testdata", "fuzz");
 
+/**
+ * NTFS forbids <>:"\|?* in file names, so worlds and scopes using those
+ * characters exist only in POSIX corpora. Tests over pinned fixtures that
+ * publish such names to a real filesystem skip on Windows.
+ */
+export function fsRepresentable(...names: string[]): boolean {
+  return process.platform !== "win32" || names.every((n) => !/[<>:"\\|?*]/.test(n));
+}
+
 export function readFixture(...parts: string[]): Buffer {
   return fs.readFileSync(path.join(TESTDATA, ...parts));
 }

@@ -154,18 +154,21 @@ test("discovery, crediting, aliases, and folding", () => {
 });
 
 test("scope and lane filters bound recall", () => {
+  // NTFS cannot represent a colon scope; the filter logic runs under a
+  // portable name on Windows.
+  const projectScope = process.platform === "win32" ? "project-x" : "project:x";
   const s = scratch();
   try {
     publishTurn(s, turnPayload("marker text alpha", "In default scope."));
-    publishTurn(s, turnPayload("marker text beta", "In project scope.", { scope: "project:x" }));
+    publishTurn(s, turnPayload("marker text beta", "In project scope.", { scope: projectScope }));
     publishTurn(s, turnPayload("marker text gamma", "In evaluation lane.", { lane: "evaluation" }));
     const { root, snapshot } = openSynced(s);
 
     const all = search(root, snapshot, EMPTY_ALIASES, { query: "marker", world: "main", nowMs: NOW });
     assert.equal(all.total, 2);
-    const scoped = search(root, snapshot, EMPTY_ALIASES, { query: "marker", world: "main", scope: "project:x", nowMs: NOW });
+    const scoped = search(root, snapshot, EMPTY_ALIASES, { query: "marker", world: "main", scope: projectScope, nowMs: NOW });
     assert.equal(scoped.total, 1);
-    assert.equal(scoped.hits[0].scope, "project:x");
+    assert.equal(scoped.hits[0].scope, projectScope);
     const evalLane = search(root, snapshot, EMPTY_ALIASES, {
       query: "marker",
       world: "main",

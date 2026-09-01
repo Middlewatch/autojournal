@@ -11,12 +11,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import * as os from "node:os";
 
 import { run, type CliIo } from "../cli.ts";
 import { parseEpisode } from "../src/episode.ts";
 
-const REPO_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const GOLDEN_DIR = path.join(REPO_ROOT, "testdata", "golden");
 const SAMPLES_DIR = path.join(GOLDEN_DIR, "ops-samples");
 const MINT = process.env.AUTOJOURNAL_MINT_OPS_SAMPLES === "1";
@@ -52,7 +53,10 @@ function checkSample(name: string, got: string): void {
   assert.equal(got, fs.readFileSync(file, "utf8"), `ops sample ${name} diverged — a --json interface change must be re-minted on purpose`);
 }
 
-test("golden CLI ops samples", () => {
+test("golden CLI ops samples", {
+  // The pinned samples replay colon-scoped captures NTFS cannot represent.
+  skip: process.platform === "win32" && "pinned colon-scope samples not representable on NTFS",
+}, () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aj-ops-golden-"));
   try {
     const rootPath = path.join(dir, "root");

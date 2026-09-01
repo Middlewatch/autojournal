@@ -34,8 +34,14 @@ function scratch(): { dir: string; rootPath: string; indexPath: string; drop: ()
   };
 }
 
+// NTFS cannot represent the fixtures' colon scope; the same logic runs
+// under a portable name on Windows.
+const FIXTURE_SCOPE = process.platform === "win32" ? "workspace-demo" : "workspace:demo";
+
 function rawPayload(name: string, overrides: Partial<RawPayload> = {}): RawPayload {
-  return { ...parsePayload(fs.readFileSync(path.join(PAYLOADS_DIR, name + ".json"))), ...overrides };
+  const p = { ...parsePayload(fs.readFileSync(path.join(PAYLOADS_DIR, name + ".json"))), ...overrides };
+  if (process.platform === "win32" && typeof p.scope === "string") p.scope = p.scope.replace(/:/g, "-");
+  return p;
 }
 
 const DEFAULTS = { world: "main", scope: "default" };
@@ -246,7 +252,7 @@ test("catalog lists the default pair first, then discovered pairs", () => {
     sync(s.rootPath, s.indexPath);
     const pairs = catalog(s.rootPath, s.indexPath, DEFAULTS);
     assert.deepEqual(pairs[0], { world: "main", scope: "default" });
-    assert.ok(pairs.some((p) => p.world === "testworld" && p.scope === "workspace:demo"));
+    assert.ok(pairs.some((p) => p.world === "testworld" && p.scope === FIXTURE_SCOPE));
     assert.equal(pairs.length, 2);
   } finally {
     s.drop();
