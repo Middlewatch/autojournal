@@ -54,8 +54,6 @@ if (packArg !== -1) {
   }
 }
 
-// One version, asserted in three places: package.json is the authority,
-// and the extension constant plus the CLI constant must agree with it.
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 const extension = fs.readFileSync(path.join(root, "index.ts"), "utf8");
 const adapterVersion = extension.match(/^export const ADAPTER_VERSION = "([^"]+)";$/m)?.[1];
@@ -68,16 +66,10 @@ if (cliVersion !== manifest.version) {
   throw new Error(`version drift: package.json ${manifest.version} vs CLI_VERSION ${cliVersion}`);
 }
 
-// The engine ships with zero runtime dependencies, and that is a product
-// property rather than an accident.
 if (manifest.dependencies !== undefined && Object.keys(manifest.dependencies).length > 0) {
   throw new Error(`the package must have no runtime dependencies; found: ${Object.keys(manifest.dependencies).join(", ")}`);
 }
 
-// The changelog ships inside the package, so the entry for the version
-// being packed has to name its release date before it leaves the machine.
-// npm versions are immutable: an entry published as "unreleased" stays
-// wrong forever, and correcting it costs an entire new version.
 const changelog = fs.readFileSync(path.join(root, "CHANGELOG.md"), "utf8");
 const escaped = manifest.version.replace(/\./g, "\\.");
 const entry = changelog.match(new RegExp(`^##\\s+${escaped}\\s*[—–-]\\s*(.+)$`, "m"));

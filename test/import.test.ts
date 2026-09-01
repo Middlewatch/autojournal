@@ -110,8 +110,6 @@ test("parsePiSession skips subagent sessions, junk, and empty files", () => {
 });
 
 test("parsePiSession counts incomplete turns as skipped", () => {
-  // A user prompt with no assistant reply (crash, abort) and an
-  // assistant-only preamble both fail the completed-turn requirement.
   const parsed = parsePiSession(
     jsonl([
       header(),
@@ -132,8 +130,6 @@ test("parsePiSession honors capture policy at each turn's leaf, not retroactivel
       header(),
       userMsg("u1", "2026-07-01T10:01:00.000Z", "captured"),
       assistantMsg("a1", "2026-07-01T10:01:05.000Z", "kept"),
-      // Toggle lands after u1/a1 settled: that turn stays importable even
-      // though it only finalizes when u2 arrives below.
       off,
       userMsg("u2", "2026-07-01T10:02:00.000Z", "private"),
       assistantMsg("a2", "2026-07-01T10:02:05.000Z", "dropped"),
@@ -243,10 +239,6 @@ test(
 
       const selection = { world: "main", scope: "default" };
 
-      // Simulate the second turn having been captured live before the
-      // import: same session/turn identity and the same leaf-entry event
-      // time live capture derives, so the import's re-delivery must resolve
-      // as already present, not a fresh publish.
       const liveRun = runCli(["capture"], JSON.stringify({
         schema_version: 1,
         world: "main",
@@ -277,9 +269,6 @@ test(
       assert.equal(again.existing, 2);
       assert.equal(again.failed, 0);
 
-      // Cross-date redelivery: same identity with an event time on another
-      // day shards to a different path, so only the core's corpus-wide
-      // identity check stands between this and a silent second copy.
       const crossRun = runCli(["capture"], JSON.stringify({
         schema_version: 1,
         world: "main",
@@ -301,9 +290,6 @@ test(
         "cross-date redelivery of an existing identity must not publish",
       );
 
-      // Policy-aware dedupe: a turn captured live under the v1 policy
-      // re-identifies under v2, so import must recognize it through the
-      // prior-policy check instead of double-storing it.
       const v1Run = runCli(["capture"], JSON.stringify({
         schema_version: 1,
         world: "main",

@@ -51,8 +51,6 @@ test(
     process.env.XDG_DATA_HOME = path.join(tmp, "data");
     process.env.XDG_STATE_HOME = path.join(tmp, "state");
     try {
-      // An existing-but-empty root: sync exits 0 with a report rather
-      // than the missing-root failure.
       fs.mkdirSync(path.join(tmp, "data", "autojournal", "journals"), { recursive: true });
       let command: ((args: string, ctx: unknown) => Promise<void>) | undefined;
       const fakePi = {
@@ -132,8 +130,6 @@ test("summarizeRun keeps every visible assistant segment and dedups tool names",
   assert.equal(summary.userText, "do the thing");
   assert.equal(summary.assistantText, "working\n\nfinal answer");
   assert.deepEqual(summary.toolNames, ["bash", "read"]);
-  // Block level, not message level: two text blocks inside one assistant
-  // message also join with a blank line (pi-visible-v2 to the letter).
   const blocks = summarizeRun([
     { role: "user", content: "go" },
     {
@@ -230,8 +226,6 @@ test("renderSearchResults covers match, no_match, and typed failures", () => {
     outcome: "match",
     total: 9,
     results: [hit],
-    // The binary reports index health as an object; a fresh index adds
-    // nothing to the header.
     index: { freshness: "fresh", indexed: 9, source: 9, edited_excluded: 0 },
   }, [{
     reference: 17,
@@ -329,7 +323,6 @@ test("memory_get resolves short references and keeps legacy calls compatible", a
   };
 
   try {
-    // A real episode in a real corpus: the tools run the engine in-process.
     const captured = runCli(["capture"], JSON.stringify({
       schema_version: 1,
       world: "main",
@@ -368,9 +361,6 @@ test("memory_get resolves short references and keeps legacy calls compatible", a
     assert.match(opened.content[0].text, /reference sentinel/);
     assert.match(opened.content[0].text, /untrusted data/);
 
-    // A legacy resumed call folds episode_id/revision into a fresh
-    // reference under the *current* selection, so it runs before the
-    // branch switch below moves the session to another world.
     const identity = searchDetails.evidence_references[0];
     const prepared = get.prepareArguments?.({
       episode_id: identity.episode_id,
@@ -382,10 +372,6 @@ test("memory_get resolves short references and keeps legacy calls compatible", a
     const legacy = await get.execute("get-legacy", prepared as never);
     assert.match(legacy.content[0].text, /reference sentinel/);
 
-    // A resumed branch restores references from durable tool-result
-    // details. The reference retains the world/scope where search found it
-    // even when the branch's active selection later changes — the get
-    // still resolves (a get bound to the changed selection would be gone).
     const sessionTree = events.get("session_tree");
     assert.ok(sessionTree);
     const resumedContext = {
@@ -444,8 +430,6 @@ test("world/scope validation and branch-local selection restoration", () => {
   assert.equal(validWorld("Bad World"), false);
   assert.equal(validScope("client:a"), true);
   assert.equal(validScope("../escape"), false);
-  // Dot-led scopes publish into directories the corpus walk skips: the
-  // core refuses them, and this validator must agree.
   assert.equal(validScope(".hidden"), false);
   assert.equal(validScope("."), false);
   assert.equal(validScope("a.b"), true);
@@ -462,7 +446,6 @@ test("world/scope validation and branch-local selection restoration", () => {
 
 test("capture toggle restoration: latest stated value wins, silence keeps capture on", () => {
   assert.equal(captureFromEntries([]), true);
-  // Entries written before the toggle existed carry no capture field.
   assert.equal(
     captureFromEntries([
       { type: "custom", customType: SESSION_POLICY_ENTRY, data: { world: "main", scope: "default" } },
@@ -593,8 +576,6 @@ test(
     process.env.XDG_CONFIG_HOME = path.join(tmp, "config");
     process.env.XDG_DATA_HOME = path.join(tmp, "data");
     process.env.XDG_STATE_HOME = path.join(tmp, "state");
-    // An existing (empty) journal root: reseal over it reports its scan
-    // rather than the missing-root refusal.
     fs.mkdirSync(path.join(tmp, "data", "autojournal", "journals"), { recursive: true, mode: 0o700 });
     try {
       let command: ((args: string, ctx: unknown) => Promise<void>) | undefined;
@@ -632,8 +613,6 @@ test(
         offered[0].includes("Reseal edited episodes"),
         `menu is missing the reseal entry: ${offered[0].join(", ")}`,
       );
-      // Selecting it shells the real binary over the fresh empty journal
-      // and renders its report.
       assert.ok(
         notices.some((body) => /scanned: 0/.test(body) && /resealed: 0/.test(body)),
         `no reseal report was rendered: ${JSON.stringify(notices)}`,
@@ -776,7 +755,7 @@ test(
       };
       const journals = path.join(tmp, "data", "autojournal", "journals");
 
-      await toggleOnce(); // capture off
+      await toggleOnce();
       assert.deepEqual(appended.at(-1), {
         type: SESSION_POLICY_ENTRY,
         data: { version: 1, world: "main", scope: "default", capture: "off" },
@@ -785,7 +764,7 @@ test(
       await handlers.get("agent_settled")!({}, { ...ctx, mode: "tui" });
       assert.equal(fs.existsSync(journals), false);
 
-      await toggleOnce(); // capture back on
+      await toggleOnce();
       assert.deepEqual(appended.at(-1), {
         type: SESSION_POLICY_ENTRY,
         data: { version: 1, world: "main", scope: "default", capture: "on" },
@@ -818,15 +797,11 @@ test("legacyPiJournalRoot follows Pi's agent directory override", () => {
   );
 });
 
-// End-to-end against the real binary: capture with an active selection, then
-// search and get through the same CLI surface the extension uses. Skipped
-// when no binary is available (e.g. a consumer running tests before install).
 test("end-to-end capture -> search -> get through the in-process engine", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aj-adapter-"));
   const index = path.join(tmp, "index.v2.json");
   const thesaurus = path.join(tmp, "thesaurus.json");
   fs.writeFileSync(thesaurus, "{}");
-  // Isolate from any real owner config/thesaurus on the host.
   const previous = {
     thesaurus: process.env.AUTOJOURNAL_THESAURUS,
     missLog: process.env.AUTOJOURNAL_MISS_LOG,
@@ -858,8 +833,6 @@ test("end-to-end capture -> search -> get through the in-process engine", async 
         tools: [{ name: "bash" }],
         ...over,
       });
-    // Capture resolves the root the way every fresh host does: no config
-    // and the host-neutral XDG data default.
     const captured = runCli(["capture", "--index", index], wire({}));
     const report = JSON.parse(captured.stdout);
     assert.equal(report.outcome, "published");
@@ -891,15 +864,12 @@ test("end-to-end capture -> search -> get through the in-process engine", async 
       assert.equal(JSON.parse(crossSearch.stdout).outcome, "match");
     }
 
-    // No --world: an unconfigured search falls back to the capture world.
     const searched = runCli(["search", "quokka", "--index", index, "--json"]);
     const result = JSON.parse(searched.stdout);
     assert.equal(result.outcome, "match");
     const hit = result.results[0];
     const rendered = renderSearchResults(result);
     assert.match(rendered, /quokka/);
-    // Guard the wire contract, not just the snippet text: the header must
-    // render the engine's index object without leaking a stringified value.
     assert.match(rendered, /^\d+ of \d+ matching result\(s\):/);
     assert.doesNotMatch(rendered, /object Object/);
 
@@ -1096,8 +1066,6 @@ test(
       };
       autojournalExtension(fakePi as never);
 
-      // A session whose log header carries parentSession is a subagent
-      // session, however it was spawned.
       const subagentFile = path.join(tmp, "subagent-session.jsonl");
       fs.writeFileSync(
         subagentFile,
@@ -1121,12 +1089,10 @@ test(
       const journals = path.join(tmp, "data", "autojournal", "journals");
       const stateFile = path.join(tmp, "config", "autojournal", "pi-adapter.json");
 
-      // Lever off: a subagent session settling in print mode is skipped.
       await handlers.get("agent_end")!({ messages }, ctx);
       await handlers.get("agent_settled")!({}, { ...ctx, mode: "print" });
       assert.equal(fs.existsSync(journals), false);
 
-      // Lever on: the same session publishes.
       writeSubagentCapture(stateFile, true);
       await handlers.get("agent_end")!({ messages }, ctx);
       await handlers.get("agent_settled")!({}, { ...ctx, mode: "print" });
@@ -1171,8 +1137,6 @@ test(
       };
       autojournalExtension(fakePi as never);
 
-      // No parentSession in the header: a headless owner run, not a
-      // subagent session.
       const headlessFile = path.join(tmp, "headless-session.jsonl");
       fs.writeFileSync(headlessFile, `${JSON.stringify({ type: "session", id: "headless-1" })}\n`);
       const ctx = {
@@ -1255,7 +1219,7 @@ test("menu search-quality section promotes a weak query into an alias behind a c
             assert.ok(options.some((o) => o.startsWith('Promote: "weak firmware query" (1x)')), options.join("|"));
             return options.find((o) => o.startsWith("Promote:"));
           }
-          if (selects === 3) return "Add it"; // the confirm step
+          if (selects === 3) return "Add it";
           if (selects === 4) return "Back";
           return "Close";
         },
@@ -1268,8 +1232,6 @@ test("menu search-quality section promotes a weak query into an alias behind a c
     assert.match(titles[1], /Weak queries: 1/);
     const written = JSON.parse(fs.readFileSync(path.join(tmp, "thesaurus.json"), "utf8"));
     assert.deepEqual(written, { firmware: ["fwupd", "lvfs"] });
-    // The refreshed section (rendered again before "Back") now lists the
-    // alias for confirmed removal.
     assert.match(titles[3] ?? "", /Aliases: 1/);
   } finally {
     if (previous.config === undefined) delete process.env.AUTOJOURNAL_CONFIG;

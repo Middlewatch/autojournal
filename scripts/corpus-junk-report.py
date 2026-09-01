@@ -23,8 +23,8 @@ from pathlib import Path
 
 FM_LINE = re.compile(r"^([a-z_]+): (.*)$")
 
-TOOLCALL = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\(\{")          # Bash({"command": …
-SHELL = re.compile(r"^\$ |^> \$ |^\+ |^(read|write|edit|bash) /")  # transcript lines
+TOOLCALL = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\(\{")
+SHELL = re.compile(r"^\$ |^> \$ |^\+ |^(read|write|edit|bash) /")
 BLOBBY = re.compile(r"[{}\[\]<>|\\]|::|—>|sha256:|0x[0-9a-f]{6,}")
 LONG_TOKEN = re.compile(r"\S{48,}")
 WORD = re.compile(r"[A-Za-z]{2,}")
@@ -141,9 +141,6 @@ def main() -> int:
         blob = c.get("blob", 0) / content
         uniq = len(set(s["lines"])) / max(len(s["lines"]), 1)
         synth = s.get("synthetic_turns", 0) / s["episodes"]
-        # Junk mass: bytes of the session discounted by how conversational,
-        # non-repetitive, and owner-driven it is. High = big, machine-shaped,
-        # machine-driven.
         junk = max((1.0 - prose) * (2.0 - uniq) / 2.0, synth)
         rows.append({
             "session": sid,

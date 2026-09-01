@@ -24,7 +24,6 @@ test("alias add and remove rewrite the thesaurus atomically and canonically", ()
     addAlias(t.file, "firmware", ["fwupd", "Polkit"]);
     let m = loadAliasMapFile(t.file);
     assert.deepEqual(aliasGet(m, "firmware"), ["fwupd", "polkit"]);
-    // Values already present are not duplicated; new ones extend.
     addAlias(t.file, "Firmware", ["fwupd", "lvfs"]);
     m = loadAliasMapFile(t.file);
     assert.deepEqual(aliasGet(m, "firmware"), ["fwupd", "polkit", "lvfs"]);
@@ -35,7 +34,6 @@ test("alias add and remove rewrite the thesaurus atomically and canonically", ()
     assert.deepEqual(aliasGet(m, "firmware"), ["fwupd", "lvfs"]);
     assert.equal(removeAlias(t.file, "firmware"), "entry");
     assert.equal(loadAliasMapFile(t.file).entries.length, 0);
-    // The rewrite is the canonical two-space form with a trailing newline.
     assert.ok(fs.readFileSync(t.file, "utf8").endsWith("\n"));
   } finally {
     t.drop();
@@ -61,14 +59,13 @@ test("alias edit refusals are typed and leave the file untouched", () => {
   try {
     const fail = (fn: () => unknown, code: string) =>
       assert.throws(fn, (err: unknown) => err instanceof AliasError && err.code === code);
-    fail(() => addAlias(t.file, "an", ["fwupd"]), "invalid_term"); // too short
-    fail(() => addAlias(t.file, "the", ["fwupd"]), "invalid_term"); // stop word
-    fail(() => addAlias(t.file, "bad-key", ["fwupd"]), "invalid_term"); // outside [a-z0-9_]
+    fail(() => addAlias(t.file, "an", ["fwupd"]), "invalid_term");
+    fail(() => addAlias(t.file, "the", ["fwupd"]), "invalid_term");
+    fail(() => addAlias(t.file, "bad-key", ["fwupd"]), "invalid_term");
     fail(() => addAlias(t.file, "firmware", []), "invalid_value");
-    fail(() => addAlias(t.file, "firmware", ["x"]), "invalid_value"); // 1 byte
+    fail(() => addAlias(t.file, "firmware", ["x"]), "invalid_value");
     fail(() => removeAlias(t.file, "missing"), "not_found");
 
-    // A non-object file is malformed and never rewritten.
     fs.writeFileSync(t.file, "[1, 2]");
     fail(() => addAlias(t.file, "firmware", ["fwupd"]), "malformed");
     assert.equal(fs.readFileSync(t.file, "utf8"), "[1, 2]");
@@ -83,8 +80,8 @@ test("miss log aggregation dedupes, ranks, and tolerates junk", () => {
     JSON.stringify({ ts: "t", query: "quokka fence", terms: ["quokka"], best: 0.4, top: "aj1-x" }),
     JSON.stringify({ ts: "t", query: "rare topic", terms: ["rare", "topic"], best: 0, top: null }),
     "not json at all",
-    JSON.stringify({ ts: "t", terms: ["orphan"] }), // no query: skipped
-    JSON.stringify({ ts: "t", query: "rare topic", terms: "mistyped" }), // terms tolerated
+    JSON.stringify({ ts: "t", terms: ["orphan"] }),
+    JSON.stringify({ ts: "t", query: "rare topic", terms: "mistyped" }),
   ].join("\n");
   const agg = aggregateMisses(lines);
   assert.equal(agg.length, 2);
@@ -99,7 +96,6 @@ test("appendMiss is bounded and best-effort", () => {
     appendMiss(t.file, rec, 1024);
     appendMiss(t.file, rec, 1024);
     assert.equal(fs.readFileSync(t.file, "utf8").trim().split("\n").length, 2);
-    // At the cap the log stops growing rather than rotating or failing.
     appendMiss(t.file, rec, 1);
     assert.equal(fs.readFileSync(t.file, "utf8").trim().split("\n").length, 2);
   } finally {

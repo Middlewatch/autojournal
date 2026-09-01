@@ -16,15 +16,10 @@ if [[ ! -d node_modules ]]; then
   exit 1
 fi
 
-# Typecheck plus the whole suite: golden byte pins, conformance cases,
-# parse-boundary properties over the fuzz seeds, store/index/retrieval
-# behavior, the CLI wire shapes, and the extension in-process.
 npm run --silent typecheck
 npm test
 printf 'test gate: PASS\n'
 
-# End-to-end retrieval smoke through the node bin, in a portable node
-# script so the same e2e runs on every CI platform.
 node scripts/smoke.mjs
 
 printf 'AutoJournal repository verification: PASS\n'

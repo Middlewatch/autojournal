@@ -7,10 +7,7 @@
 // exclusive owner-only temp file in the target directory → write → fsync →
 // atomic no-replace hard-link into place → temp unlink → parent directory
 // fsync. An existing target is classified by recorded digest: exact
-// duplicate is success, anything else is a typed conflict. (v1's
-// supersede path — in-place replacement of a proven extension — was
-// removed in v2: capture fires once per settled turn, so a same-identity
-// redelivery with different bytes only ever means divergence.)
+// duplicate is success, anything else is a typed conflict.
 //
 // The descent, temp-write, and fsync mechanics live in corpus.ts with the
 // rest of the containment discipline; this file owns the publication
@@ -133,7 +130,6 @@ export function publish(
       outcome = classifyExisting(episodeDir, finalName, digestHex);
     }
   } finally {
-    // Whatever happened above, the temp file does not outlive this call.
     try {
       fs.rmSync(path.join(episodeDir, tmpName), { force: true });
     } catch {
@@ -141,7 +137,6 @@ export function publish(
     }
   }
 
-  // Make the directory entry durable before reporting success.
   syncDir(episodeDir);
 
   return {
@@ -402,9 +397,6 @@ export function capture(input: CaptureInput): CaptureResult {
     if (opened?.kind === "foreign") {
       indexState = "unavailable";
     } else {
-      // ok or not_built alike: the incremental update grows an existing
-      // snapshot or births an empty one, matching the v1 engine's
-      // create-at-first-capture behavior.
       try {
         const covered = indexEpisodeIncremental(root, input.indexPath, digest, published.relPath, published.content);
         indexState = covered ? "fresh" : "stale";

@@ -358,13 +358,6 @@ function coerceConfigUint(lit: string, bitSize: 32 | 64): bigint | null {
   return BigInt(f);
 }
 
-// --- Go strconv.ParseFloat grammar -------------------------------------
-//
-// String-typed numeric config values are parsed with Go's acceptance, not
-// JavaScript's: Number() would admit "0x10", "0b101", padded whitespace,
-// and the empty string, and would miss hex floats ("0x1p-2") and Go's
-// digit-separating underscores. The grammar here is the frozen contract.
-
 interface GoFloat {
   value: number;
   /** True when the literal was syntactically valid but overflowed or underflowed. */
@@ -386,7 +379,7 @@ export function goParseFloat(lit: string): GoFloat | null {
   // Decimal: digits [. digits] [eE sign digits], underscores only between
   // digits, at least one mantissa digit.
   if (!/^(?:[0-9][0-9_]*)?(?:\.(?:[0-9][0-9_]*)?)?(?:[eE][+-]?[0-9][0-9_]*)?$/.test(s)) return null;
-  if (!/[0-9]/.test(s.split(/[eE]/)[0])) return null; // mantissa needs a digit
+  if (!/[0-9]/.test(s.split(/[eE]/)[0])) return null;
   if (!underscoresBetweenDigits(s, /[0-9]/)) return null;
   const cleaned = s.replace(/_/g, "");
   const value = sign * Number(cleaned);
@@ -423,7 +416,7 @@ function goParseHexFloat(sign: number, s: string): GoFloat | null {
 // ldexpBig computes mantissa * 2^exp in float64, scaling in bounded chunks
 // so intermediate powers stay finite.
 function ldexpBig(mantissa: bigint, exp: number): number {
-  let x = Number(mantissa); // correctly rounded to float64
+  let x = Number(mantissa);
   while (exp > 500) {
     x *= 2 ** 500;
     exp -= 500;
@@ -441,7 +434,7 @@ function ldexpBig(mantissa: bigint, exp: number): number {
 // the (integral, non-negative) float f, compared as exact rationals via
 // BigInt. lit has already passed goParseFloat, so its shape is trusted.
 function literalExactlyEquals(lit: string, f: number): boolean {
-  const fInt = BigInt(f); // f is integral and in uint64 range at this call site
+  const fInt = BigInt(f);
   let s = lit.replace(/_/g, "");
   if (s.startsWith("+")) s = s.slice(1);
   if (s.startsWith("-")) return f === 0 && exactDecimalIsZero(s.slice(1));
@@ -466,7 +459,7 @@ function exactDecimalIsZero(s: string): boolean {
 // scaledEquals reports mantissa × base^exp === target exactly.
 function scaledEquals(mantissa: bigint, exp: number, base: bigint, target: bigint): boolean {
   if (exp >= 0) {
-    if (exp > 10000) return false; // cannot equal a uint64-range target
+    if (exp > 10000) return false;
     return mantissa * base ** BigInt(exp) === target;
   }
   if (exp < -10000) return mantissa === 0n && target === 0n;
@@ -474,8 +467,6 @@ function scaledEquals(mantissa: bigint, exp: number, base: bigint, target: bigin
   if (mantissa % scale !== 0n) return false;
   return mantissa / scale === target;
 }
-
-// --- Rewrite ------------------------------------------------------------
 
 /**
  * Persists new capture defaults into the owner config with an atomic
@@ -572,7 +563,6 @@ export function writeAtomicJsonFile(configPath: string, text: string): void {
     try {
       fs.rmSync(tmpPath, { force: true });
     } catch {
-      // The temp file may never have been created.
     }
     throw new ConfigError("unavailable", String(err));
   }
@@ -667,8 +657,8 @@ function writeCanonicalJsonString(s: string): string {
 // becomes 0.0000000001, 1e300 becomes 1 followed by 300 zeros).
 export function formatConfigNumber(lit: string): string {
   if (isIntegerShaped(lit)) return lit;
-  const f = Number(lit); // lit follows the JSON number grammar
-  if (!Number.isFinite(f)) return lit; // overflow: kept verbatim
+  const f = Number(lit);
+  if (!Number.isFinite(f)) return lit;
   return formatPositional(f);
 }
 

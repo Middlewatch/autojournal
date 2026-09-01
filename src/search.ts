@@ -212,7 +212,6 @@ export function search(root: JournalRoot, snapshot: Snapshot | null, aliasMap: A
   out.indexed = snapshot.episodes.length;
   out.freshness = stat.signature === snapshot.signature ? "fresh" : "stale";
 
-  // --- Terms and alias expansion ---
   const base = extractTerms(req.query);
   let termsTruncated = base.truncated;
   out.queryTerms = base.items;
@@ -248,7 +247,6 @@ export function search(root: JournalRoot, snapshot: Snapshot | null, aliasMap: A
     termsTruncated = true;
   }
 
-  // --- Cursor (decoded before scoring: its clock pins recency) ---
   const lanes = req.lanes ?? [...DEFAULT_LANES];
   const cursorInputs: CursorInputs = {
     query: req.query,
@@ -272,14 +270,6 @@ export function search(root: JournalRoot, snapshot: Snapshot | null, aliasMap: A
     nowMs = decoded.nowMs;
   }
 
-  // --- Discovery: vocabulary substring scan over sorted terms ---
-  // Needles are the index-token components of each term, so a phrase
-  // value like "llama.cpp" discovers via "llama"/"cpp" and is credited by
-  // full-substring match on the line text below. The fallback is per
-  // query: any long needle makes short ones ride along ignored; only a
-  // wholly-short query scans with its short needles, preserving curated
-  // short-alias reachability. Both paths iterate the vocabulary in sorted
-  // term order, so the cap truncates a stable prefix.
   const needles = new Set<string>();
   const shortNeedles = new Set<string>();
   for (const t of finalTerms) {
@@ -305,7 +295,6 @@ export function search(root: JournalRoot, snapshot: Snapshot | null, aliasMap: A
     }
   }
 
-  // --- Candidate accumulation from postings ---
   interface EpisodeAccum {
     row: SnapshotEpisode;
     lines: number[];
@@ -315,7 +304,7 @@ export function search(root: JournalRoot, snapshot: Snapshot | null, aliasMap: A
   const laneSet = new Set(lanes);
   const eligible = (row: SnapshotEpisode): boolean =>
     row.world === req.world && (req.scope === undefined || row.scope === req.scope) && laneSet.has(row.lane);
-  const episodeOrds = new Map<number, number>(); // snapshot ord -> accum ord
+  const episodeOrds = new Map<number, number>();
   const episodes: EpisodeAccum[] = [];
   for (const term of vocabMatches) {
     for (const group of snapshot.postings.get(term) ?? []) {
@@ -345,7 +334,6 @@ export function search(root: JournalRoot, snapshot: Snapshot | null, aliasMap: A
     return out;
   }
 
-  // --- Per-line crediting against source text ---
   const candidates: Candidate[] = [];
   const df = new Array<number>(finalTerms.length).fill(0);
   for (const [accumOrd, ep] of episodes.entries()) {
@@ -394,7 +382,6 @@ export function search(root: JournalRoot, snapshot: Snapshot | null, aliasMap: A
     return out;
   }
 
-  // --- Score and rank ---
   let creditedEpisodes = 0;
   const episodeInfos: EpisodeInfo[] = episodes.map((ep) => {
     if (ep.unionMask !== 0n) creditedEpisodes++;
@@ -424,12 +411,10 @@ export function search(root: JournalRoot, snapshot: Snapshot | null, aliasMap: A
     return out;
   }
 
-  // --- Page ---
   const start = Math.min(offset, ranked.order.length);
   const end = Math.min(start + limit, ranked.order.length);
   if (end < ranked.order.length) out.nextCursor = cursorEncode(end, nowMs, cursorInputs);
 
-  // --- Render page hits with bounded snippets ---
   out.hits = ranked.order.slice(start, end).map((candIdx) => {
     const cand = candidates[candIdx];
     const ep = episodes[cand.episodeOrd];
@@ -562,8 +547,6 @@ function capAtCodepoint(line: string, maxBytes: number): string {
   return bytes.subarray(0, cut).toString("utf8");
 }
 
-// --- memory_get ---
-
 export interface GetRequest {
   episodeId: string;
   /** Accepted with or without the sha256: prefix. */
@@ -646,7 +629,6 @@ export function get(root: JournalRoot, snapshot: Snapshot | null, req: GetReques
       found = true;
       usedPath = req.pathHint;
     } catch {
-      // Fall through to the index.
     }
   }
   if (!found && snapshot !== null) {
@@ -657,7 +639,6 @@ export function get(root: JournalRoot, snapshot: Snapshot | null, req: GetReques
         found = true;
         usedPath = row.relPath;
       } catch {
-        // Gone below.
       }
     }
   }
@@ -714,7 +695,6 @@ export function get(root: JournalRoot, snapshot: Snapshot | null, req: GetReques
     return out;
   }
 
-  // Bounded body span.
   let start = ep.bodyLine;
   if (lineStart !== 0 && lineStart > start) start = lineStart;
   let requestedEnd = start + MAX_GET_LINES - 1;
@@ -748,3 +728,4 @@ function validEpisodeId(id: string): boolean {
   if (id.length !== EPISODE_ID_LEN || !id.startsWith(ID_PREFIX)) return false;
   return /^[0-9a-f]+$/.test(id.slice(ID_PREFIX.length));
 }
+

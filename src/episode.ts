@@ -85,7 +85,7 @@ export function parseEpisode(content: string): Episode | null {
 
   let rest = content.slice(4);
   let offset = 4;
-  let lineNo = 1; // the opening `---` is line 1
+  let lineNo = 1;
   let closed = false;
   while (rest.length > 0) {
     const lineEnd = rest.indexOf("\n");
@@ -154,7 +154,7 @@ export function parseEpisode(content: string): Episode | null {
         fields[key] = value;
         break;
       default:
-        break; // unknown keys are tolerated on read
+        break;
     }
     // A duplicated required key makes the record ambiguous — readers could
     // disagree about which line wins, and for payload_digest that
@@ -212,8 +212,6 @@ function parseFrontmatterUint(s: string): number | null {
   return Number.isSafeInteger(n) ? n : null;
 }
 
-// --- Body parsing and digest verification ---
-
 // Body separators, exactly as render emits them. They are ordinary text an
 // owner's content may also contain, which is why parsing enumerates
 // candidate splits instead of trusting the first occurrence.
@@ -222,27 +220,9 @@ const BODY_ASSISTANT_SEP = "\n\n## Assistant\n\n";
 const BODY_TOOLS_SEP = "\n\n## Tools\n\n";
 const BODY_TOOL_LINE_PREFIX = "- ";
 
-// Caps the candidate readings of one body. A rendered body is not
-// injectively decodable: the "## Assistant" and "## Tools" separators are
-// ordinary text that owner content may also contain, so one byte sequence
-// can be the rendering of several distinct payloads. The cap bounds the
-// search; a body exceeding it is reported as unverifiable rather than
-// guessed at.
-//
-// The unit is evaluated candidate *pairs*, not occurrences of either
-// separator: the candidate space is the cross product of
-// assistant-separator positions and tools-separator positions plus the
-// no-tools reading. Enumeration is lazy in render order and stops at the
-// cap.
-//
-// The cap scales with body size because each candidate costs one digest
-// of the whole body: what needs bounding is total bytes hashed, not the
-// candidate count. A small body — an owner transcript quoting the
-// separators themselves is the case that actually occurs — affords
-// thousands of readings inside the same work budget, while the largest
-// bodies keep the fixed floor. Without the scaling, a rendered episode
-// whose user content contains ~62 separator sequences fails its own
-// verification (see the interpretation-exhaustion regression test).
+// Quoted "## Assistant" and "## Tools" separators are ordinary owner
+// content, so they make interpretation ambiguous. The candidate cap scales
+// with body size to bound the total bytes hashed.
 export const MAX_BODY_INTERPRETATIONS = 64;
 const INTERPRETATION_BYTE_BUDGET = 256 * 1024 * 1024;
 

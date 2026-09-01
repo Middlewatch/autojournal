@@ -73,8 +73,6 @@ export function truncatedCount(snap: Snapshot): number {
   return snap.episodes.reduce((n, e) => n + (e.droppedBytes > 0 ? 1 : 0), 0);
 }
 
-// --- Stat-walk signature -------------------------------------------------
-
 export interface CorpusStat {
   signature: string;
   episodes: number;
@@ -102,8 +100,6 @@ export function corpusStatSignature(root: JournalRoot): CorpusStat {
   });
   return { signature: h.digest("hex"), episodes, maxMtimeMs };
 }
-
-// --- Snapshot file I/O ---------------------------------------------------
 
 interface SnapshotWire {
   format: number;
@@ -245,12 +241,8 @@ export function writeSnapshot(indexPath: string, snap: Snapshot): void {
   }
 }
 
-// --- Writer lock ---------------------------------------------------------
-
-// Stale-lock bound: a writer holding the lock this long is presumed dead
-// even when its pid is unanswerable (another user's process, a recycled
-// pid). Sync of the largest observed corpus is under a second, so a
-// minute is generous.
+// A writer holding the lock past this threshold is presumed dead, even
+// when its pid is unanswerable.
 const LOCK_STALE_MS = 60_000;
 
 export class IndexLockHeldError extends Error {
@@ -279,8 +271,6 @@ export function withIndexLock<T>(indexPath: string, wait: boolean, fn: () => T):
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
       if (breakStaleLock(lockPath)) continue;
       if (Date.now() >= deadline) throw new IndexLockHeldError();
-      // Synchronous sleep: this call path is synchronous end to end, and
-      // lock hold times are milliseconds.
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
       continue;
     }
@@ -315,7 +305,7 @@ function breakStaleLock(lockPath: string): boolean {
   try {
     aged = Date.now() - fs.statSync(lockPath).mtimeMs > LOCK_STALE_MS;
   } catch {
-    return true; // vanished: retry the exclusive create
+    return true;
   }
   let pidDead = false;
   if (pid > 0) {
@@ -334,8 +324,6 @@ function breakStaleLock(lockPath: string): boolean {
   }
   return true;
 }
-
-// --- Build and sync ------------------------------------------------------
 
 export interface SyncReport {
   indexed: number;
@@ -387,8 +375,6 @@ function tokenizeEpisode(content: string, ep: Episode): Array<[string, number[]]
       if (lines === undefined) {
         byTerm.set(token, (lines = []));
       }
-      // One posting per (term, line): the SQLite projection's primary key
-      // deduplicated repeats within a line.
       if (lines.length === 0 || lines[lines.length - 1] !== lineNo) lines.push(lineNo);
     }
     lineNo++;
@@ -469,7 +455,6 @@ export function syncSnapshot(root: JournalRoot, indexPath: string, rootDigest: s
         try {
           fs.chmodSync(path.join(root.path, entry.relPath), 0o700);
         } catch {
-          // Self-healing only.
         }
         return;
       }
@@ -482,7 +467,6 @@ export function syncSnapshot(root: JournalRoot, indexPath: string, rootDigest: s
       try {
         fs.chmodSync(path.join(root.path, entry.relPath), 0o600);
       } catch {
-        // Best effort by contract.
       }
       // The signature stats each file *after* the repair chmod, in the
       // same walk that indexes it, so the recorded signature describes
@@ -561,8 +545,6 @@ export function syncSnapshot(root: JournalRoot, indexPath: string, rootDigest: s
   });
 }
 
-// --- Freshness and lookups ----------------------------------------------
-
 export interface FreshnessResult {
   freshness: IndexFreshness;
   indexed: number;
@@ -632,10 +614,8 @@ export function indexEpisodeIncremental(
   return withIndexLock(indexPath, false, () => {
     const opened = openSnapshot(indexPath, rootDigest);
     if (opened.kind === "foreign") throw new Error("snapshot foreign");
-    // An absent projection is born here, exactly as the v1 engine created
-    // its empty database at first capture: without this, the corpus-wide
-    // redelivery check would stay blind until the first manual sync, and
-    // a cross-date redelivery could store a second copy of an identity.
+    // An absent projection is born here so the corpus-wide redelivery check
+    // can enforce the cross-date dedupe invariant before the first manual sync.
     const snap: Snapshot =
       opened.kind === "ok"
         ? opened.snapshot

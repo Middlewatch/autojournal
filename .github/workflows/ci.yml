@@ -1,6 +1,5 @@
 # CI runs the repository gate — the same ./scripts/verify.sh a developer
-# runs locally — on Linux and on Windows (a claimed, tested target), and
-# adds the one thing a bounded local run cannot: a weekly long randomized
+# runs locally — on Linux and Windows, plus a weekly long randomized
 # pass over the parse-boundary properties.
 name: CI
 
@@ -10,8 +9,6 @@ on:
   pull_request:
   workflow_dispatch:
   schedule:
-    # Weekly long property run (see the properties job); every other job
-    # skips this event.
     - cron: "17 6 * * 1"
 
 jobs:
@@ -32,17 +29,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # shell: bash covers Windows too (Git Bash on the hosted runners),
-      # so every platform runs the one gate script rather than a re-listed
-      # copy that could drift from it.
+      # shell: bash so Windows runs the same gate script (Git Bash on hosted runners).
       - name: Repository gate
         shell: bash
         run: ./scripts/verify.sh
 
-  # The gate's property runs are bounded so green stays a fixed-cost
-  # command; this job is where the budget actually hunts. A failure prints
-  # the mutated input so it can be pinned as a regression seed under
-  # testdata/fuzz.
   long-properties:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -60,3 +51,4 @@ jobs:
         env:
           AUTOJOURNAL_PROPERTY_ITERS: "2000000"
         run: node --experimental-strip-types --test "test/engine/properties.test.ts" "test/engine/properties-alias-cursor.test.ts"
+

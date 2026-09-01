@@ -130,8 +130,6 @@ test("validation reports the first failure in contract order", () => {
 });
 
 test("multibyte content budgets count bytes, not code units", () => {
-  // 1,048,576 four-byte code points: over the 2 MiB byte budget at half
-  // the code-unit count.
   const glyphs = "\u{1F600}".repeat((2 * 1024 * 1024) / 4 + 1);
   assert.equal(validationCode(basePayload({ user_content: glyphs })), "OversizedContent");
 });
@@ -242,7 +240,6 @@ test("closed config schema rejections", () => {
       name,
     );
   }
-  // Invalid UTF-8 in a string is a byte-level check.
   assert.throws(() => parseConfig(Buffer.from([0x7b, 0x22, 0x6a, 0xff, 0x22, 0x3a, 0x31, 0x7d])));
 });
 
@@ -271,7 +268,6 @@ test("config defaults and known keys", () => {
   const captureOnly = parseConfig('{"capture": {"world": "team", "scope": "default"}}');
   assert.equal(captureOnly.journalRoot, "");
   assert.equal(captureOnly.capture.world, "team");
-  // null optionals are treated as absent.
   assert.equal(parseConfig('{"journal_root": null}').journalRoot, "");
 });
 
@@ -350,8 +346,6 @@ test("episode parse and verify edges", () => {
   assert.equal(content.split("\n")[ep!.bodyLine - 1], "");
   const v = verifyEpisode(content);
   assert.ok(v.ok && v.episode.userContent === "hello" && v.episode.assistantResult === "world");
-  // An edited body no longer verifies but stays parseable and resealable.
-  // ("hello" appears only in the body; "world" is also a frontmatter key.)
   const edited = content.replace("hello", "edited");
   assert.notEqual(parseEpisode(edited), null);
   const failed = verifyEpisode(edited);
@@ -360,12 +354,10 @@ test("episode parse and verify edges", () => {
   assert.notEqual(resealed, null);
   const reattested = edited.replace(ep!.digestHex, resealed!);
   assert.ok(verifyEpisode(reattested).ok);
-  // An edited identity line is neither verifiable nor resealable.
   const relabeled = content.replace(ep!.episodeId, "aj1-" + "0".repeat(32));
   const mismatch = verifyEpisode(relabeled);
   assert.ok(!mismatch.ok && mismatch.failure === "digest_mismatch");
   assert.equal(resealDigestHex(relabeled), null);
-  // Truncated frontmatter and missing keys are malformed.
   assert.equal(parseEpisode(content.slice(0, 40)), null);
   assert.equal(parseEpisode(content.replace("world: main\n", "")), null);
   const broken = verifyEpisode("---\nnot frontmatter");
@@ -373,10 +365,6 @@ test("episode parse and verify edges", () => {
 });
 
 test("separator-heavy content verifies: the interpretation cap scales with body size", () => {
-  // Regression: with a fixed 64-candidate cap, a freshly rendered episode
-  // whose user content quotes the body separators ~62 times failed its own
-  // verification with digest_mismatch and dropped out of recall. Seed:
-  // testdata/fuzz/FuzzParseEpisode/episode_separator_exhaustion.
   const quoted = "quoting a transcript:" + "\n\n## Assistant\n\n".repeat(500) + "done";
   const p = validate(parsePayload(basePayload({ user_content: quoted })));
   const content = render({ payload: p, episodeId: episodeId(p), digestHex: payloadDigestHex(p), captureTimeMs: 1785240000500 });

@@ -16,8 +16,6 @@ import { writeCanonicalJson, writeAtomicJsonFile, type Config } from "./config.t
 import { parseOrderedJson, objectGet, objectSet, objectRemove, type JsonValue, type JsonEntry } from "./json.ts";
 import type { SearchOutput } from "./search.ts";
 
-// --- Owner edits (CLI `alias add` / `alias remove`) ---
-
 /**
  * Edit failure vocabulary. invalid_term: the key would never fire — it
  * must survive query tokenization (length > 2, [a-z0-9_], not a stop
@@ -172,8 +170,6 @@ function canonicalizeAliasKeys(entries: JsonEntry[]): void {
   }
   entries.splice(0, entries.length, ...merged);
 }
-
-// --- Miss log ---
 
 /** One weak-query record, appended as a JSON line. */
 export interface MissRecord {

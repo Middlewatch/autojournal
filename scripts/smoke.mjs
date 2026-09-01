@@ -67,9 +67,6 @@ try {
   const revision = run.stdout.match(/"revision":"([^"]+)"/)?.[1];
   expect(episode !== undefined && revision !== undefined, "search reports identity", run);
 
-  // Crediting boundaries: "index" occurs only inside "reindexing", which
-  // the word-start default refuses; substring mode still credits it, and
-  // a word-start prefix credits the same line.
   run = aj(["search", "index", ...baseArgs, "--json"]);
   expect(run.stdout.includes('"outcome":"no_match"'), "word-start refuses infix", run);
   run = aj(["search", "index", ...baseArgs, "--credit-mode", "substring", "--json"]);
@@ -77,7 +74,6 @@ try {
   run = aj(["search", "reindex", ...baseArgs, "--json"]);
   expect(run.stdout.includes('"outcome":"match"'), "word-start prefix credits", run);
 
-  // Alias promotion rescues a vocabulary mismatch.
   run = aj(["search", "hardware", ...baseArgs, "--json"]);
   expect(run.stdout.includes('"outcome":"no_match"'), "unaliased casual term misses", run);
   run = aj(["alias", "add", "hardware", "fwupd"]);
@@ -87,7 +83,6 @@ try {
   run = aj(["alias", "remove", "hardware"]);
   expect(run.code === 0, "alias remove succeeds", run);
 
-  // Evidence opening, then revision tracking.
   run = aj(["get", "--episode", episode, "--revision", revision, ...baseArgs, "--json"]);
   expect(run.stdout.includes('"outcome":"match"'), "get serves the requested revision", run);
   let episodeFile = null;
@@ -103,7 +98,6 @@ try {
   run = aj(["get", "--episode", episode, "--revision", revision, ...baseArgs, "--json"]);
   expect(run.stdout.includes('"outcome":"stale_revision"'), "an edit reports stale_revision", run);
 
-  // A typed empty result is a successful answer, not an error.
   run = aj(["search", "zeppelin", ...baseArgs, "--json"]);
   expect(run.stdout.includes('"outcome":"no_match"') && run.code === 0, "typed no_match exits 0", run);
 

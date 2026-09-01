@@ -95,7 +95,7 @@ export function openJournalRoot(rootPath: string): JournalRoot {
  */
 export function openExistingRoot(rootPath: string): JournalRoot {
   const p = resolveJournalRoot(rootPath);
-  const st = fs.statSync(p); // throws for the caller to classify
+  const st = fs.statSync(p);
   if (!st.isDirectory()) throw new StoreError("unavailable", `not a directory: ${p}`);
   return { path: p };
 }
@@ -289,7 +289,7 @@ export function readContained(root: JournalRoot, relPath: string): string {
     if (content.byteLength > MAX_EPISODE_FILE_BYTES) fail("episode exceeds byte budget");
     return content.toString("utf8");
   }
-  return fail("empty path"); // unreachable: containedPath guarantees a component
+  return fail("empty path");
 }
 
 /** What one walkCorpus visit is reporting. */
@@ -345,13 +345,13 @@ export function walkCorpus(root: JournalRoot, visit: (entry: WalkEntry) => boole
         if (!walk(path.join(dirAbs, name), childRel, depth + 1)) return false;
         continue;
       }
-      if (!entry.isFile()) continue; // symlinks and specials are invisible
+      if (!entry.isFile()) continue;
       if (!name.startsWith(ID_PREFIX) || !name.endsWith(".md")) continue;
       let st: fs.Stats;
       try {
         st = fs.lstatSync(path.join(dirAbs, name));
       } catch {
-        continue; // removed between the directory read and the stat
+        continue;
       }
       if (visit({ relPath: childRel, kind: "episode", sizeBytes: st.size, mtimeMs: st.mtimeMs }) === false) {
         return false;
@@ -378,7 +378,6 @@ export function corpusSignatureOf(root: JournalRoot): CorpusSignature {
     if (entry.kind !== "episode") return;
     sig.episodes++;
     const ms = Math.floor(entry.mtimeMs ?? 0);
-    // A pre-1970 mtime contributes nothing to the maximum.
     if (ms > sig.maxMtimeMs) sig.maxMtimeMs = ms;
   });
   return sig;
@@ -427,7 +426,7 @@ export function rootInSharedDirectory(rootPath: string): boolean {
     // exactly as it does for a path that does not exist.
     if (st === null || !st.isDirectory()) {
       const parent = path.dirname(candidate);
-      if (parent === candidate) return false; // filesystem root, no answer
+      if (parent === candidate) return false;
       candidate = parent;
       continue;
     }

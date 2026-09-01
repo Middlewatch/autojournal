@@ -64,8 +64,6 @@ test("sync builds, resyncs unchanged, and accounts for corpus surgery", () => {
     const again = sync(s.rootPath, s.indexPath);
     assert.deepEqual([again.indexed, again.unchanged, again.removed], [0, 4, 0]);
 
-    // A duplicate identity (copied file), a malformed file, an edited
-    // episode, and a deletion are each their own count.
     const snap = mustOpen(s.indexPath, s.rootPath);
     const [a, b, c, d] = snap.episodes.map((e) => e.relPath);
     fs.copyFileSync(path.join(s.rootPath, a), path.join(s.rootPath, path.dirname(a), "aj1-copy.md"));
@@ -78,8 +76,8 @@ test("sync builds, resyncs unchanged, and accounts for corpus surgery", () => {
     assert.equal(surgery.skippedMalformed, 1);
     assert.equal(surgery.digestMismatch, 1);
     assert.equal(surgery.removed, 1);
-    assert.equal(surgery.indexed, 1); // the edited file reindexes
-    assert.equal(surgery.unchanged, 2); // the copy's original and one untouched
+    assert.equal(surgery.indexed, 1);
+    assert.equal(surgery.unchanged, 2);
   } finally {
     s.drop();
   }
@@ -93,11 +91,8 @@ test("freshness follows the stat-walk signature", () => {
     const root = openExistingRoot(s.rootPath);
     assert.equal(freshnessOf(mustOpen(s.indexPath, s.rootPath), root).freshness, "fresh");
 
-    // A capture that bypasses the projection makes it stale...
     captureInto(s.rootPath, "", rawPayload("delegated"));
     assert.equal(freshnessOf(mustOpen(s.indexPath, s.rootPath), root).freshness, "stale");
-    // ...and an indexed capture over an uncovered corpus must not claim
-    // coverage it does not have.
     const result = captureInto(s.rootPath, s.indexPath, rawPayload("evaluation"));
     assert.equal(result.indexState, "stale", "projection missing the bypassed capture stays stale");
     sync(s.rootPath, s.indexPath);
@@ -124,8 +119,6 @@ test("capture classifies redelivery corpus-wide through the projection", () => {
     assert.equal(exact.indexState, "fresh");
     assert.equal(exact.relPath, first.relPath);
 
-    // Same identity, different event time: without the projection this
-    // would shard to another date and store twice; with it, conflict.
     const moved = captureInto(
       s.rootPath,
       s.indexPath,
@@ -148,7 +141,6 @@ test("a foreign snapshot is refused, never misread as empty memory", () => {
     captureInto(otherRoot, "", rawPayload("delegated"));
     assert.equal(openSnapshot(s.indexPath, rootDigestHex(otherRoot)).kind, "foreign");
     assert.equal(statusOf(otherRoot, s.indexPath).freshness, "unavailable");
-    // Sync repoints deliberately.
     sync(otherRoot, s.indexPath);
     assert.equal(openSnapshot(s.indexPath, rootDigestHex(otherRoot)).kind, "ok");
   } finally {
@@ -157,9 +149,6 @@ test("a foreign snapshot is refused, never misread as empty memory", () => {
 });
 
 test("a structurally corrupt snapshot reads as not_built, never throws", () => {
-  // Regression: valid JSON with postings: null passed the shape checks
-  // (typeof null is "object") and threw during decode — uncaught on the
-  // capture path, costing the turn.
   const s = scratch();
   try {
     captureInto(s.rootPath, "", rawPayload("basic"));
@@ -172,8 +161,6 @@ test("a structurally corrupt snapshot reads as not_built, never throws", () => {
     wire.episodes = [null];
     fs.writeFileSync(s.indexPath, JSON.stringify(wire));
     assert.equal(openSnapshot(s.indexPath, null).kind, "not_built");
-    // Capture consults the snapshot on its way to publishing; a corrupt
-    // one degrades the corpus-wide check, it does not lose the turn.
     const result = captureInto(s.rootPath, s.indexPath, rawPayload("delegated"));
     assert.equal(result.outcome, "published");
   } finally {
@@ -186,22 +173,18 @@ test("the writer lock serializes and recovers from stale holders", () => {
   try {
     captureInto(s.rootPath, "", rawPayload("basic"));
     sync(s.rootPath, s.indexPath);
-    // A held lock makes capture's best-effort update degrade to stale.
     fs.writeFileSync(s.indexPath + ".lock", JSON.stringify({ pid: process.pid, time_ms: Date.now() }));
     const result = captureInto(s.rootPath, s.indexPath, rawPayload("delegated"));
     assert.equal(result.outcome, "published");
     assert.equal(result.indexState, "stale");
     fs.rmSync(s.indexPath + ".lock");
-    // A lock whose pid is dead is broken and the caller proceeds.
     fs.writeFileSync(s.indexPath + ".lock", JSON.stringify({ pid: 999999999, time_ms: Date.now() }));
     assert.equal(
       withIndexLock(s.indexPath, false, () => "ran"),
       "ran",
     );
     assert.ok(!fs.existsSync(s.indexPath + ".lock"));
-    // A live holder with wait=false throws typed.
     withIndexLock(s.indexPath, false, () => {
-      // Re-create contention from inside the held region.
       assert.throws(() => withIndexLock(s.indexPath, false, () => "never"), IndexLockHeldError);
     });
   } finally {
@@ -220,8 +203,6 @@ test("status reports health and reseal re-attests edits", () => {
     st = statusOf(s.rootPath, s.indexPath);
     assert.deepEqual([st.rootOk, st.episodes, st.indexed, st.freshness], [true, 1, 1, "fresh"]);
 
-    // Edit the episode: status goes stale, reseal re-attests, sync inside
-    // reseal rebaselines back to fresh.
     const relPath = mustOpen(s.indexPath, s.rootPath).episodes[0].relPath;
     const abs = path.join(s.rootPath, relPath);
     fs.writeFileSync(abs, fs.readFileSync(abs, "utf8").replace("## Assistant\n\n", "## Assistant\n\nEDIT "));

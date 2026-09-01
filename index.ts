@@ -32,17 +32,11 @@ import type { RawPayload } from "./src/contracts.ts";
 
 export const ADAPTER_VERSION = "2.0.0";
 const HARNESS = "pi";
-// pi-visible-v2 (owner ruling 2026-08-31): every nonempty visible
-// assistant text segment is kept in turn order, replacing v1's
-// last-nonempty-wins rule. The policy token participates in episode
-// identity, so v1 and v2 captures of one turn are distinct episodes —
-// which is why import's dedupe is policy-aware (see importPiHistory).
+// pi-visible-v2 keeps every nonempty visible assistant text segment in turn order.
 const CAPTURE_POLICY = "pi-visible-v2";
 const PRIOR_CAPTURE_POLICIES = ["pi-default-v1"];
 const DEFAULT_SEARCH_LIMIT = 6;
 const MAX_EVIDENCE_REFERENCES = 256;
-
-// --- In-process engine invocation ---
 
 // Pre-release adapters defaulted journals into Pi's agent directory via
 // --default-root. The engine now resolves a host-neutral XDG default, so a
@@ -105,17 +99,10 @@ function loadOwnerConfig(): Config {
   }
 }
 
-// --- Turn summarization (Pi messages -> completed-turn facts) ---
-
 export function syncResultBody(run: RunResult): string {
   return run.stdout.trim() || run.stderr.trim() || "(sync produced no output)";
 }
 
-// A running sync owns the footer status for its duration: a toast
-// vanishes mid-rebuild, but the status line persists and its ticker
-// keeps the elapsed time visible. Completion or failure always clears
-// it. Routine incremental syncs clear in well under a second; the
-// ticker is for first builds, post-upgrade rebuilds, and big imports.
 function beginSyncStatus(ctx: {
   hasUI?: boolean;
   ui: { setStatus?(key: string, text: string | undefined): void };
@@ -263,8 +250,6 @@ const CAPTURE_FAILURE_OUTCOMES = new Set([
   "unreadable-report",
 ]);
 
-// --- Capture payload ---
-
 export function sanitizeToken(raw: string, fallback: string): string {
   const cleaned = raw.replace(/[^A-Za-z0-9._:+/@-]/g, "-").slice(0, 128);
   return cleaned === "" ? fallback : cleaned;
@@ -357,21 +342,6 @@ export function buildRawPayload(input: {
   };
 }
 
-// --- Pi session history import (backfill) ---
-//
-// A user's Pi sessions predating this extension live as JSONL logs under
-// <agent-dir>/sessions/<cwd-slug>/*.jsonl. Import replays each completed
-// user→assistant turn through `capture` with the same identity fields live
-// capture would have used — session id from the file basename, turn id from
-// the turn's final assistant entry id (the leaf at settle time), and the
-// same capture policy — so a turn that was already captured live resolves
-// as duplicate or conflict instead of storing twice, and re-running the
-// import is idempotent. Provenance is stamped in adapter_version (excluded
-// from the identity digest by design). Subagent-spawned session files
-// (header carries parentSession) are skipped unless the owner turned on
-// Subagent capture, matching live capture's gate; headless --print sessions
-// are indistinguishable from interactive ones in the log and are imported.
-
 export const IMPORT_ADAPTER_VERSION = `${ADAPTER_VERSION}+import`;
 
 export function piSessionsRoot(env: NodeJS.ProcessEnv = process.env): string {
@@ -450,7 +420,6 @@ export interface ImportTurn {
 export interface ParsedPiSession {
   turns: ImportTurn[];
   skippedTurns: number;
-  /// Whole-file skip reason; when set, turns is empty.
   skip?: string;
 }
 
@@ -681,8 +650,6 @@ export function formatImportSummary(counts: ImportCounts): string {
   return `autojournal import: ${parts.join(", ")} from ${files}`;
 }
 
-// --- Recall rendering ---
-
 interface SearchResultJson {
   outcome: string;
   results?: Array<{
@@ -715,9 +682,9 @@ export interface EvidenceReference extends EvidenceIdentity {
   reference: number;
 }
 
-// Models are good at choosing a numbered search result and needlessly fallible
-// at reproducing two adjacent opaque identifiers. Keep those identifiers in a
-// bounded, branch-restorable adapter table and expose only its short handle to
+// A model reliably picks a numbered result but unreliably reproduces two
+// adjacent opaque identifiers, so identifiers stay in a bounded,
+// branch-restorable adapter table and only the short handle reaches
 // memory_get. The core still receives and validates the original revision.
 export class EvidenceReferenceStore {
   private readonly references = new Map<number, EvidenceIdentity>();
@@ -907,8 +874,6 @@ export function formatMenuTitle(
   return lines.join("\n");
 }
 
-// --- Adapter-owned subagent capture lever ---
-
 // Whether subagent sessions may publish is adapter policy, and it cannot
 // live in branch-local session state: an exec-spawned subagent is a
 // separate process with its own branch, which would never see the toggle.
@@ -959,8 +924,6 @@ export function sessionHeaderIsSubagent(firstLine: string | null): boolean {
     return false;
   }
 }
-
-// --- Search quality menu ---
 
 interface QualityUi {
   ui: {
@@ -1033,8 +996,6 @@ async function searchQualityMenu(ctx: QualityUi): Promise<void> {
     }
   }
 }
-
-// --- Extension entry point ---
 
 export default function autojournalExtension(pi: ExtensionAPI): void {
   let sessionId = `ephemeral-${Date.now()}`;

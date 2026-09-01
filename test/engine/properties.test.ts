@@ -30,7 +30,6 @@ function runProperty(name: string, seeds: Buffer[], check: (data: Buffer) => voi
       try {
         check(data);
       } catch (err) {
-        // Surface the failing input so it can be pinned as a regression seed.
         throw new Error(`property failed on mutated input ${JSON.stringify(data.toString("latin1"))}`, {
           cause: err,
         });
@@ -108,7 +107,7 @@ runProperty("config parse property", fuzzSeeds("FuzzParseConfig", path.join(GOLD
   const root = parseOrderedJson(data.toString("utf8"));
   assert.ok(root !== null && root.kind === "object", "config parsed but the ordered reader refuses it");
   const first = writeCanonicalJson(root, 0);
-  const cfg2 = parseConfig(first); // must not throw
+  const cfg2 = parseConfig(first);
   const root2 = parseOrderedJson(first);
   assert.ok(root2 !== null, "rewrite emitted unreadable JSON");
   assert.equal(writeCanonicalJson(root2, 0), first, "rewrite is not byte-stable");
@@ -134,10 +133,6 @@ runProperty(
     const ep = parseEpisode(content);
     if (ep === null) return;
     assert.ok(validWorld(ep.world) && validScope(ep.scope), "parsed episode carries contract-violating identity");
-    // Counted textually over the frontmatter region — values are
-    // single-line, so every "\n<key>: " is a key line — which is
-    // deliberately asymmetric: duplicated unknown keys bind nothing and
-    // stay tolerated, so no generic no-duplicates oracle applies.
     const fm = content.slice(0, ep.bodyOffset);
     for (const key of REQUIRED_EPISODE_KEYS) {
       const n = fm.split("\n" + key + ": ").length - 1;

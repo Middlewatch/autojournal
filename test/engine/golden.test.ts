@@ -58,9 +58,6 @@ test("golden capture vectors", async (t) => {
         assert.throws(() => validateAsCaptureHost(parsePayload(bytes)));
         return;
       }
-      // published, superseded (a v1 outcome; v2 classifies the same
-      // delivery as conflict), and conflict vectors all pin what the
-      // *incoming* delivery derives, independent of corpus state.
       assert.ok(
         ["published", "superseded", "conflict"].includes(vec.outcome),
         `unhandled vector outcome ${vec.outcome}`,
@@ -87,7 +84,6 @@ test("golden episode bytes re-render byte-identically", async (t) => {
         captureTimeMs: ep!.captureTimeMs,
       });
       assert.ok(Buffer.from(rendered, "utf8").equals(golden), "rendered episode differs from golden");
-      // The pinned frontmatter facts must agree with the vectors.
       assert.equal(ep!.episodeId, vec.episode_id);
       assert.equal(DIGEST_PREFIX + ep!.digestHex, vec.payload_digest);
     });
@@ -103,7 +99,7 @@ test("golden episode bytes re-render byte-identically", async (t) => {
 test("golden truncation: oversize capture pins bytes and stays verifiable", () => {
   const raw = parsePayload(fs.readFileSync(path.join(PAYLOADS_DIR, "basic.json")));
   raw.userContent = "U".repeat(MAX_CONTENT_BYTES + 9) + "é";
-  raw.assistantResult = "A".repeat(MAX_CONTENT_BYTES - 1) + "é"; // straddles the cut: boundary backoff drops 2
+  raw.assistantResult = "A".repeat(MAX_CONTENT_BYTES - 1) + "é";
   const { raw: sized, drops } = applyOversizePolicy(raw);
   assert.deepEqual(drops, { user: 11, assistant: 2 });
   const p = validateAsCaptureHost(sized);

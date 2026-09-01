@@ -270,8 +270,6 @@ export function run(args: string[], io: CliIo): number {
   }
 }
 
-// --- alias ---
-
 function aliasCommand(cfg: Config, o: Opts, io: CliIo): number {
   const pos = o.positionals;
   if (pos.length === 0) {
@@ -400,8 +398,6 @@ function aliasCommand(cfg: Config, o: Opts, io: CliIo): number {
   return EXIT_MALFORMED;
 }
 
-// --- search / get ---
-
 function parseLanes(text: string): Lane[] | null {
   const lanes: Lane[] = [];
   for (const tag of text.split(",")) {
@@ -454,7 +450,6 @@ function openForRecall(rootPath: string, indexPath: string, io: CliIo): { root: 
 
 function outcomeExit(outcome: string): number {
   switch (outcome) {
-    // A typed empty result is a successful answer, not an error.
     case "match":
     case "no_match":
       return EXIT_OK;
@@ -574,8 +569,6 @@ function renderSearchJson(world: string, query: string, out: SearchOutput, io: C
   });
 }
 
-// matchLine extracts the matched line from a hit's snippet (the snippet
-// spans context lines; the hit's own line is the evidence).
 function matchLine(hit: Hit): string {
   if (hit.snippet === "") return "(source changed since indexing)";
   let lineNo = hit.snippetStart;
@@ -831,8 +824,6 @@ function resealCommand(rootPath: string, indexPath: string, o: Opts, io: CliIo):
   return exit;
 }
 
-// --- capture ---
-
 interface CaptureReport {
   outcome: string;
   episode_id: string | null;
@@ -911,8 +902,6 @@ function renderCapture(res: CaptureResult, io: CliIo): number {
   }
 }
 
-// --- default ---
-
 // Shows or persists the owner's default world/scope. With neither --world
 // nor --scope this prints the effective capture defaults; with either it
 // rewrites the owner config atomically, so future sessions start there.
@@ -943,8 +932,6 @@ function defaultCommand(cfg: Config, o: Opts, io: CliIo): number {
   else io.stdout(`default set: ${world} / ${scope}\nconfig: ${written}\n`);
   return EXIT_OK;
 }
-
-// --- entry point ---
 
 function readStdinSync(): Uint8Array {
   try {

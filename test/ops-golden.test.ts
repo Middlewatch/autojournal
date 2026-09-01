@@ -62,9 +62,6 @@ test("golden CLI ops samples", () => {
     const normalize = (text: string): string =>
       text.split(rootPath).join("$ROOT").split(indexPath).join("$INDEX");
 
-    // Build the corpus from every published golden payload at its pinned
-    // capture time, so the samples' counts and freshness are reproducible
-    // byte-for-byte on any machine.
     const vectors: Record<string, CaptureVector> = JSON.parse(
       fs.readFileSync(path.join(GOLDEN_DIR, "capture-vectors.json"), "utf8"),
     );
@@ -77,8 +74,6 @@ test("golden CLI ops samples", () => {
       assert.equal(JSON.parse(captured.stdout).outcome, "published", name);
     }
 
-    // Redelivery of a stored turn is a duplicate; a divergent redelivery
-    // of the same identity is a conflict, and neither touches the corpus.
     const basic = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "testdata", "payloads", "basic.json"), "utf8"));
     const enc = new TextEncoder();
     const dup = cliRun(env, 1785240001000, ["capture", ...rootArgs], enc.encode(JSON.stringify(basic)));

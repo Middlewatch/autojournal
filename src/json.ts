@@ -113,7 +113,7 @@ class Parser {
   }
 
   parseObject(): JsonValue | null {
-    this.pos++; // '{'
+    this.pos++;
     const entries: JsonEntry[] = [];
     const seen = new Set<string>();
     this.skipWs();
@@ -149,7 +149,7 @@ class Parser {
   }
 
   parseArray(): JsonValue | null {
-    this.pos++; // '['
+    this.pos++;
     const items: JsonValue[] = [];
     this.skipWs();
     if (this.text[this.pos] === "]") {
@@ -175,7 +175,7 @@ class Parser {
   }
 
   parseString(): string | null {
-    this.pos++; // opening '"'
+    this.pos++;
     let out = "";
     for (;;) {
       if (this.pos >= this.text.length) return null;
@@ -185,7 +185,7 @@ class Parser {
         this.pos++;
         return out;
       }
-      if (code < 0x20) return null; // raw control characters must be escaped
+      if (code < 0x20) return null;
       if (c !== "\\") {
         out += c;
         this.pos++;
@@ -240,7 +240,7 @@ class Parser {
             break;
           }
           if (first >= 0xdc00 && first <= 0xdfff) {
-            out += "�"; // unpaired low surrogate
+            out += "�";
             break;
           }
           out += String.fromCharCode(first);

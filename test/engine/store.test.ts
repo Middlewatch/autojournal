@@ -72,7 +72,6 @@ test("golden publish replay", async (t) => {
         assert.ok(Buffer.from(pub.content, "utf8").equals(golden), "published bytes differ from the pinned episode");
         const st = fs.lstatSync(path.join(dir, pub.relPath));
         if (!onWindows) assert.equal(st.mode & 0o777, 0o600);
-        // Redelivery against the pinned corpus shape dedupes.
         const again = publish(root, p, ep!.captureTimeMs + 1);
         assert.equal(again.outcome, "duplicate");
         assert.equal(again.relPath, pub.relPath);
@@ -116,12 +115,10 @@ test("a planted symlink at the final episode path is refused, not followed", { s
   const outside = tempDir();
   try {
     const root = openJournalRoot(dir);
-    const p = loadPayload("bare-no-world-scope"); // shards to 1970/01/01
+    const p = loadPayload("bare-no-world-scope");
     const victim = path.join(outside, "victim.md");
     fs.writeFileSync(victim, "outside bytes", { mode: 0o644 });
     fs.mkdirSync(path.join(dir, "1970", "01", "01"), { recursive: true, mode: 0o700 });
-    // Plant the link at the exact final name publish will derive (the
-    // pinned id from testdata/golden/capture-vectors.json).
     const finalName = "aj1-b42df6da3736e3f73459dd31930678b4.md";
     fs.symlinkSync(victim, path.join(dir, "1970", "01", "01", finalName));
     assert.throws(
@@ -141,7 +138,7 @@ test("a symlinked shard component is a containment violation", { skip: onWindows
   const outside = tempDir();
   try {
     const root = openJournalRoot(dir);
-    const p = loadPayload("basic"); // worlds/testworld/...
+    const p = loadPayload("basic");
     fs.symlinkSync(outside, path.join(dir, "worlds"));
     assert.throws(
       () => publish(root, p, 1785240000000),
@@ -160,7 +157,6 @@ test("corpus walk visibility rule", () => {
     const root = openJournalRoot(dir);
     const p = loadPayload("basic");
     const pub = publish(root, p, 1785240000000);
-    // Foreign tooling state and non-episode files are invisible.
     fs.mkdirSync(path.join(dir, ".git"), { recursive: true });
     fs.writeFileSync(path.join(dir, ".git", "aj1-fake.md"), "x");
     fs.writeFileSync(path.join(dir, "notes.md"), "x");
@@ -214,7 +210,6 @@ test("contained read refuses traversal and symlinks", { skip: onWindows }, () =>
 
 test("oversize policy truncates at a code-point boundary and records drops", () => {
   const base = parsePayload(fs.readFileSync(path.join(PAYLOADS_DIR, "basic.json")));
-  // A 4-byte glyph straddling the cut must not yield a torn code point.
   const glyph = "\u{1F600}";
   const over: RawPayload = {
     ...base,
@@ -223,11 +218,10 @@ test("oversize policy truncates at a code-point boundary and records drops", () 
   };
   const { raw, drops } = applyOversizePolicy(over);
   assert.equal(Buffer.byteLength(raw.userContent, "utf8"), MAX_CONTENT_BYTES - 2);
-  assert.equal(drops.user, 4); // the whole 4-byte glyph: 2 bytes over budget, 2 more to reach a boundary
+  assert.equal(drops.user, 4);
   assert.equal(Buffer.byteLength(raw.assistantResult, "utf8"), MAX_CONTENT_BYTES);
   assert.equal(drops.assistant, 7);
   assert.ok(raw.userContent.isWellFormed());
-  // Under-budget content passes through untouched.
   const clean = applyOversizePolicy(base);
   assert.equal(clean.raw, base);
   assert.deepEqual(clean.drops, { user: 0, assistant: 0 });
@@ -253,7 +247,6 @@ test("an oversized turn captures with visible accounting and verifies", () => {
     assert.equal(ep!.assistantDroppedBytes, 100);
     assert.equal(ep!.userDroppedBytes, 0);
     assert.ok(verifyEpisode(content).ok, "truncated episode must verify against its own digest");
-    // Determinism: redelivering the same oversized turn dedupes.
     const again = capture({
       rootPath: path.join(dir, "journal"),
       indexPath: "",

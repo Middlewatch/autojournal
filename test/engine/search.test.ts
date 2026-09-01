@@ -118,12 +118,10 @@ test("discovery, crediting, aliases, and folding", () => {
     publishTurn(s, turnPayload("quota policies were rewritten", "Policies rewritten."));
     const { root, snapshot } = openSynced(s);
 
-    // word_start crediting: "hang" must not credit "changes".
     const hang = search(root, snapshot, EMPTY_ALIASES, { query: "hang daemon", world: "main", nowMs: NOW });
     assert.equal(hang.outcome, "match");
     assert.ok(hang.hits.every((h) => !h.matchedTerms.includes("hang")));
 
-    // substring mode restores infix recall on request.
     const infix = search(root, snapshot, EMPTY_ALIASES, {
       query: "hang",
       world: "main",
@@ -132,27 +130,21 @@ test("discovery, crediting, aliases, and folding", () => {
     });
     assert.equal(infix.outcome, "match");
 
-    // Alias expansion: casual "firmware" discovers the canonical fwupd.
     const aliases = loadAliasMapFromBytes(enc.encode('{"firmware": ["fwupd"]}'));
     const aliased = search(root, snapshot, aliases, { query: "firmware", world: "main", nowMs: NOW });
     assert.equal(aliased.outcome, "match");
     assert.deepEqual(aliased.aliasTerms, ["fwupd"]);
     assert.ok(aliased.hits.some((h) => h.matchedTerms.includes("fwupd")));
 
-    // Singular folding: "policies" finds "policy"-adjacent text via the
-    // folded variant, reported in foldedTerms.
     const folded = search(root, snapshot, EMPTY_ALIASES, { query: "policies", world: "main", nowMs: NOW });
     assert.ok(folded.foldedTerms.includes("policy"));
 
-    // A typed empty result, not an error.
     const none = search(root, snapshot, EMPTY_ALIASES, { query: "zebra xylophone", world: "main", nowMs: NOW });
     assert.equal(none.outcome, "no_match");
-    // Stop-word-only queries have no terms.
     const stops = search(root, snapshot, EMPTY_ALIASES, { query: "the of and", world: "main", nowMs: NOW });
     assert.equal(stops.outcome, "no_match");
     assert.deepEqual(stops.queryTerms, []);
 
-    // A missing projection over a nonempty corpus is index_stale.
     const unbuilt = search(root, null, EMPTY_ALIASES, { query: "daemon", world: "main", nowMs: NOW });
     assert.equal(unbuilt.outcome, "index_stale");
     assert.equal(unbuilt.freshness, "not_built");
@@ -170,7 +162,6 @@ test("scope and lane filters bound recall", () => {
     const { root, snapshot } = openSynced(s);
 
     const all = search(root, snapshot, EMPTY_ALIASES, { query: "marker", world: "main", nowMs: NOW });
-    // Evaluation is outside the default lanes.
     assert.equal(all.total, 2);
     const scoped = search(root, snapshot, EMPTY_ALIASES, { query: "marker", world: "main", scope: "project:x", nowMs: NOW });
     assert.equal(scoped.total, 1);
@@ -204,7 +195,7 @@ test("cursors page deterministically and bind to their minting state", () => {
     const page2 = search(root, snapshot, EMPTY_ALIASES, {
       query: "pagination marker",
       world: "main",
-      nowMs: NOW + 999_999, // the cursor's embedded clock must win
+      nowMs: NOW + 999_999,
       limit: 2,
       cursor: page1.nextCursor,
     });
@@ -213,7 +204,6 @@ test("cursors page deterministically and bind to their minting state", () => {
     const ids2 = page2.hits.map((h) => `${h.episodeId}:${h.line}`);
     assert.equal(new Set([...ids1, ...ids2]).size, ids1.length + ids2.length, "pages overlap");
 
-    // A different query refuses the cursor.
     const wrongQuery = search(root, snapshot, EMPTY_ALIASES, {
       query: "pagination markers",
       world: "main",
@@ -222,8 +212,6 @@ test("cursors page deterministically and bind to their minting state", () => {
     });
     assert.equal(wrongQuery.outcome, "malformed");
 
-    // A corpus change between pages invalidates the cursor: candidate
-    // ordinals may have shifted, so the reference is honestly refused.
     publishTurn(s, turnPayload("pagination marker item late", "Recorded late."));
     const afterChange = search(root, openSynced(s).snapshot, EMPTY_ALIASES, {
       query: "pagination marker",
@@ -253,7 +241,6 @@ test("edited evidence is excluded from search and stale for get", () => {
     assert.equal(gotten.trust, "untrusted_evidence");
     assert.ok(gotten.lineStart >= 1 && gotten.lineEnd >= gotten.lineStart);
 
-    // Edit the file post-index: search excludes it, get reports stale.
     const abs = path.join(s.rootPath, hit.path);
     fs.writeFileSync(abs, fs.readFileSync(abs, "utf8").replace("Wombat contained.", "Wombat escaped."));
     const excluded = search(root, snapshot, EMPTY_ALIASES, { query: "wombat incident", world: "main", nowMs: NOW });
@@ -263,7 +250,6 @@ test("edited evidence is excluded from search and stale for get", () => {
     assert.equal(stale.outcome, "stale_revision");
     assert.equal(stale.revision, "", "an unverifiable file has no honest current revision");
 
-    // Reseal re-attests; the new revision serves and the old stays stale.
     reseal(s.rootPath, s.indexPath, false);
     const resealed = openSynced(s);
     const again = search(resealed.root, resealed.snapshot, EMPTY_ALIASES, { query: "wombat incident", world: "main", nowMs: NOW });
@@ -300,10 +286,8 @@ test("get validates identity, revision shape, and bounds", () => {
       get(root, snapshot, { episodeId: hit.episodeId, revision: hit.revision, expectedWorld: "other" }).outcome,
       "gone",
     );
-    // A wrong path hint falls through to the index and still resolves.
     const hinted = get(root, snapshot, { episodeId: hit.episodeId, revision: hit.revision, pathHint: "2020/01/01/aj1-nope.md" });
     assert.equal(hinted.outcome, "match");
-    // Explicit line bounds serve exactly that span.
     const span = get(root, snapshot, {
       episodeId: hit.episodeId,
       revision: hit.revision,
@@ -342,7 +326,6 @@ test("scorer primitives: smoothed idf, recency, confidence, crediting", () => {
   assert.ok(creditLine("let it hang there", "hang", "whole_word"));
   assert.ok(creditLine("uses llama.cpp today", "llama.cpp", "whole_word"));
 
-  // Cursor round-trip and guard binding.
   const inputs = { query: "q", world: "main", scope: "", lanes: "conversation", aliasDigest: "d", corpusSignature: "sig", rankingTag: "t" };
   const cursor = cursorEncode(7, NOW, inputs);
   assert.deepEqual(cursorDecode(cursor, inputs), { offset: 7, nowMs: NOW });

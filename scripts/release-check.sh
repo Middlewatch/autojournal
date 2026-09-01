@@ -10,9 +10,6 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
 
 ./scripts/verify.sh
-# --ignore-scripts keeps prepack (this same self-check) from running twice
-# and keeps the --json output clean; the explicit invocation below is the
-# authoritative one and also asserts the tarball layout.
 pack_json=$(mktemp)
 trap 'rm -f "$pack_json"' EXIT
 npm pack --dry-run --json --ignore-scripts > "$pack_json"

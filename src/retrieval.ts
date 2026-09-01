@@ -115,14 +115,12 @@ export function tokenizeLine(line: string): string[] {
     while (i < line.length && isIndexTokenChar(line.charCodeAt(i))) i++;
     const raw = line.slice(start, i);
     if (raw.length < 2 || raw.length > MAX_TOKEN_LEN) continue;
-    const word = asciiLower(raw); // runs are pure ASCII by construction
+    const word = asciiLower(raw);
     if (isStopWord(word)) continue;
     out.push(word);
   }
   return out;
 }
-
-// --- Scorer ---
 
 // aj-scorer.v4: rarity uses the smoothed idf (idfWeight below) rather
 // than ln(N/df), keeping the weight bounded as df approaches N and
@@ -132,13 +130,9 @@ export const CONFIDENCE_POLICY_VERSION = "aj-conf.v2";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-/** The per-episode page cap introduced in aj-scorer.v2. */
 export const MAX_PER_EPISODE_DEFAULT = 2;
 
-/**
- * The exponent on term coverage in aj-conf.v2 confidence banding. Linear
- * discount is what the calibration runs measured.
- */
+/** The exponent applied to term coverage in confidence banding. */
 export const CONFIDENCE_COVERAGE_ALPHA = 1.0;
 
 /**
@@ -264,8 +258,6 @@ export function trailingZeros(mask: bigint): number {
   return n;
 }
 
-// --- Confidence ---
-
 /**
  * The stable wire vocabulary shared by every confidence-policy version. A
  * policy version may change classification without changing these values.
@@ -291,8 +283,6 @@ export function confidenceOf(score: number, floor: number): Confidence {
   if (score >= floor) return "medium";
   return "low";
 }
-
-// --- Cursor ---
 
 // The cursor guard binds the corpus stat-walk signature and the first
 // page's resolved clock: a corpus change between pages refuses the

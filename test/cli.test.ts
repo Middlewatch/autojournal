@@ -110,7 +110,6 @@ test("default shows and persists owner capture defaults", () => {
     assert.equal(setReport.scope, "default");
     assert.ok(fs.existsSync(setReport.config));
 
-    // The persisted default now governs both show and capture's fill.
     const showAfter = fakeIo(env);
     assert.equal(run(["default", "--json"], showAfter.io), EXIT_OK);
     assert.equal(JSON.parse(showAfter.stdout()).world, "team");
@@ -138,7 +137,6 @@ test("config resolution failures are typed", () => {
     assert.equal(run(["capture", "--config", path.join(dir, "bad.json")], malformed.io), EXIT_FAILURE);
     assert.match(malformed.stderr(), /config is malformed/);
 
-    // A config naming the journal root routes capture without --root.
     fs.writeFileSync(path.join(dir, "good.json"), JSON.stringify({ journal_root: path.join(dir, "journal") }));
     const routed = fakeIo({ HOME: dir }, payloadBytes("basic"));
     assert.equal(run(["capture", "--config", path.join(dir, "good.json")], routed.io), EXIT_OK);
@@ -169,9 +167,6 @@ test("status, sync, catalog, and reseal verbs speak the wire shapes", () => {
     const seed = fakeIo(env, payloadBytes("basic"));
     assert.equal(run(["capture", ...rootArg], seed.io), EXIT_OK);
 
-    // Capture birthed the projection (matching the v1 engine's
-    // create-at-first-capture): status is already fresh, and the sync
-    // below reports the episode unchanged rather than newly indexed.
     const before = fakeIo(env);
     assert.equal(run(["status", "--json", ...rootArg], before.io), EXIT_OK);
     const beforeReport = JSON.parse(before.stdout());
@@ -232,7 +227,6 @@ test("search and get verbs speak the wire shapes", () => {
     assert.equal(run(["capture", ...rootArg], seed.io), EXIT_OK);
     assert.equal(run(["sync", ...rootArg], fakeIo(env).io), EXIT_OK);
 
-    // The basic fixture's world is testworld.
     const found = fakeIo(env);
     assert.equal(run(["search", "--world", "testworld", "--json", ...rootArg, "tests", "behave"], found.io), EXIT_OK);
     const report = JSON.parse(found.stdout());
@@ -304,7 +298,6 @@ test("alias verbs curate the thesaurus and surface miss candidates", () => {
     const missing = fakeIo(env);
     assert.equal(run(["alias", "remove", "firmware"], missing.io), EXIT_FAILURE);
 
-    // No miss log yet: a friendly pointer, not an error.
     const none = fakeIo(env);
     assert.equal(run(["alias", "candidates"], none.io), EXIT_OK);
     assert.match(none.stdout(), /no candidates yet/);

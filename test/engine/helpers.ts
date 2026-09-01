@@ -118,7 +118,6 @@ export function fuzzSeeds(target: string, fixtureDir: string, suffix: string): B
   return seeds;
 }
 
-/** SplitMix64: deterministic, seedable, good-enough dispersion for mutation. */
 export class Prng {
   private state: bigint;
   constructor(seed: bigint) {
