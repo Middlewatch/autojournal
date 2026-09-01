@@ -124,7 +124,7 @@ export function tokenizeLine(line: string): string[] {
 
 // --- Scorer ---
 
-// aj-scorer.v4 is v3 with the S0-review derived-tier fix: the rarity
+// aj-scorer.v4 is v3 with a bounded rarity weight: the rarity
 // weight becomes the smoothed idf ln(1 + (N − df + 0.5)/(df + 0.5)),
 // replacing ln(N/df) — bounded for df approaching N and stable for tiny
 // corpora. Ordering semantics (duplicate term weights, additive folding,
@@ -297,7 +297,7 @@ export function confidenceOf(score: number, floor: number): Confidence {
 
 // --- Cursor ---
 
-// aj2 cursors (the S0-review fix): the wire shape is
+// aj2 cursors: the wire shape is
 // "aj2.<offset>.<nowMs>.<8 hex guard>", and the guard additionally binds
 // the corpus stat-walk signature and the first page's resolved clock —
 // so a corpus change between pages invalidates the cursor (candidate

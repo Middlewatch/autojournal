@@ -193,8 +193,8 @@ test("sanitizeToken falls back when nothing survives", () => {
 });
 
 test("originHost reports the short machine name, or nothing it cannot label", () => {
-  assert.equal(originHost("stealth.tail8255b9.ts.net"), "stealth");
-  assert.equal(originHost("battlestation"), "battlestation");
+  assert.equal(originHost("buildbox.tail0000aa.ts.net"), "buildbox");
+  assert.equal(originHost("workstation"), "workstation");
   assert.equal(originHost(""), null);
   assert.equal(originHost("   "), null);
   // Provenance names a real machine, so an unusable name costs the field
@@ -211,7 +211,7 @@ test("buildRawPayload labels the originating machine and omits it when unknown",
     eventTimeMs: 1,
     selection: DEFAULT_SELECTION,
   };
-  assert.equal(buildRawPayload({ ...base, host: "stealth" }).host, "stealth");
+  assert.equal(buildRawPayload({ ...base, host: "buildbox" }).host, "buildbox");
   assert.equal(buildRawPayload({ ...base, host: null }).host, null);
 });
 

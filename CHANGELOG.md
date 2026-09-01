@@ -4,7 +4,7 @@ Versions are the npm package (`autojournal`). `adapter_version` is recorded in e
 frontmatter but is deliberately excluded from the payload digest, so upgrading never
 re-identifies or re-publishes existing episodes.
 
-## 2.0.0 — unreleased
+## 2.0.0 — 2026-08-31
 
 The engine is now TypeScript running inside the Pi process (ADR 0001): no bundled
 binaries, no subprocesses, no runtime dependencies. Episode bytes, episode-id
