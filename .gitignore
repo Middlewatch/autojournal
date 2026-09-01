@@ -2,7 +2,6 @@
 __pycache__/
 /tmp/
 /node_modules/
-/package-lock.json
 # Local harness convenience symlink to AGENTS.md; AGENTS.md is the tracked one.
 /CLAUDE.md
 .local/
