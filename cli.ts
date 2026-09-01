@@ -54,7 +54,7 @@ import { rootDigestHex, thesaurusPath } from "./src/paths.ts";
 import { isoFromMs } from "./src/render.ts";
 import { MAX_QUERY_BYTES, MAX_RESULTS_LIMIT, type Lane } from "./src/contracts.ts";
 
-export const CLI_VERSION = "2.0.0";
+export const CLI_VERSION = "2.0.1";
 
 const USAGE = `usage: autojournal <command> [options]
 

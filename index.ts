@@ -30,7 +30,7 @@ import { capture as engineCapture, findPriorPolicyCapture } from "./src/store.ts
 import { openSnapshot, type Snapshot } from "./src/index.ts";
 import type { RawPayload } from "./src/contracts.ts";
 
-export const ADAPTER_VERSION = "2.0.0";
+export const ADAPTER_VERSION = "2.0.1";
 const HARNESS = "pi";
 // pi-visible-v2 keeps every nonempty visible assistant text segment in turn order.
 const CAPTURE_POLICY = "pi-visible-v2";

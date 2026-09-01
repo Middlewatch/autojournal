@@ -9,7 +9,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { fileURLToPath } from "node:url";
 
-import { run, clockFromEnv, EXIT_OK, EXIT_FAILURE, EXIT_MALFORMED, EXIT_CONFLICT, type CliIo } from "../cli.ts";
+import { run, clockFromEnv, CLI_VERSION, EXIT_OK, EXIT_FAILURE, EXIT_MALFORMED, EXIT_CONFLICT, type CliIo } from "../cli.ts";
 
 const PAYLOADS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "testdata", "payloads");
 
@@ -163,7 +163,7 @@ test("usage, version, and the pinned clock", () => {
 
   const version = fakeIo({});
   assert.equal(run(["version"], version.io), EXIT_OK);
-  assert.match(version.stdout(), /^autojournal 2\.0\.0 /);
+  assert.ok(version.stdout().startsWith(`autojournal ${CLI_VERSION} `));
 
   assert.equal(clockFromEnv((k) => (k === "AUTOJOURNAL_NOW_MS" ? "12345" : undefined))(), 12345);
   assert.ok(clockFromEnv(() => undefined)() > 0);

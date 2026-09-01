@@ -4,6 +4,32 @@ Versions are the npm package (`autojournal`). `adapter_version` is recorded in e
 frontmatter but is deliberately excluded from the payload digest, so upgrading never
 re-identifies or re-publishes existing episodes.
 
+## 2.0.1 — 2026-08-31
+
+No runtime behavior changes: a documentation and test-infrastructure patch.
+
+### Fixed
+
+- `package-lock.json` is tracked, so CI's `npm ci` install step works from a
+fresh clone; the lockfile carries dev-only dependencies and the published
+package still has zero runtime dependencies.
+- A `.gitattributes` forbids line-ending conversion repo-wide: episode bytes,
+golden fixtures, and digests are byte-exact contracts, and an `autocrlf`
+checkout previously corrupted them.
+- The test suite runs on Windows: file paths derive from `file://` URLs
+instead of POSIX-only conversions, and tests over colon-scoped fixtures
+either substitute an NTFS-legal name (where the logic under test is
+scope-agnostic) or skip with a named reason (where fixture bytes are pinned).
+
+### Documented
+
+- A platform limit that also applied to 2.0.0 as shipped: NTFS forbids `:`
+and a few other characters in file names, so world and scope names using
+them exist only in POSIX corpora.
+- Code comments across the engine, CLI, and tests were reduced to rationale
+the code cannot express; measurements and version history live in the
+repository's spec records instead.
+
 ## 2.0.0 — 2026-08-31
 
 The engine is now TypeScript running inside the Pi process (ADR 0001): no bundled
@@ -28,8 +54,6 @@ opt-in miss log and alias add/remove behind explicit confirms. `alias list` and
 - The `autojournal` CLI installs as a real npm bin over the in-process engine, with
 the same verbs and `--json` interface as 1.x.
 - Windows is a claimed, tested target: CI runs the suite on windows-latest.
-One platform limit: NTFS forbids `:` and a few other characters in file
-names, so world and scope names using them exist only in POSIX corpora.
 
 ### Changed
 
