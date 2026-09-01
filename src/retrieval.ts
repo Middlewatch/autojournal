@@ -124,12 +124,9 @@ export function tokenizeLine(line: string): string[] {
 
 // --- Scorer ---
 
-// aj-scorer.v4 is v3 with a bounded rarity weight: the rarity
-// weight becomes the smoothed idf ln(1 + (N − df + 0.5)/(df + 0.5)),
-// replacing ln(N/df) — bounded for df approaching N and stable for tiny
-// corpora. Ordering semantics (duplicate term weights, additive folding,
-// span dedup, per-episode cap, deterministic tie-breaks) carry over
-// unchanged from the judged v3 behavior.
+// aj-scorer.v4: rarity uses the smoothed idf (idfWeight below) rather
+// than ln(N/df), keeping the weight bounded as df approaches N and
+// stable for tiny corpora.
 export const SCORER_VERSION = "aj-scorer.v4";
 export const CONFIDENCE_POLICY_VERSION = "aj-conf.v2";
 
@@ -297,12 +294,10 @@ export function confidenceOf(score: number, floor: number): Confidence {
 
 // --- Cursor ---
 
-// aj2 cursors: the wire shape is
-// "aj2.<offset>.<nowMs>.<8 hex guard>", and the guard additionally binds
-// the corpus stat-walk signature and the first page's resolved clock —
-// so a corpus change between pages invalidates the cursor (candidate
-// ordinals may have shifted), and every page of one search scores
-// recency against the same instant.
+// The cursor guard binds the corpus stat-walk signature and the first
+// page's resolved clock: a corpus change between pages refuses the
+// cursor (candidate ordinals may have shifted), and every page of one
+// search scores recency against the same instant.
 export const CURSOR_PREFIX = "aj2.";
 export const CURSOR_GUARD_HEX_LEN = 8;
 

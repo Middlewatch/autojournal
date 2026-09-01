@@ -11,11 +11,10 @@
 //
 // The extension invents no memory policy. It transports an explicit
 // owner-selected session world/scope when present; otherwise it uses the
-// engine's owner-configured or built-in defaults. Index residency: the
-// snapshot is loaded per query — measured at ~0.13 s warm against a
-// 4,200-episode corpus — rather than cached resident,
-// trading a small per-search cost for a process that never pins the
-// 200+ MiB postings graph.
+// engine's owner-configured or built-in defaults. The snapshot index is
+// loaded per query rather than cached resident, trading a small
+// per-search cost for a process that never pins the postings graph in
+// memory.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -231,10 +230,8 @@ export function summarizeRun(messages: unknown[]): RunSummary {
     } else if (msg.role === "assistant") {
       // pi-visible-v2: every nonempty visible assistant text block
       // survives, in turn order, joined with blank lines — block level,
-      // not message level. Measured on 50 sampled turns:
-      // mid-turn text exists in 32/50, adds 22% over
-      // final-reply bytes, and is 100% novel — goal statements, measured
-      // results, verdicts, commit hashes — none of it restated in the
+      // not message level — because mid-turn text (goal statements,
+      // measured results, verdicts) is largely not restated in the
       // final reply.
       if (typeof msg.content === "string") {
         if (msg.content.trim() !== "") assistantParts.push(msg.content);
