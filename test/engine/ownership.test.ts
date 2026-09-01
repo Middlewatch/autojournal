@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "src");
 
@@ -61,7 +61,7 @@ test("the engine module list is closed", () => {
 test("each anchor symbol is exported by its owning module and no other", async () => {
   const exportsByModule = new Map<string, Set<string>>();
   for (const name of MODULES) {
-    const mod = (await import(path.join(SRC, name))) as Record<string, unknown>;
+    const mod = (await import(pathToFileURL(path.join(SRC, name)).href)) as Record<string, unknown>;
     exportsByModule.set(name, new Set(Object.keys(mod)));
   }
   for (const [owner, symbols] of Object.entries(OWNERSHIP)) {
