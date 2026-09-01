@@ -537,7 +537,8 @@ test(
           },
         },
       });
-      assert.match(titles[0], new RegExp(`Journal: ${path.join(tmp, "data", "autojournal", "journals")}`));
+      // The engine joins XDG segments with "/" on every platform.
+      assert.ok(titles[0].includes(`Journal: ${path.join(tmp, "data")}/autojournal/journals`));
       assert.deepEqual(appended, [
         {
           type: SESSION_POLICY_ENTRY,
@@ -873,11 +874,13 @@ test("end-to-end capture -> search -> get through the in-process engine", async 
     assert.match(rendered, /^\d+ of \d+ matching result\(s\):/);
     assert.doesNotMatch(rendered, /object Object/);
 
+    // NTFS forbids ":" in file names, so the colon-scope exercise is POSIX-only.
+    const isoScope = process.platform === "win32" ? "client-a" : "client:a";
     const isolatedCapture = runCli(
       ["capture", "--index", index],
       wire({
         world: "isolated-work",
-        scope: "client:a",
+        scope: isoScope,
         turn_id: "e2e-turn-2",
         user_content: "record the platypus release checklist",
         assistant_result: "the platypus release remains isolated",
@@ -886,21 +889,21 @@ test("end-to-end capture -> search -> get through the in-process engine", async 
     );
     assert.match(
       JSON.parse(isolatedCapture.stdout).path,
-      /^worlds\/isolated-work\/scopes\/client:a\/\d{4}\/\d{2}\/\d{2}\//,
+      new RegExp(`^worlds/isolated-work/scopes/${isoScope}/\\d{4}/\\d{2}/\\d{2}/`),
     );
     const hiddenFromDefault = runCli(
       ["search", "platypus", "--world", "main", "--scope", "default", "--index", index, "--json"],
     );
     assert.equal(JSON.parse(hiddenFromDefault.stdout).outcome, "no_match");
     const visibleInSelection = runCli([
-      "search", "platypus", "--world", "isolated-work", "--scope", "client:a",
+      "search", "platypus", "--world", "isolated-work", "--scope", isoScope,
       "--index", index, "--json",
     ]);
     assert.equal(JSON.parse(visibleInSelection.stdout).outcome, "match");
     const catalogRun = runCli(["catalog", "--index", index, "--json"]);
     assert.deepEqual(JSON.parse(catalogRun.stdout).pairs, [
       { world: "main", scope: "default" },
-      { world: "isolated-work", scope: "client:a" },
+      { world: "isolated-work", scope: isoScope },
     ]);
 
     const got = runCli([
@@ -912,7 +915,7 @@ test("end-to-end capture -> search -> get through the in-process engine", async 
     assert.match(renderGetResult(opened), /quokka/);
     const isolatedGet = runCli([
       "get", "--episode", hit.episode_id, "--revision", hit.revision,
-      "--world", "isolated-work", "--scope", "client:a",
+      "--world", "isolated-work", "--scope", isoScope,
       "--index", index, "--json",
     ]);
     assert.equal(JSON.parse(isolatedGet.stdout).outcome, "gone");

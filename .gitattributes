@@ -1,0 +1,3 @@
+# Episode bytes, golden fixtures, and digests are byte-exact contracts:
+# no line-ending conversion on any platform, ever.
+* -text
