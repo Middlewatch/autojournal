@@ -7,9 +7,6 @@ and the visible model output and drops the JSON metadata and tool traffic
 around it. Agents search those episodes later through bounded,
 provenance-carrying tools.
 
-The whole engine is TypeScript running inside the Pi process: no bundled
-binaries, no subprocesses, no runtime dependencies beyond Node itself.
-
 ## Install
 
 ~~~sh
@@ -17,7 +14,6 @@ pi install npm:autojournal
 ~~~
 
 Then start a new Pi process, or run `/reload` in a running session.
-Requires Node ≥ 22.6, which Pi already requires. Linux, macOS, and Windows.
 
 ## First use
 
