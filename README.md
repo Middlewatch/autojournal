@@ -27,7 +27,8 @@ Capture happens after the end of each assistant turn. The capture policy
 order — mid-turn progress notes and verdicts as well as the final reply —
 and records which corpus files the turn consulted in a `## Files` section:
 paths the `read` tool opened (a `:start-end` line range for partial reads,
-the `read!` op for a failed read), `.md` path tokens from bash commands,
+the `read!` op for a failed read), `.md` path tokens from bash commands
+(a glob such as `skills/*/SKILL.md` is recorded as the literal pattern),
 `memory_get` episode ids, and `web_fetch` hostnames. Thinking traces, tool
 contents, command strings, and queries never enter memory.
 

@@ -159,3 +159,10 @@ data keeps its bytes, id, and digest unchanged (the golden pins prove it).
 - 2026-09-03 (S2): bash-derived targets are relative to the command's
   working directory, so `docs/x.md` resolves only by suffix. The scanner
   matches skills and notes by suffix already.
+- 2026-09-04 (post-backfill review): the first live `child:read` rendered
+  `README.md`, the child's scope-relative name, which no consumer can
+  attribute. agent-delegate now joins `reads` targets to the child's first
+  scope root before publishing them; autojournal's home-to-`~` pass then
+  applies. The same review found bash globs (`cat skills/*/SKILL.md`)
+  dropped by the code-character filter; they are now recorded as the
+  literal pattern under `bash`, and the scanner counts them for no skill.

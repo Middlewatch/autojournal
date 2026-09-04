@@ -367,10 +367,14 @@ export function normalizeTarget(raw: string, home: string = os.homedir()): strin
 
 /**
  * The bash carve-out: whitespace-split tokens that end in `.md` and look
- * like paths (contain `/` or start with `~`), with shell quoting and
- * trailing punctuation trimmed. Heredoc bodies are tokenized too, so a
- * token carrying characters no path has (regex, code, quoting) is dropped
- * rather than reported; the command string itself never leaves here.
+ * like paths (contain `/` or start with `~`), with shell quoting, an
+ * assignment prefix (`f=docs/x.md`), and trailing punctuation trimmed.
+ * Globs (a `*` or `?` in the token, as in a cat over every skill's
+ * SKILL.md) are sweeps over many files and are kept as the literal pattern
+ * for the consumer to expand or set aside. Heredoc
+ * bodies are tokenized too, so a token carrying characters no path has
+ * (regex, code, quoting) is dropped rather than reported; the command
+ * string itself never leaves here.
  */
 export function markdownPathTokens(command: string): string[] {
   const out: string[] = [];
@@ -378,11 +382,12 @@ export function markdownPathTokens(command: string): string[] {
     // Backslashes become `/` first so a Windows path is a path here too.
     const token = rawToken
       .replaceAll("\\", "/")
+      .replace(/^[A-Za-z_][A-Za-z0-9_]*=/, "")
       .replace(/^[('"`]+/, "")
       .replace(/[)'"`;,:.]+$/, "");
     if (!token.endsWith(".md")) continue;
     if (!(token.includes("/") || token.startsWith("~"))) continue;
-    if (/[|()[\]{}*?<>="'`^]/.test(token)) continue;
+    if (/[|()[\]{}<>="'`^]/.test(token)) continue;
     out.push(token);
   }
   return out;

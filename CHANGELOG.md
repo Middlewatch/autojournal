@@ -21,8 +21,10 @@ the cap. Golden fixture `files` pins the bytes; a 2.0 build reports a
 Files-bearing episode as `digest_mismatch`.
 - Capture policy `pi-visible-v3`: the pi adapter fills `files` from the run's
 tool calls and results. `read` paths (with `:start-end` for partial reads,
-`read!` when the tool errored), `.md` path tokens from bash commands (tokens
-carrying regex or code characters are dropped), `memory_get` episode ids from
+`read!` when the tool errored), `.md` path tokens from bash commands (a
+glob is kept as its literal pattern, a shell assignment contributes its
+value, and tokens carrying regex or code characters are dropped),
+`memory_get` episode ids from
 result details, and `web_fetch` hostnames. Targets normalize the home
 directory to `~`, strip a leading `@`, and dedupe per op; the store cuts the
 tail past 256 and records `files_dropped`. Import treats `pi-visible-v2` as a

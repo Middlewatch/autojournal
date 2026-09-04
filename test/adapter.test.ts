@@ -300,6 +300,15 @@ test("consultation targets normalize and refuse line-unsafe values", () => {
     markdownPathTokens("grep -E 'docs/|adr/|/.md' x; re.compile(r'(?<![w-])skills/adr/SKILL.md'); f\"{a}/b.md\"; echo a/[b].md"),
     [],
   );
+  // Globs are sweeps over many files; the literal pattern is recorded and
+  // survives target validation.
+  assert.deepEqual(
+    markdownPathTokens("cat skills/*/SKILL.md; ls ~/.agents/inbox/*.md; head -3 docs/adr/000?-*.md"),
+    ["skills/*/SKILL.md", "~/.agents/inbox/*.md", "docs/adr/000?-*.md"],
+  );
+  assert.equal(normalizeTarget("skills/*/SKILL.md", "/home/me"), "skills/*/SKILL.md");
+  // A shell assignment's value is the path; a flag's value is not.
+  assert.deepEqual(markdownPathTokens('f=docs/x.md; g="~/w/y.md"; cat $f --out=docs/z.md'), ["docs/x.md", "~/w/y.md"]);
   assert.deepEqual(markdownPathTokens("type C:\\repo\\docs\\x.md"), ["C:/repo/docs/x.md"]);
   assert.deepEqual(markdownPathTokens("rg -n foo README.md docs/README.md ./x.md (./y.md) 'z/w.md'; ~/t.md: file.mdx"), [
     "docs/README.md",
