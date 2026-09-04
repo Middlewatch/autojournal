@@ -545,3 +545,101 @@ test(
     }
   },
 );
+
+// Regression (2026-09-03, owner report: the Pi session froze twice during
+// import). Import ran the live one-turn capture transaction per turn, which
+// reopens and rewrites the whole snapshot each time (~0.4 s on an 18 MB
+// projection), in a loop with no await, so a 1,700-turn backfill blocked the
+// TUI for a quarter hour. Import now leaves the projection to one closing
+// sync and yields to the event loop between files, reporting progress.
+test("e2e: import defers the projection to one sync and keeps the event loop responsive", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aj-import-defer-"));
+  const previous = {
+    config: process.env.AUTOJOURNAL_CONFIG,
+    xdgConfig: process.env.XDG_CONFIG_HOME,
+    data: process.env.XDG_DATA_HOME,
+    state: process.env.XDG_STATE_HOME,
+  };
+  delete process.env.AUTOJOURNAL_CONFIG;
+  process.env.XDG_CONFIG_HOME = path.join(tmp, "config");
+  process.env.XDG_DATA_HOME = path.join(tmp, "data");
+  process.env.XDG_STATE_HOME = path.join(tmp, "state");
+  try {
+    const sessionsDir = path.join(tmp, "sessions", "--home-user-project--");
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    for (let i = 0; i < 3; i++) {
+      fs.writeFileSync(
+        path.join(sessionsDir, `2026-07-0${i + 1}T10-00-00-000Z_0192cc0${i}.jsonl`),
+        jsonl([
+          header(),
+          userMsg("u1", `2026-07-0${i + 1}T10:01:00.000Z`, `question ${i}`),
+          assistantMsg("a1", `2026-07-0${i + 1}T10:01:10.000Z`, `answer ${i}`),
+          userMsg("u2", `2026-07-0${i + 1}T10:02:00.000Z`, `second question ${i}`),
+          assistantMsg("a2", `2026-07-0${i + 1}T10:02:10.000Z`, `second answer ${i}`),
+        ]),
+      );
+    }
+    // A projection exists before import, so a per-turn incremental write
+    // would change it.
+    const seed = runCli(["capture"], JSON.stringify({
+      schema_version: 1,
+      world: "main",
+      scope: "default",
+      lane: "conversation",
+      harness: "pi",
+      adapter_version: "2.0.0",
+      session_id: "seed-session",
+      turn_id: "a1",
+      event_time_ms: Date.parse("2026-06-30T10:01:10.000Z"),
+      capture_policy: "pi-visible-v3",
+      turn_outcome: "completed",
+      user_content: "seed question",
+      assistant_result: "seed answer",
+    }));
+    assert.equal((JSON.parse(seed.stdout) as { outcome: string }).outcome, "published");
+    assert.equal(runCli(["sync"]).code, 0);
+    const stateDir = path.join(tmp, "state", "autojournal");
+    const snapshotFile = fs.readdirSync(stateDir).find((name) => name.endsWith(".json"));
+    assert.ok(snapshotFile !== undefined, "sync wrote a snapshot");
+    const snapshotPath = path.join(stateDir, snapshotFile);
+    const before = fs.readFileSync(snapshotPath);
+
+    const progress: Array<[number, number]> = [];
+    let timerSawFiles = -1;
+    setTimeout(() => {
+      timerSawFiles = progress.length;
+    }, 0);
+    const files = listPiSessionFiles(path.join(tmp, "sessions"));
+    const counts = await importPiHistory({
+      selection: { world: "main", scope: "default" },
+      files,
+      onProgress: (done, total) => progress.push([done, total]),
+    });
+    assert.equal(counts.published, 6);
+    assert.equal(counts.failed, 0);
+    assert.ok(
+      before.equals(fs.readFileSync(snapshotPath)),
+      "import leaves the projection untouched: the closing sync indexes the imported turns",
+    );
+    assert.ok(
+      timerSawFiles >= 0 && timerSawFiles < 3,
+      `a timer due at import start runs before the last file finishes (saw ${timerSawFiles} files done)`,
+    );
+    assert.deepEqual(progress, [[1, 3], [2, 3], [3, 3]], "progress reports once per file");
+    assert.equal(runCli(["sync"]).code, 0);
+    const status = JSON.parse(runCli(["status", "--json"]).stdout) as { episodes: number };
+    assert.equal(status.episodes, 7);
+    const again = await importPiHistory({ selection: { world: "main", scope: "default" }, files });
+    assert.equal(again.published, 0, "a second pass finds every turn already present");
+    assert.equal(again.existing, 6);
+  } finally {
+    if (previous.config === undefined) delete process.env.AUTOJOURNAL_CONFIG;
+    else process.env.AUTOJOURNAL_CONFIG = previous.config;
+    if (previous.xdgConfig === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = previous.xdgConfig;
+    if (previous.data === undefined) delete process.env.XDG_DATA_HOME;
+    else process.env.XDG_DATA_HOME = previous.data;
+    if (previous.state === undefined) delete process.env.XDG_STATE_HOME;
+    else process.env.XDG_STATE_HOME = previous.state;
+  }
+});
