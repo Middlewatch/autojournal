@@ -268,6 +268,12 @@ export function checkRedelivery(root: JournalRoot, snap: Snapshot, payload: Payl
  * never delete a stranger's file. Returns true when a file was removed. The
  * projection is not touched here; the caller syncs once afterwards, and
  * until then the removed row reads as `gone`.
+ *
+ * The check-then-unlink is by pathname. That is safe under the store's own
+ * rules: publish never replaces a path (no-replace hard link), so the only
+ * writer that can change a checked file before the unlink is reseal, which
+ * rewrites the same episode's digest line in place. Either way the file at
+ * that path is this turn's capture.
  */
 export function removeEpisode(
   root: JournalRoot,

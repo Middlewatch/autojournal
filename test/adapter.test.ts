@@ -31,6 +31,10 @@ import {
   validScope,
   validWorld,
 } from "../index.ts";
+import { validate } from "../src/contracts.ts";
+import { render } from "../src/render.ts";
+import { episodeId, payloadDigestHex } from "../src/identity.ts";
+import { verifyEpisode } from "../src/episode.ts";
 
 test("syncResultBody prefers stdout, then stderr, then a placeholder", () => {
   assert.equal(syncResultBody({ code: 0, stdout: "indexed: 3\n", stderr: "" }), "indexed: 3");
@@ -208,6 +212,82 @@ test("summarizeRun derives the consultation footprint from calls and results", (
   assert.deepEqual(summary.toolNames, ["read", "bash", "edit", "memory_get", "web_fetch", "delegate"]);
 });
 
+// The spec's acceptance turn: the adapter's summary of a recorded run must
+// reproduce testdata/payloads/files.json exactly, so the golden episode's
+// id, digest, and bytes (pinned from an independent oracle) are what live
+// capture would publish for this turn, and the same bytes are the fixture
+// introspect-scan reads in the kit.
+test("acceptance: a recorded turn reproduces the golden files payload and episode", () => {
+  const home = os.homedir();
+  const repo = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+  const golden = JSON.parse(fs.readFileSync(path.join(repo, "testdata", "payloads", "files.json"), "utf8")) as {
+    tools: Array<{ name: string }>;
+    files: Array<{ op: string; target: string }>;
+    user_content: string;
+    assistant_result: string;
+  };
+  const vectors = JSON.parse(fs.readFileSync(path.join(repo, "testdata", "golden", "capture-vectors.json"), "utf8")) as Record<
+    string,
+    { episode_id: string; payload_digest: string }
+  >;
+  const summary = summarizeRun([
+    { role: "user", content: "which adr covers the journal format?" },
+    {
+      role: "assistant",
+      content: [
+        { type: "text", text: "ADR 0015 does; the ledger agrees." },
+        { type: "toolCall", id: "r1", name: "read", arguments: { path: `${home}/.agents/skills/adr/SKILL.md` } },
+        { type: "toolCall", id: "r2", name: "read", arguments: { path: "docs/adr/0016-missing.md" } },
+        { type: "toolCall", id: "r3", name: "read", arguments: { path: `${home}/.agents/wiki/reference/structural-code-maps-for-agents.md`, offset: 32, limit: 9 } },
+        { type: "toolCall", id: "b1", name: "bash", arguments: { command: `cat ${home}/.agents/skills/harvest/LEDGER.md` } },
+        { type: "toolCall", id: "m1", name: "memory_get", arguments: { reference: 1 } },
+        { type: "toolCall", id: "w1", name: "web_fetch", arguments: { url: "https://docs.example.org/x" } },
+        { type: "toolCall", id: "d1", name: "delegate", arguments: { label: "scout", task: "check the zig note" } },
+      ],
+    },
+    { role: "toolResult", toolCallId: "r1", toolName: "read", content: [], isError: false },
+    { role: "toolResult", toolCallId: "r2", toolName: "read", content: [], isError: true },
+    { role: "toolResult", toolCallId: "r3", toolName: "read", content: [], isError: false },
+    { role: "toolResult", toolCallId: "b1", toolName: "bash", content: [], isError: false },
+    { role: "toolResult", toolCallId: "m1", toolName: "memory_get", content: [], isError: false, details: { episode_id: "aj1-b6cc4862b87e23fd0cddb26f764cb613" } },
+    { role: "toolResult", toolCallId: "w1", toolName: "web_fetch", content: [], isError: false },
+    {
+      role: "toolResult",
+      toolCallId: "d1",
+      toolName: "delegate",
+      content: [],
+      isError: false,
+      details: {
+        reads: [
+          { target: `${home}/.agents/wiki/knowledge/zig notes.md`, status: "ok" },
+          { target: `${home}/.agents/wiki/knowledge/gone.md`, status: "error" },
+        ],
+      },
+    },
+    { role: "assistant", content: [{ type: "text", text: "Quoted heading in prose: ## Files" }] },
+  ]);
+  assert.deepEqual(summary.files, golden.files);
+  assert.deepEqual(summary.toolNames, golden.tools.map((t) => t.name));
+  const raw = buildRawPayload({
+    summary,
+    sessionId: "sess-files",
+    turnId: "turn-0001",
+    eventTimeMs: 1788480000000,
+    selection: { world: "main", scope: "default" },
+    adapterVersion: "2.1.0",
+    host: null,
+  });
+  assert.equal(raw.userContent, golden.user_content);
+  assert.equal(raw.assistantResult, golden.assistant_result);
+  const payload = validate(raw);
+  assert.equal(episodeId(payload), vectors.files.episode_id);
+  assert.equal("sha256:" + payloadDigestHex(payload), vectors.files.payload_digest);
+  const rendered = render({ payload, episodeId: episodeId(payload), digestHex: payloadDigestHex(payload), captureTimeMs: 1788500000000 });
+  const goldenBytes = fs.readFileSync(path.join(repo, "testdata", "golden", "episodes", "files.md"), "utf8");
+  assert.equal(rendered, goldenBytes);
+  assert.ok(verifyEpisode(rendered).ok);
+});
+
 test("consultation targets normalize and refuse line-unsafe values", () => {
   assert.equal(normalizeTarget("C:\\Users\\me\\notes\\a.md", "C:\\Users\\me"), "~/notes/a.md");
   assert.equal(normalizeTarget("/home/me", "/home/me/"), "~");
@@ -220,6 +300,7 @@ test("consultation targets normalize and refuse line-unsafe values", () => {
     markdownPathTokens("grep -E 'docs/|adr/|/.md' x; re.compile(r'(?<![w-])skills/adr/SKILL.md'); f\"{a}/b.md\"; echo a/[b].md"),
     [],
   );
+  assert.deepEqual(markdownPathTokens("type C:\\repo\\docs\\x.md"), ["C:/repo/docs/x.md"]);
   assert.deepEqual(markdownPathTokens("rg -n foo README.md docs/README.md ./x.md (./y.md) 'z/w.md'; ~/t.md: file.mdx"), [
     "docs/README.md",
     "./x.md",

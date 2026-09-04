@@ -416,6 +416,53 @@ test("e2e: import with replacePrior re-renders prior-policy turns and removes th
     assert.equal(again.published, 0, "a second replace pass changes nothing");
     assert.equal(again.existing, 1);
     assert.equal(again.replaced, 0);
+
+    // A turn stored under two prior policies loses both files, and the
+    // removal also runs when the current-policy episode already exists: the
+    // state an earlier pass leaves when it published but never removed.
+    fs.appendFileSync(
+      sessionFile,
+      jsonl([
+        userMsg("u2", "2026-07-01T10:02:00.000Z", "twice captured question"),
+        assistantMsg("a2", "2026-07-01T10:02:10.000Z", "twice captured answer"),
+      ]),
+    );
+    const twice = (policy: string) =>
+      JSON.stringify({
+        schema_version: 1,
+        world: "main",
+        scope: "default",
+        lane: "conversation",
+        harness: "pi",
+        adapter_version: "1.2.0",
+        session_id: sessionIdFromFile(sessionFile),
+        turn_id: "a2",
+        event_time_ms: Date.parse("2026-07-01T10:02:10.000Z"),
+        capture_policy: policy,
+        turn_outcome: "completed",
+        user_content: "twice captured question",
+        assistant_result: "twice captured answer",
+      });
+    const v1 = JSON.parse(runCli(["capture"], twice("pi-default-v1")).stdout) as { outcome: string; path: string };
+    const v2 = JSON.parse(runCli(["capture"], twice("pi-visible-v2")).stdout) as { outcome: string; path: string };
+    // The same turn under the current policy, exactly as import renders it,
+    // so import's own attempt is a duplicate rather than a publish.
+    const v3 = JSON.parse(runCli(["capture"], twice("pi-visible-v3")).stdout) as { outcome: string; path: string };
+    assert.equal(v1.outcome, "published");
+    assert.equal(v2.outcome, "published");
+    assert.equal(v3.outcome, "published");
+    const v1File = path.join(journalRoot, ...v1.path.split("/"));
+    const v2File = path.join(journalRoot, ...v2.path.split("/"));
+    const retried = await importPiHistory({ selection, files, replacePrior: true });
+    assert.equal(retried.published, 0, "the current-policy episode already exists");
+    assert.equal(retried.existing, 2, "a1 from the first pass, and a2 as a duplicate");
+    assert.equal(retried.replaced, 1, "the duplicate still triggers removal of both prior files");
+    assert.equal(retried.replaceFailed, 0);
+    assert.ok(!fs.existsSync(v1File) && !fs.existsSync(v2File), "both prior-policy files are gone");
+    assert.ok(fs.existsSync(path.join(journalRoot, ...v3.path.split("/"))), "the current-policy file stays");
+    runCli(["sync"]);
+    const finalStatus = JSON.parse(runCli(["status", "--json"]).stdout) as { episodes: number };
+    assert.equal(finalStatus.episodes, 2, "two turns, one episode each");
   } finally {
     if (previous.config === undefined) delete process.env.AUTOJOURNAL_CONFIG;
     else process.env.AUTOJOURNAL_CONFIG = previous.config;

@@ -24,7 +24,8 @@ import {
 } from "../../src/contracts.ts";
 import { parseConfig, ConfigError, resolveConfigPath, saveCaptureDefaults, formatPositional, goParseFloat } from "../../src/config.ts";
 import { parseEpisode, verifyEpisode, resealDigestHex } from "../../src/episode.ts";
-import { applyOversizePolicy } from "../../src/store.ts";
+import { applyOversizePolicy, removeEpisode } from "../../src/store.ts";
+import { openJournalRoot } from "../../src/corpus.ts";
 import { render, frontmatterDigestHex, isoFromMs } from "../../src/render.ts";
 import { episodeId, payloadDigestHex } from "../../src/identity.ts";
 import {
@@ -503,4 +504,47 @@ test("files: the store cuts the tail past MAX_FILES and records files_dropped", 
   assert.ok(v.ok && v.episode.filesDropped === 44 && v.episode.files.length === 256);
   const within = applyOversizePolicy(parsePayload(basePayload({ files: many.slice(0, 256) })));
   assert.deepEqual(within.drops, { user: 0, assistant: 0, files: 0 });
+});
+
+// The Files split adds candidates per apparent assistant separator (no-files
+// first, then each files split's tools/no-tools pair), so a body with many
+// quoted separators costs up to three visits per split instead of one. The
+// cap scales with body size, and a genuine Tools + Files rendering must still
+// be found behind hundreds of decoys.
+test("separator-heavy content with Tools and Files still verifies", () => {
+  const quoted = "quoting a transcript:" + "\n\n## Assistant\n\n".repeat(500) + "\n\n## Files\n\n- read decoy.md\n\ndone";
+  const p = validate(parsePayload(basePayload({ user_content: quoted, tools: [{ name: "read" }], files: FILES })));
+  const content = render({ payload: p, episodeId: episodeId(p), digestHex: payloadDigestHex(p), captureTimeMs: 1 });
+  const v = verifyEpisode(content);
+  assert.ok(v.ok);
+  assert.equal(v.ok && v.episode.userContent, quoted);
+  assert.deepEqual(v.ok && v.episode.files, FILES);
+});
+
+// removeEpisode unlinks only a regular file whose own frontmatter names the
+// expected turn; every other case leaves the tree untouched and reports
+// false, which the import counts as a replacement failure.
+test("removeEpisode guards: identity, containment, file kind", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aj-remove-"));
+  try {
+    const root = openJournalRoot(tmp);
+    const p = validate(parsePayload(basePayload()));
+    const content = render({ payload: p, episodeId: episodeId(p), digestHex: payloadDigestHex(p), captureTimeMs: 1 });
+    fs.mkdirSync(path.join(tmp, "2026", "07", "29"), { recursive: true });
+    const rel = `2026/07/29/${episodeId(p)}.md`;
+    const file = path.join(tmp, ...rel.split("/"));
+    fs.writeFileSync(file, content);
+    const turn = { harness: p.harness, sessionId: p.sessionId, turnId: p.turnId, world: p.world };
+    assert.equal(removeEpisode(root, rel, { ...turn, turnId: "someone-else" }), false);
+    assert.equal(removeEpisode(root, "../" + rel, turn), false);
+    assert.equal(removeEpisode(root, "2026/07/29", turn), false, "a directory is not an episode");
+    assert.equal(removeEpisode(root, "2026/07/29/missing.md", turn), false);
+    assert.ok(fs.existsSync(file), "refusals leave the file in place");
+    fs.writeFileSync(file, content.replace("hello", "edited"));
+    assert.equal(removeEpisode(root, rel, turn), true, "an edited body still names this turn");
+    assert.ok(!fs.existsSync(file));
+    assert.equal(removeEpisode(root, rel, turn), false, "already gone");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });

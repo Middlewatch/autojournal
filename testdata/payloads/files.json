@@ -16,6 +16,15 @@
     },
     {
       "name": "bash"
+    },
+    {
+      "name": "memory_get"
+    },
+    {
+      "name": "web_fetch"
+    },
+    {
+      "name": "delegate"
     }
   ],
   "files": [

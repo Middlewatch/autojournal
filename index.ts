@@ -363,10 +363,14 @@ export function normalizeTarget(raw: string, home: string = os.homedir()): strin
 export function markdownPathTokens(command: string): string[] {
   const out: string[] = [];
   for (const rawToken of command.split(/\s+/)) {
-    const token = rawToken.replace(/^[('"`]+/, "").replace(/[)'"`;,:.]+$/, "");
+    // Backslashes become `/` first so a Windows path is a path here too.
+    const token = rawToken
+      .replaceAll("\\", "/")
+      .replace(/^[('"`]+/, "")
+      .replace(/[)'"`;,:.]+$/, "");
     if (!token.endsWith(".md")) continue;
     if (!(token.includes("/") || token.startsWith("~"))) continue;
-    if (/[|()[\]{}*?<>="'`^\\]/.test(token)) continue;
+    if (/[|()[\]{}*?<>="'`^]/.test(token)) continue;
     out.push(token);
   }
   return out;
@@ -768,20 +772,29 @@ export async function importPiHistory(options: {
         turnId: raw.turnId,
         world: options.selection.world,
       };
-      const priorRelPath =
-        dedupeSnapshot === null ? null : findPriorPolicyCapture(dedupeSnapshot, identity, PRIOR_CAPTURE_POLICIES);
-      if (priorRelPath !== null && options.replacePrior !== true) {
+      // Every prior-policy capture of this turn, not just the first: a turn
+      // captured live under v1 and re-imported under v2 has two files.
+      const priors =
+        dedupeSnapshot === null
+          ? []
+          : PRIOR_CAPTURE_POLICIES.map((policy) => findPriorPolicyCapture(dedupeSnapshot, identity, [policy])).filter(
+              (relPath): relPath is string => relPath !== null,
+            );
+      if (priors.length > 0 && options.replacePrior !== true) {
         counts.existing += 1;
         continue;
       }
       const outcome = runCapture(raw).outcome;
-      if (outcome === "published") {
-        counts.published += 1;
-        if (priorRelPath !== null) {
-          if (removePriorEpisode(priorRelPath, identity)) counts.replaced += 1;
-          else counts.replaceFailed += 1;
-        }
-      } else if (outcome === "duplicate" || outcome === "conflict") counts.existing += 1;
+      // Removal runs whenever the current-policy episode exists, published
+      // now or on an earlier pass (duplicate), so a failed unlink is retried
+      // by running the import again.
+      if (priors.length > 0 && (outcome === "published" || outcome === "duplicate")) {
+        const removed = priors.filter((relPath) => removePriorEpisode(relPath, identity)).length;
+        if (removed === priors.length) counts.replaced += 1;
+        else counts.replaceFailed += 1;
+      }
+      if (outcome === "published") counts.published += 1;
+      else if (outcome === "duplicate" || outcome === "conflict") counts.existing += 1;
       else if (CAPTURE_FAILURE_OUTCOMES.has(outcome)) {
         counts.failed += 1;
         if (counts.firstFailure === null) counts.firstFailure = outcome;
@@ -794,8 +807,10 @@ export async function importPiHistory(options: {
 }
 
 // removePriorEpisode unlinks the prior-policy file of a turn the import
-// just re-published, through the store's guarded primitive. False means
-// both files remain and the summary says so.
+// re-published, through the store's guarded primitive. A file already gone
+// (a stale dedupe row, or a duplicate session file naming the same turn)
+// counts as removed; false means the file is still there and the summary
+// says so.
 function removePriorEpisode(
   relPath: string,
   turn: { harness: string; sessionId: string; turnId: string; world: string },
@@ -803,7 +818,9 @@ function removePriorEpisode(
   try {
     const cfg = loadOwnerConfig();
     const { rootPath } = resolveJournalPaths(processEnviron, cfg);
-    return removeEpisode(openJournalRoot(rootPath), relPath, turn);
+    const root = openJournalRoot(rootPath);
+    if (removeEpisode(root, relPath, turn)) return true;
+    return !fs.existsSync(path.join(root.path, ...relPath.split("/")));
   } catch {
     return false;
   }

@@ -14,7 +14,7 @@ capture_time: 2026-09-04T05:33:20Z
 capture_time_ms: 1788500000000
 capture_policy: pi-visible-v3
 turn_outcome: completed
-payload_digest: sha256:5cb98a52fa6adbfb66905f74db66e48bdb6d7a20312c2b0b5df932695e9a9ed3
+payload_digest: sha256:8e4b608d2fd0832541f5a14ae27ebc4d85e8940f5b2e07afa2d0cc09a931cc42
 ---
 
 ## User
@@ -31,6 +31,9 @@ Quoted heading in prose: ## Files
 
 - read
 - bash
+- memory_get
+- web_fetch
+- delegate
 
 ## Files
 
