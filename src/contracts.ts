@@ -26,6 +26,9 @@ export const CORPUS_WALK_DEPTH = 10;
 export const MAX_WORLD_LEN = 64;
 export const MAX_TOKEN_LEN = 128;
 export const MAX_TOOLS = 256;
+// Consultation entries per turn (spec 2026-09-03-consultation-footprint);
+// the adapter dedupes and truncates to this before sending.
+export const MAX_FILES = 256;
 // Bounds the optional provenance paths (workspace root, branch-of).
 export const MAX_PATH_LEN = 512;
 
@@ -121,6 +124,9 @@ export type CaptureErrorCode =
   | "InvalidUtf8"
   | "TooManyTools"
   | "InvalidToolName"
+  | "TooManyFiles"
+  | "InvalidFileOp"
+  | "InvalidFileTarget"
   | "InvalidWorkspaceRoot"
   | "InvalidBranchOf"
   | "InvalidHost"
@@ -148,6 +154,35 @@ export interface Tool {
 }
 
 /**
+ * The closed vocabulary of consultation ops (ADR 0003). `read`/`read!` are
+ * the read tool's success and error; `bash` a `.md` path token in a bash
+ * command; `memory_get` an episode id; `web_fetch` a hostname;
+ * `child:read`/`child:read!` a delegated child's inspect_read. Adding an op
+ * is an interface-tier addition.
+ */
+export const FILE_OPS = ["read", "read!", "bash", "memory_get", "web_fetch", "child:read", "child:read!"] as const;
+export type FileOp = (typeof FILE_OPS)[number];
+
+/** One file the turn consulted: what kind of access, and the target. */
+export interface FileRef {
+  readonly op: FileOp;
+  readonly target: string;
+}
+
+export function validFileOp(s: string): s is FileOp {
+  return (FILE_OPS as readonly string[]).includes(s);
+}
+
+/**
+ * A file target renders as the rest of a `- <op> <target>` line, so the
+ * rule is validPath's line safety plus no leading or trailing space (the
+ * parser splits on the single space after the op).
+ */
+export function validFileTarget(s: string): boolean {
+  return validPath(s) && s === s.trim();
+}
+
+/**
  * The wire shape prior to validation. world and scope may be omitted and
  * filled from owner defaults. eventTimeMs stays a bigint here so an
  * out-of-range uint64 is carried exactly to the implausibility check.
@@ -167,6 +202,7 @@ export interface RawPayload {
   userContent: string;
   assistantResult: string;
   tools: Tool[] | null; // null when the wire omitted the field
+  files: FileRef[] | null; // null when the wire omitted the field
   // Optional session provenance: where the turn happened. Excluded from the
   // payload digest like other capture-source metadata, so a faithful
   // re-delivery still dedupes.
@@ -190,6 +226,7 @@ export interface Payload {
   userContent: string;
   assistantResult: string;
   tools: Tool[];
+  files: FileRef[];
   workspaceRoot: string | null;
   branchOf: string | null;
   host: string | null;
@@ -260,7 +297,7 @@ const REQUIRED_KEYS = [
   "assistant_result",
 ] as const;
 
-const OPTIONAL_KEYS = new Set(["world", "scope", "tools", "workspace_root", "branch_of", "host"]);
+const OPTIONAL_KEYS = new Set(["world", "scope", "tools", "files", "workspace_root", "branch_of", "host"]);
 
 const malformed = () => new CaptureError("Malformed");
 
@@ -307,6 +344,7 @@ export function parsePayload(bytes: Uint8Array): RawPayload {
     branchOf: optString(entries, "branch_of"),
     host: optString(entries, "host"),
     tools: optTools(entries),
+    files: optFiles(entries),
   };
 }
 
@@ -358,6 +396,27 @@ function optTools(entries: readonly JsonEntry[]): Tool[] | null {
   return tools;
 }
 
+// optFiles extracts the optional files array. Each element must be an
+// object carrying exactly "op" and "target" strings; the op vocabulary and
+// target rule are validation's job, shape is parse's.
+function optFiles(entries: readonly JsonEntry[]): FileRef[] | null {
+  const v = objectGet(entries, "files");
+  if (v === undefined || v.kind === "null") return null;
+  if (v.kind !== "array") throw malformed();
+  const files: FileRef[] = [];
+  for (const e of v.items) {
+    if (e.kind !== "object" || e.entries.length !== 2) throw malformed();
+    const opV = objectGet(e.entries, "op");
+    const targetV = objectGet(e.entries, "target");
+    if (opV === undefined || opV.kind !== "string" || targetV === undefined || targetV.kind !== "string") {
+      throw malformed();
+    }
+    // Cast at the parse boundary; validate() rejects an unknown op.
+    files.push({ op: opV.value as FileOp, target: targetV.value });
+  }
+  return files;
+}
+
 /**
  * Checks a parsed payload against the closed contract and returns the
  * capture-ready Payload. The check order is fixed so that a payload with
@@ -394,6 +453,12 @@ export function validate(raw: RawPayload): Payload {
   for (const t of tools) {
     if (!validToken(t.name)) fail("InvalidToolName");
   }
+  const files = raw.files ?? [];
+  if (files.length > MAX_FILES) fail("TooManyFiles");
+  for (const f of files) {
+    if (!validFileOp(f.op)) fail("InvalidFileOp");
+    if (!validFileTarget(f.target)) fail("InvalidFileTarget");
+  }
   if (raw.workspaceRoot !== null && !validPath(raw.workspaceRoot)) fail("InvalidWorkspaceRoot");
   if (raw.branchOf !== null && !validPath(raw.branchOf)) fail("InvalidBranchOf");
   if (raw.host !== null && !validToken(raw.host)) fail("InvalidHost");
@@ -411,6 +476,7 @@ export function validate(raw: RawPayload): Payload {
     userContent: raw.userContent,
     assistantResult: raw.assistantResult,
     tools,
+    files,
     workspaceRoot: raw.workspaceRoot,
     branchOf: raw.branchOf,
     host: raw.host,

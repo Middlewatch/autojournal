@@ -12,8 +12,11 @@ import {
   validWorld,
   validScope,
   validToken,
+  validFileOp,
+  validFileTarget,
   type Lane,
   type Tool,
+  type FileRef,
 } from "./contracts.ts";
 import { episodeId, payloadDigestHex, DIGEST_PREFIX, DIGEST_HEX_LEN, type DigestFields } from "./identity.ts";
 
@@ -38,6 +41,8 @@ export interface Episode {
    */
   userDroppedBytes: number;
   assistantDroppedBytes: number;
+  /** Consultation entries the adapter cut past the cap; zero when absent. */
+  filesDropped: number;
   /**
    * 1-based line number of the first line after the closing `---`.
    * Frontmatter is metadata, not memory: indexing and snippet clamping
@@ -79,6 +84,7 @@ export function parseEpisode(content: string): Episode | null {
   let captureTimeMs = 0;
   let userDroppedBytes = 0;
   let assistantDroppedBytes = 0;
+  let filesDropped = 0;
   let digestHex = "";
   const seen = new Set<string>();
   const required = new Set<string>(REQUIRED_EPISODE_KEYS);
@@ -136,6 +142,12 @@ export function parseEpisode(content: string): Episode | null {
         assistantDroppedBytes = n;
         break;
       }
+      case "files_dropped": {
+        const n = parseFrontmatterUint(value);
+        if (n === null) return null;
+        filesDropped = n;
+        break;
+      }
       case "payload_digest": {
         if (!value.startsWith(DIGEST_PREFIX)) return null;
         const hexPart = value.slice(DIGEST_PREFIX.length);
@@ -184,6 +196,7 @@ export function parseEpisode(content: string): Episode | null {
     digestHex,
     userDroppedBytes,
     assistantDroppedBytes,
+    filesDropped,
     bodyLine: lineNo + 1,
     bodyOffset: offset,
   };
@@ -218,6 +231,7 @@ function parseFrontmatterUint(s: string): number | null {
 const BODY_USER_HEADER = "\n## User\n\n";
 const BODY_ASSISTANT_SEP = "\n\n## Assistant\n\n";
 const BODY_TOOLS_SEP = "\n\n## Tools\n\n";
+const BODY_FILES_SEP = "\n\n## Files\n\n";
 const BODY_TOOL_LINE_PREFIX = "- ";
 
 // Quoted "## Assistant" and "## Tools" separators are ordinary owner
@@ -239,6 +253,7 @@ export interface VerifiedEpisode extends Episode {
   userContent: string;
   assistantResult: string;
   tools: Tool[];
+  files: FileRef[];
 }
 
 export type VerifyFailure =
@@ -280,6 +295,7 @@ interface BodyReading {
   userContent: string;
   assistantResult: string;
   tools: Tool[];
+  files: FileRef[];
 }
 
 // digestFields assembles the fields the digest derivation covers from the
@@ -298,6 +314,7 @@ function digestFields(ep: Episode, r: BodyReading): DigestFields {
     userContent: r.userContent,
     assistantResult: r.assistantResult,
     tools: r.tools,
+    files: r.files,
   };
 }
 
@@ -321,8 +338,34 @@ function parseToolsSection(section: string): Tool[] | null {
   return tools;
 }
 
+// parseFilesSection reads a candidate files section: one or more lines,
+// each exactly "- <op> <target>\n" with a vocabulary op and a line-safe
+// target. Render never emits an empty section, so zero lines is not a
+// reading.
+function parseFilesSection(section: string): FileRef[] | null {
+  if (section === "") return null;
+  const files: FileRef[] = [];
+  let rest = section;
+  while (rest.length > 0) {
+    const lineEnd = rest.indexOf("\n");
+    if (lineEnd < 0) return null;
+    const line = rest.slice(0, lineEnd);
+    rest = rest.slice(lineEnd + 1);
+    if (!line.startsWith(BODY_TOOL_LINE_PREFIX)) return null;
+    const entry = line.slice(BODY_TOOL_LINE_PREFIX.length);
+    const space = entry.indexOf(" ");
+    if (space < 0) return null;
+    const op = entry.slice(0, space);
+    const target = entry.slice(space + 1);
+    if (!validFileOp(op) || !validFileTarget(target)) return null;
+    files.push({ op, target });
+  }
+  return files;
+}
+
 // enumerateReadings walks every candidate decomposition of the body region
-// in render order — earliest assistant separator first, and within one, the
+// in render order — earliest assistant separator first; within one, the
+// no-files reading before any files reading; within one of those, the
 // no-tools reading before any tools reading — calling visit for each
 // structurally valid candidate until visit returns true (stop, found) or
 // the enumeration ends. Returns [candidates visited, found].
@@ -337,6 +380,34 @@ function enumerateReadings(body: string, visit: (r: BodyReading) => boolean): [n
   // countable no-tools candidate and the pair cap fires first.
   const cap = interpretationCap(body.length);
   let splits = 0;
+  // Visits one (assistant, tools) decomposition family over `head`, the
+  // region after the assistant separator with any files section removed.
+  // Returns true when visit accepted a reading or the cap fired.
+  const visitHead = (userContent: string, head: string, files: FileRef[]): boolean => {
+    // The no-tools reading: everything up to a final newline.
+    if (head.endsWith("\n")) {
+      visited++;
+      if (accept({ userContent, assistantResult: head.slice(0, -1), tools: [], files })) return true;
+      if (visited >= cap) return true;
+    }
+    // Tools readings, earliest separator first.
+    for (let tfrom = 0; ; ) {
+      const j = head.indexOf(BODY_TOOLS_SEP, tfrom);
+      if (j < 0) return false;
+      const tools = parseToolsSection(head.slice(j + BODY_TOOLS_SEP.length));
+      if (tools !== null) {
+        visited++;
+        if (accept({ userContent, assistantResult: head.slice(0, j), tools, files })) return true;
+        if (visited >= cap) return true;
+      }
+      tfrom = j + 1;
+    }
+  };
+  let found = false;
+  const accept = (r: BodyReading): boolean => {
+    found = visit(r);
+    return found;
+  };
   for (let from = 0; ; ) {
     const i = region.indexOf(BODY_ASSISTANT_SEP, from);
     if (i < 0) return [visited, false];
@@ -346,27 +417,16 @@ function enumerateReadings(body: string, visit: (r: BodyReading) => boolean): [n
     const userContent = region.slice(0, split);
     const rest = region.slice(split + BODY_ASSISTANT_SEP.length);
 
-    // The no-tools reading: everything up to a final newline.
-    if (rest.endsWith("\n")) {
-      visited++;
-      if (visit({ userContent, assistantResult: rest.slice(0, -1), tools: [] })) {
-        return [visited, true];
-      }
-      if (visited >= cap) return [visited, false];
-    }
-    // Tools readings, earliest separator first.
-    for (let tfrom = 0; ; ) {
-      const j = rest.indexOf(BODY_TOOLS_SEP, tfrom);
-      if (j < 0) break;
-      const tools = parseToolsSection(rest.slice(j + BODY_TOOLS_SEP.length));
-      if (tools !== null) {
-        visited++;
-        if (visit({ userContent, assistantResult: rest.slice(0, j), tools })) {
-          return [visited, true];
-        }
-        if (visited >= cap) return [visited, false];
-      }
-      tfrom = j + 1;
+    // The no-files reading first, then files readings earliest separator
+    // first. A files split keeps the separator's leading newline on the
+    // head, so the head ends exactly as a complete no-files rest would.
+    if (visitHead(userContent, rest, [])) return [visited, found];
+    for (let ffrom = 0; ; ) {
+      const k = rest.indexOf(BODY_FILES_SEP, ffrom);
+      if (k < 0) break;
+      const files = parseFilesSection(rest.slice(k + BODY_FILES_SEP.length));
+      if (files !== null && visitHead(userContent, rest.slice(0, k + 1), files)) return [visited, found];
+      ffrom = k + 1;
     }
     from = split + 1;
   }
@@ -389,7 +449,7 @@ export function verifyEpisode(content: string): VerifyResult {
   let found: BodyReading | null = null;
   const [visited, ok] = enumerateReadings(body, (r) => {
     if (payloadDigestHex(digestFields(ep, r)) === ep.digestHex) {
-      found = { userContent: r.userContent, assistantResult: r.assistantResult, tools: r.tools };
+      found = { userContent: r.userContent, assistantResult: r.assistantResult, tools: r.tools, files: r.files };
       return true;
     }
     return false;

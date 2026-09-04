@@ -28,6 +28,8 @@ export interface RenderInput {
    */
   userDroppedBytes?: number;
   assistantDroppedBytes?: number;
+  /** Consultation entries the adapter cut past MAX_FILES; optional like the byte drops. */
+  filesDropped?: number;
 }
 
 /**
@@ -58,6 +60,7 @@ export function render(input: RenderInput): string {
   // the digest, so a faithful redelivery still dedupes.
   if ((input.userDroppedBytes ?? 0) > 0) out += `user_dropped_bytes: ${input.userDroppedBytes}\n`;
   if ((input.assistantDroppedBytes ?? 0) > 0) out += `assistant_dropped_bytes: ${input.assistantDroppedBytes}\n`;
+  if ((input.filesDropped ?? 0) > 0) out += `files_dropped: ${input.filesDropped}\n`;
   // Optional provenance keys render only when the payload carried them, so
   // episodes from adapters that do not know them stay byte-identical to the
   // pre-provenance rendering.
@@ -71,6 +74,14 @@ export function render(input: RenderInput): string {
     out += "\n## Tools\n\n";
     for (const t of p.tools) {
       out += `- ${t.name}\n`;
+    }
+  }
+  // Consultation footprint (ADR 0003): rendered only when the turn
+  // consulted something, so every pre-2.1 episode's bytes are unchanged.
+  if (p.files.length > 0) {
+    out += "\n## Files\n\n";
+    for (const f of p.files) {
+      out += `- ${f.op} ${f.target}\n`;
     }
   }
   return out;

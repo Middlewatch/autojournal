@@ -51,6 +51,7 @@ function turnPayload(user: string, assistant: string, overrides: Partial<RawPayl
     userContent: user,
     assistantResult: assistant,
     tools: null,
+    files: null,
     workspaceRoot: null,
     branchOf: null,
     host: null,

@@ -336,6 +336,7 @@ export function buildRawPayload(input: {
     userContent: input.summary.userText,
     assistantResult: input.summary.assistantText,
     tools: input.summary.toolNames.map((name) => ({ name: sanitizeToken(name, "tool") })),
+    files: null,
     workspaceRoot: null,
     branchOf: null,
     host,

@@ -4,6 +4,22 @@ Versions are the npm package (`autojournal`). `adapter_version` is recorded in e
 frontmatter but is deliberately excluded from the payload digest, so upgrading never
 re-identifies or re-publishes existing episodes.
 
+## 2.1.0 — unreleased
+
+Consultation footprint (spec `docs/specs/2026-09-03-consultation-footprint.md`,
+ADR 0003): episodes can record which corpus files a turn consulted.
+
+### Added
+
+- The capture payload accepts an optional `files` list of `{op, target}`
+entries with a closed op vocabulary (`read`, `read!`, `bash`, `memory_get`,
+`web_fetch`, `child:read`, `child:read!`), at most 256 entries, line-safe
+targets. It renders as a `## Files` section after `## Tools` and joins the
+payload digest only when nonempty, so every existing episode keeps its bytes,
+id, and digest. Optional `files_dropped` frontmatter counts entries cut past
+the cap. Golden fixture `files` pins the bytes; a 2.0 build reports a
+Files-bearing episode as `digest_mismatch`.
+
 ## 2.0.1 — 2026-08-31
 
 No runtime behavior changes: a documentation and test-infrastructure patch.

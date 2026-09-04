@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "lane": "conversation",
+  "harness": "pi",
+  "adapter_version": "2.1.0",
+  "session_id": "sess-files",
+  "turn_id": "turn-0001",
+  "event_time_ms": 1788480000000,
+  "capture_policy": "pi-visible-v3",
+  "turn_outcome": "completed",
+  "user_content": "which adr covers the journal format?",
+  "assistant_result": "ADR 0015 does; the ledger agrees.\n\nQuoted heading in prose: ## Files",
+  "tools": [
+    {
+      "name": "read"
+    },
+    {
+      "name": "bash"
+    }
+  ],
+  "files": [
+    {
+      "op": "read",
+      "target": "~/.agents/skills/adr/SKILL.md"
+    },
+    {
+      "op": "read!",
+      "target": "docs/adr/0016-missing.md"
+    },
+    {
+      "op": "read",
+      "target": "~/.agents/wiki/reference/structural-code-maps-for-agents.md:32-40"
+    },
+    {
+      "op": "bash",
+      "target": "~/.agents/skills/harvest/LEDGER.md"
+    },
+    {
+      "op": "memory_get",
+      "target": "aj1-b6cc4862b87e23fd0cddb26f764cb613"
+    },
+    {
+      "op": "web_fetch",
+      "target": "docs.example.org"
+    },
+    {
+      "op": "child:read",
+      "target": "~/.agents/wiki/knowledge/zig notes.md"
+    },
+    {
+      "op": "child:read!",
+      "target": "~/.agents/wiki/knowledge/gone.md"
+    }
+  ]
+}

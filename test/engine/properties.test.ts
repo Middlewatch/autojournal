@@ -145,6 +145,10 @@ runProperty(
       body += "\n## Tools\n\n";
       for (const tool of v.episode.tools) body += "- " + tool.name + "\n";
     }
+    if (v.episode.files.length > 0) {
+      body += "\n## Files\n\n";
+      for (const f of v.episode.files) body += "- " + f.op + " " + f.target + "\n";
+    }
     assert.equal(body, content.slice(v.episode.bodyOffset), "verified body does not re-render");
   },
 );

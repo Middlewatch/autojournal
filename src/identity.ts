@@ -16,7 +16,7 @@
 // version.
 
 import { createHash } from "node:crypto";
-import type { Tool, Lane } from "./contracts.ts";
+import type { Tool, FileRef, Lane } from "./contracts.ts";
 
 /** Starts every episode ID. */
 export const ID_PREFIX = "aj1-";
@@ -48,6 +48,7 @@ export interface DigestFields extends IdentityFields {
   userContent: string;
   assistantResult: string;
   tools: Tool[];
+  files: FileRef[];
 }
 
 const ZERO = Buffer.from([0]);
@@ -100,6 +101,16 @@ export function payloadDigestHex(p: DigestFields): string {
   field(String(p.tools.length));
   for (const t of p.tools) {
     field(t.name);
+  }
+  // The files block joins the digest only when present (ADR 0003): every
+  // digest computed before 2.1 covered a payload without one, and those
+  // must keep verifying byte-for-byte under the same tag.
+  if (p.files.length > 0) {
+    field(String(p.files.length));
+    for (const f of p.files) {
+      field(f.op);
+      field(f.target);
+    }
   }
   return h.digest("hex");
 }

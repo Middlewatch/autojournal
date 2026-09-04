@@ -106,5 +106,11 @@
     "episode_id": null,
     "payload_digest": null,
     "path": null
+  },
+  "files": {
+    "outcome": "published",
+    "episode_id": "aj1-daff9910cf3e098a01e14e49e10812e9",
+    "payload_digest": "sha256:5cb98a52fa6adbfb66905f74db66e48bdb6d7a20312c2b0b5df932695e9a9ed3",
+    "path": "2026/09/04/aj1-daff9910cf3e098a01e14e49e10812e9.md"
   }
 }

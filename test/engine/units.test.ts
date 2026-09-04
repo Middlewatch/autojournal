@@ -151,6 +151,7 @@ test("lone surrogates in content are InvalidUtf8 for a direct caller", () => {
     userContent: "broken \ud800 surrogate",
     assistantResult: "ok",
     tools: null,
+    files: null,
     workspaceRoot: null,
     branchOf: null,
     host: null,
@@ -419,4 +420,70 @@ test("journal root canonicalization keys one index per root", () => {
   if (process.platform !== "win32") {
     assert.equal(resolveJournalRoot("/a/b/"), "/a/b");
   }
+});
+
+// The consultation footprint (spec 2026-09-03-consultation-footprint, ADR
+// 0003): an optional `files` list renders as a `## Files` section after
+// Tools, covered by the digest only when nonempty, so a payload without it
+// keeps the pre-2.1 bytes and digest.
+const FILES = [
+  { op: "read", target: "~/.agents/skills/adr/SKILL.md" },
+  { op: "read!", target: "docs/adr/0016-missing.md" },
+  { op: "bash", target: "~/.agents/skills/harvest/LEDGER.md" },
+  { op: "child:read", target: "~/.agents/wiki/knowledge/zig notes.md" },
+];
+
+test("files: absent and empty are the same payload as before 2.1", () => {
+  const absent = validate(parsePayload(basePayload()));
+  const empty = validate(parsePayload(basePayload({ files: [] })));
+  assert.deepEqual(absent.files, []);
+  assert.equal(payloadDigestHex(empty), payloadDigestHex(absent));
+  const rendered = render({ payload: empty, episodeId: episodeId(empty), digestHex: payloadDigestHex(empty), captureTimeMs: 1785240000500 });
+  assert.ok(!rendered.includes("## Files"));
+});
+
+test("files: render, parse, verify, and the digest covers each line", () => {
+  const p = validate(parsePayload(basePayload({ files: FILES, tools: [{ name: "read" }] })));
+  assert.deepEqual(p.files, FILES);
+  assert.notEqual(payloadDigestHex(p), payloadDigestHex(validate(parsePayload(basePayload({ tools: [{ name: "read" }] })))));
+  const content = render({ payload: p, episodeId: episodeId(p), digestHex: payloadDigestHex(p), captureTimeMs: 1785240000500, filesDropped: 3 });
+  assert.ok(content.endsWith("\n## Tools\n\n- read\n\n## Files\n\n- read ~/.agents/skills/adr/SKILL.md\n- read! docs/adr/0016-missing.md\n- bash ~/.agents/skills/harvest/LEDGER.md\n- child:read ~/.agents/wiki/knowledge/zig notes.md\n"));
+  const ep = parseEpisode(content);
+  assert.equal(ep!.filesDropped, 3);
+  const v = verifyEpisode(content);
+  assert.ok(v.ok);
+  assert.deepEqual(v.ok && v.episode.files, FILES);
+  assert.deepEqual(v.ok && v.episode.tools, [{ name: "read" }]);
+  const edited = content.replace("0016-missing", "0017-missing");
+  const failed = verifyEpisode(edited);
+  assert.ok(!failed.ok && failed.failure === "digest_mismatch");
+  // Files without a Tools section, and a Files section on a body whose
+  // assistant text quotes the separator, both resolve to the digest's reading.
+  const noTools = validate(parsePayload(basePayload({ files: FILES, assistant_result: "prose\n\n## Files\n\n- read decoy.md" })));
+  const c2 = render({ payload: noTools, episodeId: episodeId(noTools), digestHex: payloadDigestHex(noTools), captureTimeMs: 1 });
+  const v2 = verifyEpisode(c2);
+  assert.ok(v2.ok);
+  assert.equal(v2.ok && v2.episode.assistantResult, "prose\n\n## Files\n\n- read decoy.md");
+  assert.deepEqual(v2.ok && v2.episode.files, FILES);
+  assert.equal(parseEpisode(content.replace("filesDropped", "x"))!.filesDropped, 3);
+  assert.equal(parseEpisode(content.replace("files_dropped: 3\n", ""))!.filesDropped, 0);
+});
+
+test("files: the closed vocabulary and target rule", () => {
+  const code = (doc: Record<string, unknown>) => {
+    try {
+      validate(parsePayload(basePayload(doc)));
+      return "ok";
+    } catch (e) {
+      return captureErrorName(e);
+    }
+  };
+  assert.equal(code({ files: [{ op: "edit", target: "x.md" }] }), "InvalidFileOp");
+  assert.equal(code({ files: [{ op: "read", target: "a\nb" }] }), "InvalidFileTarget");
+  assert.equal(code({ files: [{ op: "read", target: "" }] }), "InvalidFileTarget");
+  assert.equal(code({ files: Array(257).fill({ op: "read", target: "x.md" }) }), "TooManyFiles");
+  assert.equal(code({ files: [{ op: "read", target: "x.md", extra: 1 }] }), "Malformed");
+  assert.equal(code({ files: [{ op: "read" }] }), "Malformed");
+  assert.equal(code({ files: "read x.md" }), "Malformed");
+  assert.equal(code({ files: [{ op: "web_fetch", target: "docs.example.org" }, { op: "memory_get", target: "aj1-0" }] }), "ok");
 });
