@@ -168,7 +168,23 @@ test("summarizeRun derives the consultation footprint from calls and results", (
         { type: "toolCall", id: "c8", name: "web_fetch", arguments: { url: "https://docs.example.org/guide/x?y=1#frag" } },
         { type: "toolCall", id: "c9", name: "web_fetch", arguments: { url: "not a url" } },
         { type: "toolCall", id: "c10", name: "read", arguments: { path: `${home}/.agents/skills/adr/SKILL.md` } },
+        { type: "toolCall", id: "c11", name: "delegate", arguments: { label: "scout", task: "find the note" } },
       ],
+    },
+    {
+      role: "toolResult",
+      toolCallId: "c11",
+      toolName: "delegate",
+      content: [],
+      isError: false,
+      details: {
+        provenanceCount: 3,
+        reads: [
+          { target: `${home}/.agents/wiki/knowledge/zig-notes.md`, status: "ok" },
+          { target: "wiki/knowledge/gone.md", status: "error" },
+          { target: 7 },
+        ],
+      },
     },
     { role: "toolResult", toolCallId: "c1", toolName: "read", content: [], isError: false },
     { role: "toolResult", toolCallId: "c2", toolName: "read", content: [], isError: true },
@@ -186,8 +202,10 @@ test("summarizeRun derives the consultation footprint from calls and results", (
     { op: "bash", target: "~/wiki/reference/a-note.md" },
     { op: "memory_get", target: "aj1-b6cc4862b87e23fd0cddb26f764cb613" },
     { op: "web_fetch", target: "docs.example.org" },
+    { op: "child:read", target: "~/.agents/wiki/knowledge/zig-notes.md" },
+    { op: "child:read!", target: "wiki/knowledge/gone.md" },
   ]);
-  assert.deepEqual(summary.toolNames, ["read", "bash", "edit", "memory_get", "web_fetch"]);
+  assert.deepEqual(summary.toolNames, ["read", "bash", "edit", "memory_get", "web_fetch", "delegate"]);
 });
 
 test("consultation targets normalize and refuse line-unsafe values", () => {

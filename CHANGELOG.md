@@ -33,6 +33,9 @@ Replacing re-publishes the turn under the current policy and removes the
 earlier file (the store's `removeEpisode` unlinks only a file whose own
 frontmatter names that turn); the import summary counts replacements, and an
 evidence reference into a replaced episode returns `gone`.
+- Delegated children's reads: when a `delegate` tool result carries `reads`
+(agent-delegate's compact `inspect_read` targets and outcomes), they render
+as `child:read` and `child:read!` entries.
 
 ## 2.0.1 — 2026-08-31
 

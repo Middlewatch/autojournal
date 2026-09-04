@@ -138,7 +138,7 @@ data keeps its bytes, id, and digest unchanged (the golden pins prove it).
   Code landed 2026-09-03; the owner-present run over the live corpus is
   still to do.
 
-- [ ] S4 Child reads: agent-delegate compact `reads`, autojournal renders
+- [x] S4 Child reads: agent-delegate compact `reads`, autojournal renders
   `child:read`, both suites extended. (after S2; kit and autojournal
   commits paired)
 - [ ] S5 introspect-scan consumes Files with fallback; README bias section

@@ -312,6 +312,17 @@ function consultedFiles(calls: ToolCallSeen[], results: Map<string, ToolResultSe
         if (host !== null) add("web_fetch", host);
         break;
       }
+      case "delegate": {
+        // agent-delegate keeps the child's inspect_read targets in its
+        // compact result details as `reads`.
+        const details = result?.details as { reads?: unknown } | undefined;
+        if (!Array.isArray(details?.reads)) break;
+        for (const read of details.reads as Array<{ target?: unknown; status?: unknown }>) {
+          if (typeof read?.target !== "string") continue;
+          add(read.status === "error" ? "child:read!" : "child:read", read.target);
+        }
+        break;
+      }
       default:
         break;
     }
