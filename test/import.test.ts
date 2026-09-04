@@ -99,6 +99,75 @@ test("parsePiSession pairs turns and pins identity at the final assistant entry"
   assert.equal(second.summary.assistantText, "second answer");
 });
 
+test("parsePiSession hands tool results to the run summary so import and live capture agree on Files", () => {
+  // Regression: the 2026-09-03 backfill rendered zero read!, memory_get, and
+  // child:read entries across the corpus because the import loop dropped
+  // toolResult messages before summarizeRun could join them to their calls.
+  const parsed = parsePiSession(
+    jsonl([
+      header(),
+      userMsg("u1", "2026-07-01T10:01:00.000Z", "which note?"),
+      {
+        type: "message",
+        id: "a1",
+        timestamp: "2026-07-01T10:01:05.000Z",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "text", text: "looking" },
+            { type: "toolCall", id: "c1", name: "read", arguments: { path: "docs/missing.md" } },
+            { type: "toolCall", id: "c2", name: "memory_get", arguments: { reference: 1 } },
+            { type: "toolCall", id: "c3", name: "delegate", arguments: { label: "scout", task: "find it" } },
+          ],
+        },
+      },
+      {
+        type: "message",
+        id: "t1",
+        timestamp: "2026-07-01T10:01:06.000Z",
+        message: { role: "toolResult", toolCallId: "c1", toolName: "read", content: [], isError: true },
+      },
+      {
+        type: "message",
+        id: "t2",
+        timestamp: "2026-07-01T10:01:07.000Z",
+        message: {
+          role: "toolResult",
+          toolCallId: "c2",
+          toolName: "memory_get",
+          content: [{ type: "text", text: "raw output must not leak" }],
+          isError: false,
+          details: { episode_id: "aj1-b6cc4862b87e23fd0cddb26f764cb613", revision: "sha256:0" },
+        },
+      },
+      {
+        type: "message",
+        id: "t3",
+        timestamp: "2026-07-01T10:01:08.000Z",
+        message: {
+          role: "toolResult",
+          toolCallId: "c3",
+          toolName: "delegate",
+          content: [],
+          isError: false,
+          details: { reads: [{ target: "wiki/knowledge/zig-notes.md", status: "ok" }] },
+        },
+      },
+      assistantMsg("a2", "2026-07-01T10:01:10.000Z", "that one"),
+    ]),
+  );
+  assert.equal(parsed.skip, undefined);
+  assert.equal(parsed.turns.length, 1);
+  const [turn] = parsed.turns;
+  assert.equal(turn.turnId, "a2", "tool results never pin the leaf");
+  assert.deepEqual(turn.summary.files, [
+    { op: "read!", target: "docs/missing.md" },
+    { op: "memory_get", target: "aj1-b6cc4862b87e23fd0cddb26f764cb613" },
+    { op: "child:read", target: "wiki/knowledge/zig-notes.md" },
+  ]);
+  assert.ok(!turn.summary.assistantText.includes("raw output"));
+});
+
 test("parsePiSession skips subagent sessions, junk, and empty files", () => {
   assert.equal(
     parsePiSession(jsonl([header({ parentSession: "/somewhere/parent.jsonl" }), userMsg("u1", "2026-07-01T10:01:00.000Z", "hi")])).skip,

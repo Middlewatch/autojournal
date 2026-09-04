@@ -591,7 +591,7 @@ interface SessionEntry {
   parentSession?: unknown;
   customType?: string;
   data?: { capture?: unknown };
-  message?: { role?: string; content?: unknown; timestamp?: unknown };
+  message?: { role?: string; content?: unknown; timestamp?: unknown; toolCallId?: unknown; isError?: unknown; details?: unknown };
 }
 
 export function parsePiSession(text: string, includeSubagents = false): ParsedPiSession {
@@ -653,7 +653,16 @@ export function parsePiSession(text: string, includeSubagents = false): ParsedPi
     }
     if (entry.type !== "message") continue;
     const msg = entry.message;
-    if (msg === undefined || (msg.role !== "user" && msg.role !== "assistant")) continue;
+    if (msg === undefined) continue;
+    // Tool results ride along with the turn: summarizeRun joins them to
+    // their calls by id for the Files section (read outcomes, memory_get
+    // episode ids, delegated children's reads). They never open or close
+    // a turn and never pin its identity.
+    if (msg.role === "toolResult") {
+      if (pendingHasAssistant) pending.push(msg);
+      continue;
+    }
+    if (msg.role !== "user" && msg.role !== "assistant") continue;
     if (msg.role === "user" && pendingHasAssistant) finalize();
     pending.push(msg);
     if (msg.role === "assistant") {

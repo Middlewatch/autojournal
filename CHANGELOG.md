@@ -39,6 +39,11 @@ as `child:read` and `child:read!` entries.
 
 ### Fixed
 
+- Import now hands a turn's tool results to the run summary. Before, the
+backfill loop dropped them, so every replaced episode rendered its Files
+section without `read!`, `memory_get`, or `child:read` entries while live
+capture would have written them. Re-run the replace import to repair a
+2.1.0 backfill taken before this fix.
 - Import Pi session history froze the Pi session on a large corpus. Import
 ran the live one-turn capture transaction per turn, and each call reopened
 and rewrote the whole index snapshot (about 0.4 s on an 18 MB projection),
