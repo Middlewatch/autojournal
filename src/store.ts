@@ -345,7 +345,12 @@ export function findPriorPolicyCapture(
 /** One whole capture transaction's input. */
 export interface CaptureInput {
   rootPath: string;
-  /** Snapshot path; empty skips the projection entirely (tests only). */
+  /**
+   * Snapshot path; empty skips the projection entirely: no corpus-wide
+   * redelivery check and no incremental index update. Bulk callers (import)
+   * use this to defer indexing to one closing sync, since each incremental
+   * update rewrites the whole snapshot.
+   */
   indexPath: string;
   raw: RawPayload;
   /** Owner capture defaults, for world/scope fill. */

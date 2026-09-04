@@ -37,6 +37,18 @@ evidence reference into a replaced episode returns `gone`.
 (agent-delegate's compact `inspect_read` targets and outcomes), they render
 as `child:read` and `child:read!` entries.
 
+### Fixed
+
+- Import Pi session history froze the Pi session on a large corpus. Import
+ran the live one-turn capture transaction per turn, and each call reopened
+and rewrote the whole index snapshot (about 0.4 s on an 18 MB projection),
+in a loop that never yielded to the event loop; a 1,700-turn backfill
+blocked the TUI for a quarter hour. Import now publishes with the
+projection deferred, checks redelivery against the snapshot it already
+holds, yields between files, shows `importing session N/M…` in the status
+line, and runs one closing sync whenever anything was published or
+replaced.
+
 ## 2.0.1 — 2026-08-31
 
 No runtime behavior changes: a documentation and test-infrastructure patch.

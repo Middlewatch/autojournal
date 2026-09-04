@@ -106,21 +106,33 @@ export function syncResultBody(run: RunResult): string {
   return run.stdout.trim() || run.stderr.trim() || "(sync produced no output)";
 }
 
-function beginSyncStatus(ctx: {
+interface StatusHost {
   hasUI?: boolean;
   ui: { setStatus?(key: string, text: string | undefined): void };
-}): () => void {
-  if (ctx.hasUI === false || typeof ctx.ui.setStatus !== "function") return () => {};
+}
+
+// beginStatus shows a ticking status line for a long-running menu action and
+// returns the function that clears it; refresh() repaints on demand so a
+// progress callback can update the text between ticks.
+function beginStatus(ctx: StatusHost, render: (elapsedS: number) => string): { end: () => void; refresh: () => void } {
+  if (ctx.hasUI === false || typeof ctx.ui.setStatus !== "function") return { end: () => {}, refresh: () => {} };
   const setStatus = ctx.ui.setStatus.bind(ctx.ui);
   const started = Date.now();
-  const render = () => `autojournal: syncing index… ${Math.round((Date.now() - started) / 1000)}s`;
-  setStatus("autojournal", render());
-  const timer = setInterval(() => setStatus("autojournal", render()), 1000);
+  const refresh = () => setStatus("autojournal", render(Math.round((Date.now() - started) / 1000)));
+  refresh();
+  const timer = setInterval(refresh, 1000);
   timer.unref?.();
-  return () => {
-    clearInterval(timer);
-    setStatus("autojournal", undefined);
+  return {
+    refresh,
+    end: () => {
+      clearInterval(timer);
+      setStatus("autojournal", undefined);
+    },
   };
+}
+
+function beginSyncStatus(ctx: StatusHost): () => void {
+  return beginStatus(ctx, (s) => `autojournal: syncing index… ${s}s`).end;
 }
 
 interface ContentBlock {
@@ -681,15 +693,31 @@ export interface ImportCounts {
 
 // runCapture is the one capture transaction both live capture and import
 // use: owner config and journal paths are resolved fresh per call, so a
-// config edit or default change reaches running sessions.
-function runCapture(raw: RawPayload): { outcome: string } {
+// config edit or default change reaches running sessions. Live capture
+// updates the projection in the same call; import defers it, because
+// each incremental update reopens and rewrites the whole snapshot (about
+// 0.4 s on an 18 MB projection) and a backfill runs thousands of turns
+// before one closing sync.
+function runCapture(raw: RawPayload, projection: "update" | "defer" = "update"): { outcome: string } {
   try {
     const cfg = loadOwnerConfig();
     const { rootPath, indexPath } = resolveJournalPaths(processEnviron, cfg);
-    return engineCapture({ rootPath, indexPath, raw, defaults: cfg.capture, captureTimeMs: Date.now() });
+    return engineCapture({
+      rootPath,
+      indexPath: projection === "defer" ? "" : indexPath,
+      raw,
+      defaults: cfg.capture,
+      captureTimeMs: Date.now(),
+    });
   } catch {
     return { outcome: "unavailable" };
   }
+}
+
+// yieldToEventLoop lets the TUI repaint and handle input between files of a
+// long synchronous import.
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
 }
 
 // openSnapshotForDedupe loads the projection import's policy-aware dedupe
@@ -722,6 +750,8 @@ export async function importPiHistory(options: {
    * prior file removed, instead of counting as already present.
    */
   replacePrior?: boolean;
+  /** Called after each file with (filesDone, filesTotal). */
+  onProgress?: (done: number, total: number) => void;
 }): Promise<ImportCounts> {
   const counts: ImportCounts = {
     files: 0,
@@ -740,18 +770,32 @@ export async function importPiHistory(options: {
   // identity here and store twice. Before publishing, import checks the
   // projection for the same session/turn under each prior policy and
   // counts a hit as already present.
+  //
+  // The same snapshot, opened once, also answers the current-policy
+  // redelivery check the store would otherwise make by reopening the
+  // projection per turn. Captures run with the projection deferred; the
+  // caller's closing sync indexes what was published. A turn published
+  // earlier in this run is absent from the held snapshot, and the store's
+  // same-path classification still catches that re-delivery.
   const dedupeSnapshot = openSnapshotForDedupe();
+  const total = options.files.length;
+  let done = 0;
   for (const file of options.files) {
+    if (done > 0) await yieldToEventLoop();
+    done += 1;
+    const report = () => options.onProgress?.(done, total);
     let text: string;
     try {
       text = fs.readFileSync(file, "utf8");
     } catch {
       counts.skippedFiles += 1;
+      report();
       continue;
     }
     const parsed = parsePiSession(text, options.includeSubagents ?? false);
     if (parsed.skip !== undefined) {
       counts.skippedFiles += 1;
+      report();
       continue;
     }
     counts.files += 1;
@@ -784,7 +828,13 @@ export async function importPiHistory(options: {
         counts.existing += 1;
         continue;
       }
-      const outcome = runCapture(raw).outcome;
+      const current =
+        dedupeSnapshot === null ? null : findPriorPolicyCapture(dedupeSnapshot, identity, [CAPTURE_POLICY]);
+      if (current !== null && priors.length === 0) {
+        counts.existing += 1;
+        continue;
+      }
+      const outcome = runCapture(raw, "defer").outcome;
       // Removal runs whenever the current-policy episode exists, published
       // now or on an earlier pass (duplicate), so a failed unlink is retried
       // by running the import again.
@@ -802,6 +852,7 @@ export async function importPiHistory(options: {
         counts.unrecognized += 1;
       }
     }
+    report();
   }
   return counts;
 }
@@ -1652,14 +1703,30 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
             `autojournal: importing ${candidates.length} session file(s) — this may take a moment`,
             "info",
           );
-          const imported = await importPiHistory({
-            selection,
-            files: candidates,
-            includeSubagents: readSubagentCapture(adapterStatePath()),
-            replacePrior,
-          });
+          let filesDone = 0;
+          const status = beginStatus(
+            ctx,
+            (s) => `autojournal: importing session ${filesDone}/${candidates.length}… ${s}s`,
+          );
+          let imported: ImportCounts;
+          try {
+            imported = await importPiHistory({
+              selection,
+              files: candidates,
+              includeSubagents: readSubagentCapture(adapterStatePath()),
+              replacePrior,
+              onProgress: (done) => {
+                filesDone = done;
+                status.refresh();
+              },
+            });
+          } finally {
+            status.end();
+          }
           let indexLine = "";
-          if (imported.published > 0) {
+          // Import defers the projection, so the sync is what makes the
+          // imported and replaced episodes visible to search and get.
+          if (imported.published > 0 || imported.replaced > 0 || imported.replaceFailed > 0) {
             const endStatus = beginSyncStatus(ctx);
             let syncRun;
             try {
