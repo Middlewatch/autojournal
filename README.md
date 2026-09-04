@@ -23,9 +23,13 @@ and maintenance actions. `/autojournal status` and `/autojournal sync` are
 direct shortcuts.
 
 Capture happens after the end of each assistant turn. The capture policy
-(`pi-visible-v2`) keeps every visible assistant text segment of the turn in
-order — mid-turn progress notes and verdicts as well as the final reply.
-Thinking traces and tool arguments never enter memory.
+(`pi-visible-v3`) keeps every visible assistant text segment of the turn in
+order — mid-turn progress notes and verdicts as well as the final reply —
+and records which corpus files the turn consulted in a `## Files` section:
+paths the `read` tool opened (a `:start-end` line range for partial reads,
+the `read!` op for a failed read), `.md` path tokens from bash commands,
+`memory_get` episode ids, and `web_fetch` hostnames. Thinking traces, tool
+contents, command strings, and queries never enter memory.
 
 If you have Pi session history predating the install, `/autojournal` →
 "Import Pi session history" replays it turn by turn; re-running the import

@@ -58,7 +58,8 @@ review note.
 ## Data flow
 
 **Capture:** the extension summarizes a settled run (every visible
-assistant segment, in order — policy `pi-visible-v2`) into a raw payload →
+assistant segment, in order, plus the files the turn consulted — policy
+`pi-visible-v3`) into a raw payload →
 `contracts` validates the closed schema → `store` applies the oversize
 policy and derives identity + digest via `identity` → publishes atomically
 under `corpus`'s containment discipline → `index` updates the snapshot

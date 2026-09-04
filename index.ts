@@ -28,13 +28,15 @@ import { defaultConfig, loadConfig, ConfigError, type Config } from "./src/confi
 import { processEnviron, rootDigestHex } from "./src/paths.ts";
 import { capture as engineCapture, findPriorPolicyCapture } from "./src/store.ts";
 import { openSnapshot, type Snapshot } from "./src/index.ts";
-import type { RawPayload } from "./src/contracts.ts";
+import { validFileTarget, type RawPayload, type FileRef, type FileOp } from "./src/contracts.ts";
 
 export const ADAPTER_VERSION = "2.0.1";
 const HARNESS = "pi";
-// pi-visible-v2 keeps every nonempty visible assistant text segment in turn order.
-const CAPTURE_POLICY = "pi-visible-v2";
-const PRIOR_CAPTURE_POLICIES = ["pi-default-v1"];
+// pi-visible-v3 keeps every nonempty visible assistant text segment in turn
+// order (v2) and adds the consultation footprint: which files the turn read
+// (spec docs/specs/2026-09-03-consultation-footprint.md).
+const CAPTURE_POLICY = "pi-visible-v3";
+const PRIOR_CAPTURE_POLICIES = ["pi-default-v1", "pi-visible-v2"];
 const DEFAULT_SEARCH_LIMIT = 6;
 const MAX_EVIDENCE_REFERENCES = 256;
 
@@ -124,6 +126,8 @@ interface ContentBlock {
   type: string;
   text?: string;
   name?: string;
+  id?: unknown;
+  arguments?: unknown;
 }
 
 export function extractText(content: unknown): string {
@@ -142,6 +146,20 @@ export interface RunSummary {
   userText: string;
   assistantText: string;
   toolNames: string[];
+  /** The consultation footprint, deduped in first-seen order; the store caps it. */
+  files: FileRef[];
+}
+
+// One tool call as the run recorded it, paired later with its result by id.
+interface ToolCallSeen {
+  id: string | null;
+  name: string;
+  args: Record<string, unknown>;
+}
+
+interface ToolResultSeen {
+  isError: boolean;
+  details: unknown;
 }
 
 export interface SessionSelection {
@@ -209,9 +227,13 @@ export function summarizeRun(messages: unknown[]): RunSummary {
   const userParts: string[] = [];
   const assistantParts: string[] = [];
   const toolNames: string[] = [];
+  const calls: ToolCallSeen[] = [];
+  const results = new Map<string, ToolResultSeen>();
   for (const raw of messages) {
-    const msg = raw as { role?: string; content?: unknown };
-    if (msg.role === "user") {
+    const msg = raw as { role?: string; content?: unknown; toolCallId?: unknown; isError?: unknown; details?: unknown };
+    if (msg.role === "toolResult" && typeof msg.toolCallId === "string") {
+      results.set(msg.toolCallId, { isError: msg.isError === true, details: msg.details });
+    } else if (msg.role === "user") {
       const text = extractText(msg.content);
       if (text !== "") userParts.push(text);
     } else if (msg.role === "assistant") {
@@ -229,12 +251,122 @@ export function summarizeRun(messages: unknown[]): RunSummary {
           }
           if (block.type === "toolCall" && typeof block.name === "string") {
             if (!toolNames.includes(block.name)) toolNames.push(block.name);
+            const args =
+              typeof block.arguments === "object" && block.arguments !== null
+                ? (block.arguments as Record<string, unknown>)
+                : {};
+            calls.push({ id: typeof block.id === "string" ? block.id : null, name: block.name, args });
           }
         }
       }
     }
   }
-  return { userText: userParts.join("\n\n"), assistantText: assistantParts.join("\n\n"), toolNames };
+  return {
+    userText: userParts.join("\n\n"),
+    assistantText: assistantParts.join("\n\n"),
+    toolNames,
+    files: consultedFiles(calls, results),
+  };
+}
+
+// consultedFiles derives the consultation footprint from the run's tool
+// calls and their results. Paths, ids, and hostnames only: never a command
+// string, file content, or query (owner rulings 2026-08-31 and 2026-09-03).
+// Same-op duplicates collapse to the first sighting; the store applies the
+// entry cap.
+function consultedFiles(calls: ToolCallSeen[], results: Map<string, ToolResultSeen>): FileRef[] {
+  const out: FileRef[] = [];
+  const seen = new Set<string>();
+  const add = (op: FileOp, rawTarget: string) => {
+    const target = normalizeTarget(rawTarget);
+    if (target === null) return;
+    const key = op + " " + target;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ op, target });
+  };
+  for (const call of calls) {
+    const result = call.id === null ? undefined : results.get(call.id);
+    switch (call.name) {
+      case "read": {
+        if (typeof call.args.path !== "string") break;
+        add(result?.isError ? "read!" : "read", call.args.path + lineRange(call.args.offset, call.args.limit));
+        break;
+      }
+      case "bash": {
+        if (typeof call.args.command !== "string") break;
+        for (const token of markdownPathTokens(call.args.command)) add("bash", token);
+        break;
+      }
+      case "memory_get": {
+        const details = result?.details as { episode_id?: unknown } | undefined;
+        if (typeof details?.episode_id === "string" && /^aj1-[0-9a-f]{32}$/.test(details.episode_id)) {
+          add("memory_get", details.episode_id);
+        }
+        break;
+      }
+      case "web_fetch": {
+        if (typeof call.args.url !== "string") break;
+        const host = hostnameOf(call.args.url);
+        if (host !== null) add("web_fetch", host);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  return out;
+}
+
+// lineRange renders a partial read's window as the estate's `:start-end`
+// citation suffix. pi's read offset is a 1-based line; limit is a count.
+function lineRange(offset: unknown, limit: unknown): string {
+  const o = typeof offset === "number" && Number.isInteger(offset) && offset >= 1 ? offset : null;
+  const l = typeof limit === "number" && Number.isInteger(limit) && limit >= 1 ? limit : null;
+  if (o === null && l === null) return "";
+  const start = o ?? 1;
+  return l === null ? `:${start}-` : `:${start}-${start + l - 1}`;
+}
+
+/**
+ * Normalizes a consultation target for the Files section: leading `@`
+ * stripped (models add it), backslashes to `/`, the home directory to `~`
+ * so episodes do not name a machine. Returns null when the result is not a
+ * line-safe target; such an entry is dropped rather than mangled.
+ */
+export function normalizeTarget(raw: string, home: string = os.homedir()): string | null {
+  let target = raw.trim().replace(/^@/, "").replaceAll("\\", "/");
+  const h = home.replaceAll("\\", "/").replace(/\/+$/, "");
+  if (h !== "" && (target === h || target.startsWith(h + "/"))) target = "~" + target.slice(h.length);
+  return validFileTarget(target) ? target : null;
+}
+
+/**
+ * The bash carve-out: whitespace-split tokens that end in `.md` and look
+ * like paths (contain `/` or start with `~`), with shell quoting and
+ * trailing punctuation trimmed. Heredoc bodies are tokenized too, so a
+ * token carrying characters no path has (regex, code, quoting) is dropped
+ * rather than reported; the command string itself never leaves here.
+ */
+export function markdownPathTokens(command: string): string[] {
+  const out: string[] = [];
+  for (const rawToken of command.split(/\s+/)) {
+    const token = rawToken.replace(/^[('"`]+/, "").replace(/[)'"`;,:.]+$/, "");
+    if (!token.endsWith(".md")) continue;
+    if (!(token.includes("/") || token.startsWith("~"))) continue;
+    if (/[|()[\]{}*?<>="'`^\\]/.test(token)) continue;
+    out.push(token);
+  }
+  return out;
+}
+
+function hostnameOf(url: string): string | null {
+  try {
+    const host = new URL(url).hostname;
+    return host === "" ? null : host;
+  } catch {
+    return null;
+  }
 }
 
 // The capture outcome vocabulary is an interface-tier contract that grows by
@@ -336,7 +468,7 @@ export function buildRawPayload(input: {
     userContent: input.summary.userText,
     assistantResult: input.summary.assistantText,
     tools: input.summary.toolNames.map((name) => ({ name: sanitizeToken(name, "tool") })),
-    files: null,
+    files: input.summary.files.length > 0 ? input.summary.files : null,
     workspaceRoot: null,
     branchOf: null,
     host,

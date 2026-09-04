@@ -129,7 +129,7 @@ data keeps its bytes, id, and digest unchanged (the golden pins prove it).
   render, parse reading, digest coverage, golden and property pins. A
   fixture episode with Files verifies; every existing golden pin is
   unchanged. ADR 0003 lands with it.
-- [ ] S2 Live capture under `pi-visible-v3`: run-summary extraction for
+- [x] S2 Live capture under `pi-visible-v3`: run-summary extraction for
   read, read!, bash, memory_get, web_fetch with normalization, ranges,
   dedupe, cap, and `files_dropped`. A real turn in this estate renders the
   expected lines. (after S1)

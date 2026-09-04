@@ -13,6 +13,8 @@ import {
   extractText,
   formatMenuTitle,
   legacyPiJournalRoot,
+  markdownPathTokens,
+  normalizeTarget,
   originHost,
   readSubagentCapture,
   renderGetResult,
@@ -142,6 +144,71 @@ test("summarizeRun keeps every visible assistant segment and dedups tool names",
     },
   ]);
   assert.equal(blocks.assistantText, "first segment\n\nsecond segment");
+  assert.deepEqual(blocks.files, []);
+});
+
+// The consultation footprint (spec 2026-09-03-consultation-footprint):
+// reads with their outcome and window, `.md` tokens from bash, memory_get
+// ids from result details, web_fetch hostnames; never edits, commands,
+// contents, or queries.
+test("summarizeRun derives the consultation footprint from calls and results", () => {
+  const home = os.homedir();
+  const summary = summarizeRun([
+    { role: "user", content: "which adr covers this?" },
+    {
+      role: "assistant",
+      content: [
+        { type: "toolCall", id: "c1", name: "read", arguments: { path: `${home}/.agents/skills/adr/SKILL.md` } },
+        { type: "toolCall", id: "c2", name: "read", arguments: { path: "docs/adr/0016-missing.md" } },
+        { type: "toolCall", id: "c3", name: "read", arguments: { path: "@docs/DESIGN.md", offset: 40, limit: 80 } },
+        { type: "toolCall", id: "c4", name: "bash", arguments: { command: `cat ${home}/.agents/skills/harvest/LEDGER.md; sed -n '1,20p' docs/notes.md && echo 'README.md' >> "$PI_SCRATCHPAD/out.md"\ncat > x.md <<'EOF'\nsee ~/wiki/reference/a-note.md.\nEOF` } },
+        { type: "toolCall", id: "c5", name: "edit", arguments: { path: "src/edited.md" } },
+        { type: "toolCall", id: "c6", name: "memory_get", arguments: { reference: 3 } },
+        { type: "toolCall", id: "c7", name: "memory_get", arguments: { reference: 4 } },
+        { type: "toolCall", id: "c8", name: "web_fetch", arguments: { url: "https://docs.example.org/guide/x?y=1#frag" } },
+        { type: "toolCall", id: "c9", name: "web_fetch", arguments: { url: "not a url" } },
+        { type: "toolCall", id: "c10", name: "read", arguments: { path: `${home}/.agents/skills/adr/SKILL.md` } },
+      ],
+    },
+    { role: "toolResult", toolCallId: "c1", toolName: "read", content: [], isError: false },
+    { role: "toolResult", toolCallId: "c2", toolName: "read", content: [], isError: true },
+    { role: "toolResult", toolCallId: "c6", toolName: "memory_get", content: [], isError: false, details: { episode_id: "aj1-b6cc4862b87e23fd0cddb26f764cb613", revision: "sha256:0" } },
+    { role: "toolResult", toolCallId: "c7", toolName: "memory_get", content: [], isError: true, details: { outcome: "reference_unavailable", reference: 4 } },
+    { role: "assistant", content: [{ type: "text", text: "ADR 0015 does." }] },
+  ]);
+  assert.deepEqual(summary.files, [
+    { op: "read", target: "~/.agents/skills/adr/SKILL.md" },
+    { op: "read!", target: "docs/adr/0016-missing.md" },
+    { op: "read", target: "docs/DESIGN.md:40-119" },
+    { op: "bash", target: "~/.agents/skills/harvest/LEDGER.md" },
+    { op: "bash", target: "docs/notes.md" },
+    { op: "bash", target: "$PI_SCRATCHPAD/out.md" },
+    { op: "bash", target: "~/wiki/reference/a-note.md" },
+    { op: "memory_get", target: "aj1-b6cc4862b87e23fd0cddb26f764cb613" },
+    { op: "web_fetch", target: "docs.example.org" },
+  ]);
+  assert.deepEqual(summary.toolNames, ["read", "bash", "edit", "memory_get", "web_fetch"]);
+});
+
+test("consultation targets normalize and refuse line-unsafe values", () => {
+  assert.equal(normalizeTarget("C:\\Users\\me\\notes\\a.md", "C:\\Users\\me"), "~/notes/a.md");
+  assert.equal(normalizeTarget("/home/me", "/home/me/"), "~");
+  assert.equal(normalizeTarget("/home/meow/x.md", "/home/me"), "/home/meow/x.md");
+  assert.equal(normalizeTarget("  @src/a.md  ", "/home/me"), "src/a.md");
+  assert.equal(normalizeTarget("a\nb.md", "/home/me"), null);
+  assert.equal(normalizeTarget("x".repeat(600) + ".md", "/home/me"), null);
+  // Regex and code fragments from heredocs carry characters no path has.
+  assert.deepEqual(
+    markdownPathTokens("grep -E 'docs/|adr/|/.md' x; re.compile(r'(?<![w-])skills/adr/SKILL.md'); f\"{a}/b.md\"; echo a/[b].md"),
+    [],
+  );
+  assert.deepEqual(markdownPathTokens("rg -n foo README.md docs/README.md ./x.md (./y.md) 'z/w.md'; ~/t.md: file.mdx"), [
+    "docs/README.md",
+    "./x.md",
+    "./y.md",
+    "z/w.md",
+    "~/t.md",
+  ]);
 });
 
 test("stableTurnId uses Pi's durable leaf id and deterministic fallback", () => {
@@ -149,6 +216,7 @@ test("stableTurnId uses Pi's durable leaf id and deterministic fallback", () => 
     userText: "same user turn",
     assistantText: "same settled answer",
     toolNames: ["read"],
+    files: [],
   };
   assert.equal(stableTurnId("session-a", "entry-123", 10, summary), "entry-123");
   assert.equal(
@@ -167,7 +235,7 @@ test("stableTurnId uses Pi's durable leaf id and deterministic fallback", () => 
 
 test("buildRawPayload carries selected world/scope and sanitizes identities", () => {
   const payload = buildRawPayload({
-    summary: { userText: "u", assistantText: "a", toolNames: ["weird tool!"] },
+    summary: { userText: "u", assistantText: "a", toolNames: ["weird tool!"], files: [] },
     sessionId: "2026-07-29 bad id",
     turnId: "t/1",
     eventTimeMs: 123,
@@ -179,7 +247,8 @@ test("buildRawPayload carries selected world/scope and sanitizes identities", ()
   assert.equal(payload.sessionId, "2026-07-29-bad-id");
   assert.equal(payload.turnId, "t/1");
   assert.equal(payload.eventTimeMs, 123n);
-  assert.equal(payload.capturePolicy, "pi-visible-v2");
+  assert.equal(payload.capturePolicy, "pi-visible-v3");
+  assert.equal(payload.files, null, "an empty footprint is omitted from the wire");
   assert.deepEqual(payload.tools, [{ name: "weird-tool-" }]);
 });
 
@@ -201,7 +270,7 @@ test("originHost reports the short machine name, or nothing it cannot label", ()
 
 test("buildRawPayload labels the originating machine and omits it when unknown", () => {
   const base = {
-    summary: { userText: "u", assistantText: "a", toolNames: [] },
+    summary: { userText: "u", assistantText: "a", toolNames: [], files: [] },
     sessionId: "s",
     turnId: "t",
     eventTimeMs: 1,

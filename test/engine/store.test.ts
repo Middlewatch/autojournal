@@ -226,7 +226,7 @@ test("oversize policy truncates at a code-point boundary and records drops", () 
   assert.ok(raw.userContent.isWellFormed());
   const clean = applyOversizePolicy(base);
   assert.equal(clean.raw, base);
-  assert.deepEqual(clean.drops, { user: 0, assistant: 0 });
+  assert.deepEqual(clean.drops, { user: 0, assistant: 0, files: 0 });
 });
 
 test("an oversized turn captures with visible accounting and verifies", () => {

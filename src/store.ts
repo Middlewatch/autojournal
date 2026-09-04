@@ -17,6 +17,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import {
   MAX_CONTENT_BYTES,
+  MAX_FILES,
   MAX_EPISODE_FILE_BYTES,
   validate,
   CaptureError,
@@ -73,9 +74,11 @@ export interface Published {
 export interface DroppedBytes {
   user: number;
   assistant: number;
+  /** Consultation entries cut past MAX_FILES (a count of entries, not bytes). */
+  files: number;
 }
 
-const NO_DROPS: DroppedBytes = { user: 0, assistant: 0 };
+const NO_DROPS: DroppedBytes = { user: 0, assistant: 0, files: 0 };
 
 /**
  * Publishes one validated payload into the journal root. The world
@@ -96,6 +99,7 @@ export function publish(
     captureTimeMs,
     userDroppedBytes: drops.user,
     assistantDroppedBytes: drops.assistant,
+    filesDropped: drops.files,
   });
   const contentBytes = Buffer.from(content, "utf8");
 
@@ -194,13 +198,17 @@ function classifyExisting(dirAbs: string, finalName: string, digestHex: string):
  * budget is deterministically tail-truncated to the largest code-point
  * boundary within the budget instead of rejecting the turn, and the
  * dropped byte count is recorded in frontmatter rather than vanishing.
+ * The consultation list gets the same treatment past MAX_FILES: the tail
+ * is cut in first-seen order and the count lands in `files_dropped`.
  * Returns the payload to validate plus the per-side accounting.
  */
 export function applyOversizePolicy(raw: RawPayload): { raw: RawPayload; drops: DroppedBytes } {
   const [userContent, user] = truncateTail(raw.userContent);
   const [assistantResult, assistant] = truncateTail(raw.assistantResult);
-  if (user === 0 && assistant === 0) return { raw, drops: NO_DROPS };
-  return { raw: { ...raw, userContent, assistantResult }, drops: { user, assistant } };
+  const files = raw.files !== null && raw.files.length > MAX_FILES ? raw.files.slice(0, MAX_FILES) : raw.files;
+  const filesDropped = raw.files === null || files === null ? 0 : raw.files.length - files.length;
+  if (user === 0 && assistant === 0 && filesDropped === 0) return { raw, drops: NO_DROPS };
+  return { raw: { ...raw, userContent, assistantResult, files }, drops: { user, assistant, files: filesDropped } };
 }
 
 // truncateTail cuts a string to MAX_CONTENT_BYTES of UTF-8, backing off to

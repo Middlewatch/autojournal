@@ -24,6 +24,7 @@ import {
 } from "../../src/contracts.ts";
 import { parseConfig, ConfigError, resolveConfigPath, saveCaptureDefaults, formatPositional, goParseFloat } from "../../src/config.ts";
 import { parseEpisode, verifyEpisode, resealDigestHex } from "../../src/episode.ts";
+import { applyOversizePolicy } from "../../src/store.ts";
 import { render, frontmatterDigestHex, isoFromMs } from "../../src/render.ts";
 import { episodeId, payloadDigestHex } from "../../src/identity.ts";
 import {
@@ -486,4 +487,20 @@ test("files: the closed vocabulary and target rule", () => {
   assert.equal(code({ files: [{ op: "read" }] }), "Malformed");
   assert.equal(code({ files: "read x.md" }), "Malformed");
   assert.equal(code({ files: [{ op: "web_fetch", target: "docs.example.org" }, { op: "memory_get", target: "aj1-0" }] }), "ok");
+});
+
+test("files: the store cuts the tail past MAX_FILES and records files_dropped", () => {
+  const many = Array.from({ length: 300 }, (_, i) => ({ op: "read", target: `notes/${i}.md` }));
+  const raw = parsePayload(basePayload({ files: many }));
+  const { raw: sized, drops } = applyOversizePolicy(raw);
+  assert.deepEqual(drops, { user: 0, assistant: 0, files: 44 });
+  assert.equal(sized.files!.length, 256);
+  assert.equal(sized.files![255].target, "notes/255.md");
+  const p = validate(sized);
+  const content = render({ payload: p, episodeId: episodeId(p), digestHex: payloadDigestHex(p), captureTimeMs: 1, filesDropped: drops.files });
+  assert.ok(content.includes("\nfiles_dropped: 44\n"));
+  const v = verifyEpisode(content);
+  assert.ok(v.ok && v.episode.filesDropped === 44 && v.episode.files.length === 256);
+  const within = applyOversizePolicy(parsePayload(basePayload({ files: many.slice(0, 256) })));
+  assert.deepEqual(within.drops, { user: 0, assistant: 0, files: 0 });
 });

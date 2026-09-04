@@ -101,7 +101,7 @@ test("golden truncation: oversize capture pins bytes and stays verifiable", () =
   raw.userContent = "U".repeat(MAX_CONTENT_BYTES + 9) + "é";
   raw.assistantResult = "A".repeat(MAX_CONTENT_BYTES - 1) + "é";
   const { raw: sized, drops } = applyOversizePolicy(raw);
-  assert.deepEqual(drops, { user: 11, assistant: 2 });
+  assert.deepEqual(drops, { user: 11, assistant: 2, files: 0 });
   const p = validateAsCaptureHost(sized);
   const digestHex = payloadDigestHex(p);
   const rendered = render({
