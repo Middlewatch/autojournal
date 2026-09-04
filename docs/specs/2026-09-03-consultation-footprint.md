@@ -141,7 +141,7 @@ data keeps its bytes, id, and digest unchanged (the golden pins prove it).
 - [x] S4 Child reads: agent-delegate compact `reads`, autojournal renders
   `child:read`, both suites extended. (after S2; kit and autojournal
   commits paired)
-- [ ] S5 introspect-scan consumes Files with fallback; README bias section
+- [x] S5 introspect-scan consumes Files with fallback; README bias section
   rewritten around the new column; the next sweep's snapshot compares
   against the pre-fix one. (after S3)
 
