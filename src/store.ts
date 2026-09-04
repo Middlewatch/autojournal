@@ -50,7 +50,7 @@ import {
   indexEpisodeIncremental,
   type Snapshot,
 } from "./index.ts";
-import { readContained } from "./corpus.ts";
+import { readContained, containedPath } from "./corpus.ts";
 import { parseEpisode } from "./episode.ts";
 
 /** The result of one publish call. */
@@ -258,6 +258,62 @@ export function checkRedelivery(root: JournalRoot, snap: Snapshot, payload: Payl
   const derived = [...layoutComponents(payload), id + ".md"].join("/");
   if (row.relPath === derived) return null;
   return { outcome: "conflict", relPath: row.relPath };
+}
+
+/**
+ * Removes one stored episode file: the backfill's replace step (spec
+ * 2026-09-03-consultation-footprint). The path is walked without following
+ * symlinks, like readContained, and the file is unlinked only when its own
+ * frontmatter says it captures the expected turn, so a stale index row can
+ * never delete a stranger's file. Returns true when a file was removed. The
+ * projection is not touched here; the caller syncs once afterwards, and
+ * until then the removed row reads as `gone`.
+ */
+export function removeEpisode(
+  root: JournalRoot,
+  relPath: string,
+  expected: { harness: string; sessionId: string; turnId: string; world: string },
+): boolean {
+  if (!containedPath(relPath)) return false;
+  const components = relPath.split("/");
+  let current = root.path;
+  for (let i = 0; i < components.length - 1; i++) {
+    current = path.join(current, components[i]);
+    try {
+      if (!fs.lstatSync(current).isDirectory()) return false;
+    } catch {
+      return false;
+    }
+  }
+  const file = path.join(current, components[components.length - 1]);
+  let content: string;
+  try {
+    if (!fs.lstatSync(file).isFile()) return false;
+    content = fs.readFileSync(file, "utf8");
+  } catch {
+    return false;
+  }
+  const ep = parseEpisode(content);
+  if (
+    ep === null ||
+    ep.harness !== expected.harness ||
+    ep.sessionId !== expected.sessionId ||
+    ep.turnId !== expected.turnId ||
+    ep.world !== expected.world
+  ) {
+    return false;
+  }
+  try {
+    fs.unlinkSync(file);
+  } catch {
+    return false;
+  }
+  try {
+    syncDir(path.dirname(file));
+  } catch {
+    // Directory durability is best-effort here as it is for publish.
+  }
+  return true;
 }
 
 /**

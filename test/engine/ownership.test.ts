@@ -41,7 +41,7 @@ const OWNERSHIP: Record<string, string[]> = {
   "paths.ts": ["defaultJournalRoot", "defaultIndexPath", "rootDigestHex", "thesaurusPath", "missLogPath"],
   "corpus.ts": ["openJournalRoot", "walkCorpus", "readContained", "containedPath", "rootInSharedDirectory"],
   "config.ts": ["parseConfig", "saveCaptureDefaults", "resolveConfigPath"],
-  "store.ts": ["publish", "capture", "applyOversizePolicy", "checkRedelivery", "findPriorPolicyCapture"],
+  "store.ts": ["publish", "capture", "applyOversizePolicy", "checkRedelivery", "findPriorPolicyCapture", "removeEpisode"],
   "index.ts": ["openSnapshot", "syncSnapshot", "freshnessOf", "withIndexLock", "corpusStatSignature"],
   "retrieval.ts": ["extractTerms", "tokenizeLine", "idfWeight", "rank", "cursorEncode", "cursorDecode"],
   "aliases.ts": ["loadAliasMapFromBytes", "loadAliasMapFile", "aliasGet"],

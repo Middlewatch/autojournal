@@ -194,8 +194,13 @@ test("formatImportSummary reports failure detail only when something failed", ()
     unrecognized: 0,
     failed: 0,
     firstFailure: null,
+    replaced: 0,
+    replaceFailed: 0,
   };
   assert.ok(!formatImportSummary(base).includes("failed"));
+  assert.ok(!formatImportSummary(base).includes("re-rendered"));
+  assert.ok(formatImportSummary({ ...base, replaced: 4 }).includes("4 re-rendered under the current policy"));
+  assert.ok(formatImportSummary({ ...base, replaceFailed: 1 }).includes("could not be removed"));
   const failing = { ...base, failed: 2, firstFailure: "malformed" };
   assert.ok(formatImportSummary(failing).includes("2 failed (first: malformed)"));
   const tolerant = { ...base, unrecognized: 1 };
@@ -329,6 +334,99 @@ test(
     }
   },
 );
+
+// The backfill (spec 2026-09-03-consultation-footprint S3): with
+// replacePrior, a turn stored under an earlier policy is re-published under
+// the current one and its earlier file removed; the old evidence reference
+// then reads `gone`, and a second pass changes nothing.
+test("e2e: import with replacePrior re-renders prior-policy turns and removes the old files", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aj-import-replace-"));
+  const previous = {
+    config: process.env.AUTOJOURNAL_CONFIG,
+    xdgConfig: process.env.XDG_CONFIG_HOME,
+    data: process.env.XDG_DATA_HOME,
+    state: process.env.XDG_STATE_HOME,
+  };
+  delete process.env.AUTOJOURNAL_CONFIG;
+  process.env.XDG_CONFIG_HOME = path.join(tmp, "config");
+  process.env.XDG_DATA_HOME = path.join(tmp, "data");
+  process.env.XDG_STATE_HOME = path.join(tmp, "state");
+  try {
+    const sessionsDir = path.join(tmp, "sessions", "--home-user-project--");
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    const sessionFile = path.join(sessionsDir, "2026-07-01T10-00-00-000Z_0192bbbb.jsonl");
+    fs.writeFileSync(
+      sessionFile,
+      jsonl([
+        header(),
+        userMsg("u1", "2026-07-01T10:01:00.000Z", "v2 era question"),
+        assistantMsg("a1", "2026-07-01T10:01:10.000Z", "v2 era answer", ["read"]),
+      ]),
+    );
+    const wire = (policy: string) =>
+      JSON.stringify({
+        schema_version: 1,
+        world: "main",
+        scope: "default",
+        lane: "conversation",
+        harness: "pi",
+        adapter_version: "2.0.0",
+        session_id: sessionIdFromFile(sessionFile),
+        turn_id: "a1",
+        event_time_ms: Date.parse("2026-07-01T10:01:10.000Z"),
+        capture_policy: policy,
+        turn_outcome: "completed",
+        user_content: "v2 era question",
+        assistant_result: "v2 era answer",
+        tools: [{ name: "read" }],
+      });
+    const live = JSON.parse(runCli(["capture"], wire("pi-visible-v2")).stdout) as {
+      outcome: string;
+      episode_id: string;
+      payload_digest: string;
+      path: string;
+    };
+    assert.equal(live.outcome, "published");
+    const journalRoot = path.join(tmp, "data", "autojournal", "journals");
+    const oldFile = path.join(journalRoot, ...live.path.split("/"));
+    assert.ok(fs.existsSync(oldFile), "the v2 episode file exists before backfill");
+
+    const selection = { world: "main", scope: "default" };
+    const files = listPiSessionFiles(path.join(tmp, "sessions"));
+    const kept = await importPiHistory({ selection, files });
+    assert.equal(kept.published, 0);
+    assert.equal(kept.existing, 1, "without replacePrior the v2 turn is already present");
+    assert.equal(kept.replaced, 0);
+
+    const replaced = await importPiHistory({ selection, files, replacePrior: true });
+    assert.equal(replaced.published, 1, "the turn re-publishes under the current policy");
+    assert.equal(replaced.replaced, 1);
+    assert.equal(replaced.replaceFailed, 0);
+    assert.equal(replaced.existing, 0);
+    assert.ok(!fs.existsSync(oldFile), "the v2 file is removed");
+    runCli(["sync"]);
+    const gone = JSON.parse(
+      runCli(["get", "--episode", live.episode_id, "--revision", live.payload_digest, "--json"]).stdout,
+    ) as { outcome: string };
+    assert.equal(gone.outcome, "gone", "the old evidence reference reads gone");
+    const status = JSON.parse(runCli(["status", "--json"]).stdout) as { episodes: number };
+    assert.equal(status.episodes, 1, "one episode remains: the re-rendered one");
+
+    const again = await importPiHistory({ selection, files, replacePrior: true });
+    assert.equal(again.published, 0, "a second replace pass changes nothing");
+    assert.equal(again.existing, 1);
+    assert.equal(again.replaced, 0);
+  } finally {
+    if (previous.config === undefined) delete process.env.AUTOJOURNAL_CONFIG;
+    else process.env.AUTOJOURNAL_CONFIG = previous.config;
+    if (previous.xdgConfig === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = previous.xdgConfig;
+    if (previous.data === undefined) delete process.env.XDG_DATA_HOME;
+    else process.env.XDG_DATA_HOME = previous.data;
+    if (previous.state === undefined) delete process.env.XDG_STATE_HOME;
+    else process.env.XDG_STATE_HOME = previous.state;
+  }
+});
 
 test("parsePiSession admits subagent sessions only when the lever is on", () => {
   const text = jsonl([

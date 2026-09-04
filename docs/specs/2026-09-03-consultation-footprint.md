@@ -133,9 +133,11 @@ data keeps its bytes, id, and digest unchanged (the golden pins prove it).
   read, read!, bash, memory_get, web_fetch with normalization, ranges,
   dedupe, cap, and `files_dropped`. A real turn in this estate renders the
   expected lines. (after S1)
-- [ ] S3 Backfill: prior-policy list, the replace option, the store's
-  removal primitive, menu and CLI wiring, import test with replacement.
-  Then the owner-present run over the live corpus. (after S2)
+- [x] S3 Backfill: prior-policy list, the replace option, the store's
+  removal primitive, menu wiring, import test with replacement. (after S2)
+  Code landed 2026-09-03; the owner-present run over the live corpus is
+  still to do.
+
 - [ ] S4 Child reads: agent-delegate compact `reads`, autojournal renders
   `child:read`, both suites extended. (after S2; kit and autojournal
   commits paired)
@@ -150,3 +152,10 @@ data keeps its bytes, id, and digest unchanged (the golden pins prove it).
   the introspect spec).
 - Whether `bash` tokens should widen beyond `.md` once a month of data shows
   what the heuristic catches. Decide at the second sweep after S5.
+- 2026-09-03 (S3): the replace option lives on the `/autojournal` import
+  menu only. Import has no CLI verb today (it reads pi session logs from the
+  extension), and giving it one means moving import into `src/`, which is
+  its own change. The spec's "menu and CLI" is narrowed to the menu.
+- 2026-09-03 (S2): bash-derived targets are relative to the command's
+  working directory, so `docs/x.md` resolves only by suffix. The scanner
+  matches skills and notes by suffix already.

@@ -27,6 +27,12 @@ result details, and `web_fetch` hostnames. Targets normalize the home
 directory to `~`, strip a leading `@`, and dedupe per op; the store cuts the
 tail past 256 and records `files_dropped`. Import treats `pi-visible-v2` as a
 prior policy for dedupe.
+- Backfill: `/autojournal` → Import Pi session history asks whether turns
+already stored under an earlier capture policy are kept or replaced.
+Replacing re-publishes the turn under the current policy and removes the
+earlier file (the store's `removeEpisode` unlinks only a file whose own
+frontmatter names that turn); the import summary counts replacements, and an
+evidence reference into a replaced episode returns `gone`.
 
 ## 2.0.1 — 2026-08-31
 

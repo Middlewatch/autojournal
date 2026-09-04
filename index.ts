@@ -26,7 +26,8 @@ import path from "node:path";
 import { run as runCliCommand, clockFromEnv, resolveJournalPaths, type CliIo } from "./cli.ts";
 import { defaultConfig, loadConfig, ConfigError, type Config } from "./src/config.ts";
 import { processEnviron, rootDigestHex } from "./src/paths.ts";
-import { capture as engineCapture, findPriorPolicyCapture } from "./src/store.ts";
+import { capture as engineCapture, findPriorPolicyCapture, removeEpisode } from "./src/store.ts";
+import { openJournalRoot } from "./src/corpus.ts";
 import { openSnapshot, type Snapshot } from "./src/index.ts";
 import { validFileTarget, type RawPayload, type FileRef, type FileOp } from "./src/contracts.ts";
 
@@ -656,6 +657,11 @@ export interface ImportCounts {
   unrecognized: number;
   failed: number;
   firstFailure: string | null;
+  // Backfill accounting: turns re-rendered under the current policy whose
+  // prior-policy file was removed, and those where the removal failed so
+  // both files remain.
+  replaced: number;
+  replaceFailed: number;
 }
 
 // runCapture is the one capture transaction both live capture and import
@@ -695,6 +701,12 @@ export async function importPiHistory(options: {
   selection: SessionSelection;
   files: string[];
   includeSubagents?: boolean;
+  /**
+   * Backfill mode (owner ruling 2026-09-03): a turn already stored under a
+   * prior capture policy is re-rendered under the current one and the
+   * prior file removed, instead of counting as already present.
+   */
+  replacePrior?: boolean;
 }): Promise<ImportCounts> {
   const counts: ImportCounts = {
     files: 0,
@@ -705,6 +717,8 @@ export async function importPiHistory(options: {
     unrecognized: 0,
     failed: 0,
     firstFailure: null,
+    replaced: 0,
+    replaceFailed: 0,
   };
   // Policy-aware dedupe: capture_policy participates in episode identity,
   // so a turn captured live under a prior policy would re-derive a new
@@ -737,25 +751,26 @@ export async function importPiHistory(options: {
         selection: options.selection,
         adapterVersion: IMPORT_ADAPTER_VERSION,
       });
-      if (
-        dedupeSnapshot !== null &&
-        findPriorPolicyCapture(
-          dedupeSnapshot,
-          {
-            harness: raw.harness,
-            sessionId: raw.sessionId,
-            turnId: raw.turnId,
-            world: options.selection.world,
-          },
-          PRIOR_CAPTURE_POLICIES,
-        ) !== null
-      ) {
+      const identity = {
+        harness: raw.harness,
+        sessionId: raw.sessionId,
+        turnId: raw.turnId,
+        world: options.selection.world,
+      };
+      const priorRelPath =
+        dedupeSnapshot === null ? null : findPriorPolicyCapture(dedupeSnapshot, identity, PRIOR_CAPTURE_POLICIES);
+      if (priorRelPath !== null && options.replacePrior !== true) {
         counts.existing += 1;
         continue;
       }
       const outcome = runCapture(raw).outcome;
-      if (outcome === "published") counts.published += 1;
-      else if (outcome === "duplicate" || outcome === "conflict") counts.existing += 1;
+      if (outcome === "published") {
+        counts.published += 1;
+        if (priorRelPath !== null) {
+          if (removePriorEpisode(priorRelPath, identity)) counts.replaced += 1;
+          else counts.replaceFailed += 1;
+        }
+      } else if (outcome === "duplicate" || outcome === "conflict") counts.existing += 1;
       else if (CAPTURE_FAILURE_OUTCOMES.has(outcome)) {
         counts.failed += 1;
         if (counts.firstFailure === null) counts.firstFailure = outcome;
@@ -767,12 +782,32 @@ export async function importPiHistory(options: {
   return counts;
 }
 
+// removePriorEpisode unlinks the prior-policy file of a turn the import
+// just re-published, through the store's guarded primitive. False means
+// both files remain and the summary says so.
+function removePriorEpisode(
+  relPath: string,
+  turn: { harness: string; sessionId: string; turnId: string; world: string },
+): boolean {
+  try {
+    const cfg = loadOwnerConfig();
+    const { rootPath } = resolveJournalPaths(processEnviron, cfg);
+    return removeEpisode(openJournalRoot(rootPath), relPath, turn);
+  } catch {
+    return false;
+  }
+}
+
 export function formatImportSummary(counts: ImportCounts): string {
   const parts = [
     `${counts.published} turn(s) published`,
     `${counts.existing} already present`,
     `${counts.skippedTurns} skipped`,
   ];
+  if (counts.replaced > 0) parts.push(`${counts.replaced} re-rendered under the current policy (prior file removed)`);
+  if (counts.replaceFailed > 0) {
+    parts.push(`${counts.replaceFailed} re-rendered but the prior file could not be removed`);
+  }
   if (counts.unrecognized > 0) {
     parts.push(`${counts.unrecognized} stored with an outcome this adapter does not know`);
   }
@@ -1573,6 +1608,18 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
           if (target === undefined || target === "Back") continue;
           const selection = pairs.find((p) => `${p.world} / ${p.scope}` === target);
           if (selection === undefined) continue;
+          // The backfill lever: owner-confirmed here and nowhere else, since
+          // replacing removes files (the session logs make it repeatable).
+          const priorMode = await ctx.ui.select(
+            "Turns already stored under an earlier capture policy:",
+            [
+              "Keep them (import only turns not yet stored)",
+              "Replace them with re-rendered episodes (removes the earlier files)",
+              "Back",
+            ],
+          );
+          if (priorMode === undefined || priorMode === "Back") continue;
+          const replacePrior = priorMode.startsWith("Replace");
           ctx.ui.notify(
             `autojournal: importing ${candidates.length} session file(s) — this may take a moment`,
             "info",
@@ -1581,6 +1628,7 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
             selection,
             files: candidates,
             includeSubagents: readSubagentCapture(adapterStatePath()),
+            replacePrior,
           });
           let indexLine = "";
           if (imported.published > 0) {
@@ -1597,7 +1645,7 @@ export default function autojournalExtension(pi: ExtensionAPI): void {
           }
           ctx.ui.notify(
             formatImportSummary(imported) + indexLine,
-            imported.failed > 0 || (indexLine !== "" && indexLine !== "\nindex synced")
+            imported.failed > 0 || imported.replaceFailed > 0 || (indexLine !== "" && indexLine !== "\nindex synced")
               ? "warning"
               : "info",
           );
