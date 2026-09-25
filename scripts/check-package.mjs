@@ -43,8 +43,14 @@ for (const relative of requiredFiles) {
 // no test, fixture, or workflow tree leaks into the package.
 const packArg = process.argv.indexOf("--pack-json");
 if (packArg !== -1) {
+  // npm <= 11 prints an array of package listings; npm 12 prints an object
+  // keyed by package name. Accept either.
   const listing = JSON.parse(fs.readFileSync(process.argv[packArg + 1], "utf8"));
-  const shipped = new Set(listing[0].files.map((f) => f.path));
+  const packed = Array.isArray(listing) ? listing[0] : Object.values(listing)[0];
+  if (packed === undefined || !Array.isArray(packed.files)) {
+    throw new Error("unrecognized npm pack --json listing shape");
+  }
+  const shipped = new Set(packed.files.map((f) => f.path));
   for (const relative of requiredFiles) {
     if (!shipped.has(relative)) throw new Error(`npm pack omits required file: ${relative}`);
   }

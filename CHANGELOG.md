@@ -4,7 +4,7 @@ Versions are the npm package (`autojournal`). `adapter_version` is recorded in e
 frontmatter but is deliberately excluded from the payload digest, so upgrading never
 re-identifies or re-publishes existing episodes.
 
-## 2.1.0 — unreleased
+## 2.1.0 — 2026-09-25
 
 Consultation footprint (spec `docs/specs/2026-09-03-consultation-footprint.md`,
 ADR 0003): episodes can record which corpus files a turn consulted.
@@ -41,6 +41,9 @@ as `child:read` and `child:read!` entries.
 
 ### Fixed
 
+- `scripts/check-package.mjs` reads the `npm pack --dry-run --json` listing
+as either the array npm 11 prints or the object keyed by package name that
+npm 12 prints, so `release-check.sh` runs on both.
 - Import now hands a turn's tool results to the run summary. Before, the
 backfill loop dropped them, so every replaced episode rendered its Files
 section without `read!`, `memory_get`, or `child:read` entries while live
