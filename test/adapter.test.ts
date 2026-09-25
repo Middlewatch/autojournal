@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   adapterStatePath,
   default as autojournalExtension,
@@ -219,7 +220,7 @@ test("summarizeRun derives the consultation footprint from calls and results", (
 // introspect-scan reads in the kit.
 test("acceptance: a recorded turn reproduces the golden files payload and episode", () => {
   const home = os.homedir();
-  const repo = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+  const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const golden = JSON.parse(fs.readFileSync(path.join(repo, "testdata", "payloads", "files.json"), "utf8")) as {
     tools: Array<{ name: string }>;
     files: Array<{ op: string; target: string }>;
