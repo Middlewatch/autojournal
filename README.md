@@ -1,5 +1,8 @@
 # AutoJournal
 
+> **Status (2026-09-30):** AutoJournal is going through a round of
+> usefulness testing and may be retired indefinitely.
+
 AutoJournal is automatic, session-derived memory for the
 [Pi coding agent](https://github.com/earendil-works/pi-coding-agent). Every
 completed interactive turn becomes a Markdown episode that keeps the user
