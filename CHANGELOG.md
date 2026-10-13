@@ -4,6 +4,24 @@ Versions are the npm package (`autojournal`). `adapter_version` is recorded in e
 frontmatter but is deliberately excluded from the payload digest, so upgrading never
 re-identifies or re-publishes existing episodes.
 
+## 2.1.1 — 2026-10-13
+
+Maintenance release with no change to episode bytes, ids, or digests.
+
+### Fixed
+
+- The acceptance test resolves the repository root with `fileURLToPath`, so the
+golden files fixture is found on Windows (`new URL(import.meta.url).pathname`
+yields `/D:/a/...` there and `path.resolve` prefixed the drive twice).
+
+### Changed
+
+- The development dependency tracks Pi 1.2.0; the previous range
+(`>=0.80 <1.0`) refused every 1.x release the extension actually runs under.
+The peer range is unchanged (`*`), so installed copies are unaffected.
+- README carries a status note: the project is in a round of usefulness
+testing and may be retired.
+
 ## 2.1.0 — 2026-09-25
 
 Consultation footprint (spec `docs/specs/2026-09-03-consultation-footprint.md`,
