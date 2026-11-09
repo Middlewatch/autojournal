@@ -417,6 +417,8 @@ test("renderSearchResults covers match, no_match, and typed failures", () => {
   assert.match(text, /aj1-x\.md:12/);
   assert.match(text, /> the fwupd refresh worked/);
   assert.match(text, /memory_get\(reference, lines\)/);
+  // The reference stands for the identity, so the digests are not printed.
+  assert.doesNotMatch(text, /revision sha256/);
 
   const stale = renderSearchResults({
     outcome: "match",
@@ -425,6 +427,9 @@ test("renderSearchResults covers match, no_match, and typed failures", () => {
     index: { freshness: "stale", indexed: 8, source: 9, edited_excluded: 0 },
   });
   assert.match(stale, /\(index stale\)/);
+  // Without a reference the identity is the only way to open the result.
+  assert.match(stale, /episode aj1-x revision sha256:abc/);
+  assert.match(stale, /memory_get\(episode_id, revision, lines\)/);
   assert.doesNotMatch(stale, /object Object/);
 });
 

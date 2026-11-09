@@ -1,6 +1,7 @@
 // Retrieval behavior: the ranking fixture replay (the public witness of
 // the term-weighting invariant), discovery and crediting semantics,
-// cursor binding, edited-evidence exclusion, and bounded get.
+// listing exclusion and repeated-line dedup, cursor binding,
+// edited-evidence exclusion, and bounded get.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -15,7 +16,15 @@ import { openSnapshot, type Snapshot } from "../../src/index.ts";
 import { sync, reseal } from "../../src/ops.ts";
 import { rootDigestHex } from "../../src/paths.ts";
 import { search, get, creditLine } from "../../src/search.ts";
-import { idfWeight, recencyMultiplier, confidenceWithCoverage, cursorEncode, cursorDecode } from "../../src/retrieval.ts";
+import {
+  idfWeight,
+  recencyMultiplier,
+  confidenceWithCoverage,
+  cursorEncode,
+  cursorDecode,
+  lineTextKey,
+  MIN_REPEAT_LINE_CHARS,
+} from "../../src/retrieval.ts";
 import { loadAliasMapFromBytes } from "../../src/aliases.ts";
 import { PAYLOADS_DIR, REPO_ROOT } from "./helpers.ts";
 
@@ -185,6 +194,62 @@ test("scope and lane filters bound recall", () => {
   }
 });
 
+test("tool and file listings are not evidence, and context stops before them", () => {
+  const s = scratch();
+  try {
+    publishTurn(
+      s,
+      turnPayload("where does the wombat plan live", "The wombat plan is settled.", {
+        tools: [{ name: "wombat_reader" }],
+        files: [{ op: "read", target: "~/notes/wombat-ledger.md" }],
+      }),
+    );
+    const { root, snapshot } = openSynced(s);
+
+    // "wombat" occurs in the user line, the assistant line, the tool name,
+    // and the file path; only the two lines the turn said are results.
+    const said = search(root, snapshot, EMPTY_ALIASES, { query: "wombat", world: "main", nowMs: NOW });
+    assert.equal(said.outcome, "match");
+    assert.equal(said.total, 2);
+    for (const hit of said.hits) {
+      assert.doesNotMatch(hit.snippet, /## Tools|## Files|wombat_reader|wombat-ledger/);
+    }
+
+    // A word found only in a listing matches nothing.
+    for (const query of ["ledger", "reader", "tools"]) {
+      const listed = search(root, snapshot, EMPTY_ALIASES, { query, world: "main", nowMs: NOW });
+      assert.equal(listed.outcome, "no_match", query);
+    }
+  } finally {
+    s.drop();
+  }
+});
+
+test("a line repeated across episodes takes one result slot, the most recent copy", () => {
+  const DAY = 24n * 60n * 60n * 1000n;
+  const template = "Before starting work, state where the quokka ledger stands today.";
+  assert.ok(template.length >= MIN_REPEAT_LINE_CHARS);
+  const s = scratch();
+  try {
+    publishTurn(s, turnPayload(template, "Older reply.", { eventTimeMs: 1785240000000n - 5n * DAY }));
+    const newerCopy = template.toUpperCase().replace(" ", "   ");
+    publishTurn(s, turnPayload(newerCopy, "Newer reply."));
+    publishTurn(s, turnPayload("quokka status", "First short one.", { eventTimeMs: 1785240000000n - 2n * DAY }));
+    publishTurn(s, turnPayload("quokka status", "Second short one.", { eventTimeMs: 1785240000000n - 3n * DAY }));
+    const { root, snapshot } = openSynced(s);
+
+    const out = search(root, snapshot, EMPTY_ALIASES, { query: "quokka", world: "main", nowMs: NOW });
+    // One slot for the template (case and spacing differences ignored),
+    // two for the short line, which is below the repeat threshold.
+    assert.equal(out.total, 3);
+    const templated = out.hits.filter((hit) => /ledger/i.test(hit.snippet));
+    assert.equal(templated.length, 1);
+    assert.ok(templated[0].snippet.includes(newerCopy), "the newer episode's copy is the one kept");
+  } finally {
+    s.drop();
+  }
+});
+
 test("cursors page deterministically and bind to their minting state", () => {
   const s = scratch();
   try {
@@ -322,6 +387,12 @@ test("scorer primitives: smoothed idf, recency, confidence, crediting", () => {
   assert.equal(confidenceWithCoverage(10, 0.35, 3), "medium");
   assert.equal(confidenceWithCoverage(10, 0.1, 3), "low");
   assert.equal(confidenceWithCoverage(1, 1, 0), "high", "floor 0 disables banding");
+
+  assert.equal(lineTextKey("short line"), undefined);
+  assert.equal(
+    lineTextKey("  Report   the STATE of every open packet before work  "),
+    "report the state of every open packet before work",
+  );
 
   assert.ok(creditLine("the hanging lamp", "hang", "word_start"));
   assert.ok(!creditLine("the changed file", "hang", "word_start"));

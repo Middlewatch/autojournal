@@ -125,12 +125,36 @@ export function tokenizeLine(line: string): string[] {
 // aj-scorer.v4: rarity uses the smoothed idf (idfWeight below) rather
 // than ln(N/df), keeping the weight bounded as df approaches N and
 // stable for tiny corpora.
-export const SCORER_VERSION = "aj-scorer.v4";
+// aj-scorer.v5: scores are unchanged; the ordering drops a candidate
+// whose line repeats a better-ranked one (lineTextKey below), and search
+// no longer offers Tools and Files listing lines as candidates. The
+// version moves because both change which results a cursor pages over.
+export const SCORER_VERSION = "aj-scorer.v5";
 export const CONFIDENCE_POLICY_VERSION = "aj-conf.v2";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 export const MAX_PER_EPISODE_DEFAULT = 2;
+
+/**
+ * Lines shorter than this never collapse as repeats: a short heading or
+ * a one-word reply can recur in episodes that say different things
+ * around it.
+ */
+export const MIN_REPEAT_LINE_CHARS = 40;
+
+/**
+ * The identity under which two matched lines count as the same text:
+ * ASCII case folded, whitespace runs collapsed. Undefined for a line too
+ * short to judge. A prompt template or pasted instruction block recurs
+ * verbatim across many episodes, and without this every copy takes a
+ * result slot (a 2026-11 audit of 874 searches found a repeated line in
+ * 9% of result sets, none of the graded ones useful).
+ */
+export function lineTextKey(line: string): string | undefined {
+  const key = asciiLower(line.trim().replace(/\s+/g, " "));
+  return key.length >= MIN_REPEAT_LINE_CHARS ? key : undefined;
+}
 
 /** The exponent applied to term coverage in confidence banding. */
 export const CONFIDENCE_COVERAGE_ALPHA = 1.0;
@@ -166,6 +190,8 @@ export interface Candidate {
   /** 1-based absolute line number in the episode file. */
   lineNo: number;
   matchedMask: bigint;
+  /** lineTextKey of the matched line; absent means never collapsed as a repeat. */
+  textKey?: string;
 }
 
 export interface EpisodeInfo {
@@ -233,15 +259,21 @@ export function rank(candidates: Candidate[], episodes: EpisodeInfo[], idf: numb
   // matches collapse to one result region.
   const bucketSpan = Math.max(params.contextWindow * 2, 1);
   const seen = new Set<string>();
+  // Repeat dedup: the best-scoring copy of a line survives, which with
+  // equal rarity is the most recent one. Only kept candidates claim their
+  // text, so a copy the per-episode cap dropped does not hide the next.
+  const seenText = new Set<string>();
   const perEpisode = new Map<number, number>();
   const kept: number[] = [];
   for (const idx of order) {
     const c = candidates[idx];
     if (params.minScore > 0 && scores[idx] < params.minScore) continue;
+    if (c.textKey !== undefined && seenText.has(c.textKey)) continue;
     const key = c.episodeOrd + ":" + Math.floor(c.lineNo / bucketSpan);
     if (seen.has(key)) continue;
     if (params.maxPerEpisode > 0 && (perEpisode.get(c.episodeOrd) ?? 0) >= params.maxPerEpisode) continue;
     seen.add(key);
+    if (c.textKey !== undefined) seenText.add(c.textKey);
     perEpisode.set(c.episodeOrd, (perEpisode.get(c.episodeOrd) ?? 0) + 1);
     kept.push(idx);
   }

@@ -31,7 +31,10 @@ A search runs through five stages:
    needles exist, so one over-broad fragment cannot exhaust the discovery
    budget for the rest of the query.
 4. **Crediting (the filter this guide is mostly about).** Each candidate
-   line is re-checked against the source text. A term credits a line only
+   line is re-checked against the source text. Only what the turn said is
+   a candidate: lines of an episode's `## Tools` and `## Files` listings
+   never match, so a file path or tool name that shares a query word is
+   not a result. A term credits a line only
    where an occurrence *begins at a word boundary*:
    - `hang` credits "hang", "hangs", and "hanging", but not "changed".
    - `config` credits "config" and "configuration". A match may extend
@@ -42,7 +45,11 @@ A search runs through five stages:
 5. **Scoring.** Credited lines are ranked by term rarity (a word appearing
    in few episodes outweighs a ubiquitous one) with a mild recency boost.
    One episode contributes at most two result regions per page, so a long
-   episode cannot crowd out the rest of the corpus. Each hit's
+   episode cannot crowd out the rest of the corpus. A line of 40 or more
+   characters that repeats across episodes (a prompt template, a pasted
+   instruction block) takes one result slot: the best-scoring copy, which
+   among equals is the most recent. Case and spacing differences do not
+   make a copy distinct. Each hit's
    `confidence` band discounts partial matches: a hit crediting only some
    of your query words needs a proportionally stronger score to report
    `high`. Ordering is unaffected, and the band is display trust only.

@@ -244,7 +244,7 @@ test("search and get verbs speak the wire shapes", () => {
     const hit = report.results[0];
     assert.equal(hit.world, "testworld");
     assert.ok(hit.revision.startsWith("sha256:"));
-    assert.equal(report.identities.scorer, "aj-scorer.v4");
+    assert.equal(report.identities.scorer, "aj-scorer.v5");
     assert.equal(report.identities.tokenizer, "aj-tok.v1");
     assert.equal(report.index.freshness, "fresh");
     const got = fakeIo(env);

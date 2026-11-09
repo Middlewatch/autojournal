@@ -4,6 +4,28 @@ Versions are the npm package (`autojournal`). `adapter_version` is recorded in e
 frontmatter but is deliberately excluded from the payload digest, so upgrading never
 re-identifies or re-publishes existing episodes.
 
+## 2.2.0 — unreleased
+
+Recall precision, from an audit of the 874 `memory_search` calls in this estate's
+session logs (2026-07-29 to 2026-11-08) and 60 of them graded by hand. No change to
+episode bytes, ids, or digests, and no index rebuild.
+
+### Changed
+
+- The scorer is `aj-scorer.v5`. Scores are unchanged; two rules change which lines
+can be results, so cursors minted by an earlier build are refused.
+  - Lines of an episode's `## Tools` and `## Files` listings are no longer search
+  candidates, and a snippet's context stops before them. A path or tool name that
+  shared a query word was returned as evidence in 7% of audited searches, and every
+  graded instance was noise. `memory_get` still opens those lines.
+  - A line of 40 or more characters that repeats across episodes takes one result
+  slot, the best-scoring copy. Prompt templates and pasted instructions recur
+  verbatim, and a repeated line appeared in 9% of audited result sets.
+- The Pi extension's `memory_search` text omits the `episode … revision …` line for
+a result that carries a reference number, about 100 hex characters per result that
+`memory_get(reference, lines)` never needed. The identity remains in the tool
+result's details, and is still printed when no reference was issued.
+
 ## 2.1.1 — 2026-10-13
 
 Maintenance release with no change to episode bytes, ids, or digests.

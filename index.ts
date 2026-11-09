@@ -1051,9 +1051,13 @@ export function renderSearchResults(
     lines.push(
       `${i + 1}. ${reference ? `[reference ${reference.reference}] ` : ""}${r.path}:${r.line}` +
         `${r.event_time ? ` (${r.event_time})` : ""}`,
-      `   episode ${r.episode_id} revision ${r.revision}`,
-      ...r.snippet.split("\n").map((s) => `   > ${s}`),
     );
+    // A reference number already stands for the episode id and revision,
+    // and memory_get takes it alone. Printing both digests beside it cost
+    // about 100 hex characters per result that the model never needed;
+    // they stay in the tool result's details.
+    if (!reference) lines.push(`   episode ${r.episode_id} revision ${r.revision}`);
+    lines.push(...r.snippet.split("\n").map((s) => `   > ${s}`));
   });
   lines.push(
     "",

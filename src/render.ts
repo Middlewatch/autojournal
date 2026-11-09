@@ -88,6 +88,17 @@ export function render(input: RenderInput): string {
 }
 
 /**
+ * How many trailing lines of a rendered episode the Tools and Files
+ * sections occupy. Each present section is a blank line, its heading, a
+ * blank line, then one line per entry. Search uses this to keep the
+ * listings out of evidence; the arithmetic lives here because it mirrors
+ * the layout render writes.
+ */
+export function listingLineCount(toolCount: number, fileCount: number): number {
+  return (toolCount > 0 ? toolCount + 3 : 0) + (fileCount > 0 ? fileCount + 3 : 0);
+}
+
+/**
  * Renders epoch milliseconds as UTC ISO-8601 to second precision. Inputs
  * beyond the validated event-time window are refused upstream; this
  * function does not defend itself.

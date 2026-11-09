@@ -70,7 +70,8 @@ normal, visible, repairable state (`sync`) rather than a capture failure.
 folding → vocabulary substring scan over the snapshot's sorted terms →
 postings under world/scope/lane filters → per-line crediting at word-start
 boundaries against the verified source text, one read per episode per
-query → smoothed-IDF ranking with day-quantized recency → span dedup,
+query, with the Tools and Files listings excluded → smoothed-IDF ranking
+with day-quantized recency → repeated-line dedup, span dedup,
 per-episode cap, confidence floor, cursor pagination (aj2 cursors bind the
 corpus signature and the first page's clock). `memory_get` then opens one
 reference, recomputing the episode's digest from its content before

@@ -9,8 +9,9 @@
 // Discovery pipeline: query terms → additive alias expansion → additive
 // singular folding of plural terms → vocabulary substring scan over the
 // snapshot's sorted term list → postings under world/scope/lane filters →
-// per-line crediting against the verified source text → the pure scorer
-// in retrieval.ts → span dedup, per-episode cap, floor, page.
+// per-line crediting against the verified source text, Tools and Files
+// listings excluded → the pure scorer in retrieval.ts → repeated-line and
+// span dedup, per-episode cap, floor, page.
 
 import {
   MAX_QUERY_TERMS,
@@ -25,6 +26,7 @@ import {
 } from "./contracts.ts";
 import { DIGEST_PREFIX, ID_PREFIX, EPISODE_ID_LEN, DIGEST_HEX_LEN } from "./identity.ts";
 import { parseEpisode, verifyEpisode } from "./episode.ts";
+import { listingLineCount } from "./render.ts";
 import { readContained, type JournalRoot } from "./corpus.ts";
 import {
   corpusStatSignature,
@@ -38,6 +40,7 @@ import {
   isStopWord,
   asciiLower,
   idfWeight,
+  lineTextKey,
   rank,
   trailingZeros,
   confidenceWithCoverage,
@@ -300,6 +303,8 @@ export function search(root: JournalRoot, snapshot: Snapshot | null, aliasMap: A
     lines: number[];
     unionMask: bigint;
     content: string;
+    /** Last line of the turn's own text; the Tools and Files listings follow it. */
+    lastEvidenceLine: number;
   }
   const laneSet = new Set(lanes);
   const eligible = (row: SnapshotEpisode): boolean =>
@@ -314,7 +319,7 @@ export function search(root: JournalRoot, snapshot: Snapshot | null, aliasMap: A
       let ord = episodeOrds.get(snapOrd);
       if (ord === undefined) {
         ord = episodes.length;
-        episodes.push({ row, lines: [], unionMask: 0n, content: "" });
+        episodes.push({ row, lines: [], unionMask: 0n, content: "", lastEvidenceLine: 0 });
         episodeOrds.set(snapOrd, ord);
       }
       const accum = episodes[ord];
@@ -356,8 +361,16 @@ export function search(root: JournalRoot, snapshot: Snapshot | null, aliasMap: A
     }
     ep.content = content;
 
+    // The Tools and Files sections list what a turn touched, not what it
+    // said: a path or tool name that shares a query word is not evidence,
+    // and such lines were graded noise wherever a search returned them.
+    // A rendered episode ends in a newline, so the split's last element
+    // is not a line.
     const textLines = content.split("\n");
+    ep.lastEvidenceLine =
+      textLines.length - 1 - listingLineCount(verified.episode.tools.length, verified.episode.files.length);
     for (const lineNo of ep.lines) {
+      if (lineNo > ep.lastEvidenceLine) continue;
       const line = textLines[lineNo - 1];
       if (line === undefined) continue;
       let mask = 0n;
@@ -365,7 +378,7 @@ export function search(root: JournalRoot, snapshot: Snapshot | null, aliasMap: A
         if (creditLine(line, term, creditMode)) mask |= 1n << BigInt(i);
       });
       if (mask === 0n) continue;
-      candidates.push({ episodeOrd: accumOrd, lineNo, matchedMask: mask });
+      candidates.push({ episodeOrd: accumOrd, lineNo, matchedMask: mask, textKey: lineTextKey(line) });
       ep.unionMask |= mask;
     }
     let mask = ep.unionMask;
@@ -433,6 +446,7 @@ export function search(root: JournalRoot, snapshot: Snapshot | null, aliasMap: A
     const snip = renderSnippet(ep.content, {
       line: cand.lineNo,
       bodyLine: ep.row.bodyLine,
+      lastLine: ep.lastEvidenceLine,
       contextWindow: knobs.contextWindow,
     });
     return {
@@ -488,6 +502,8 @@ export function creditLine(line: string, term: string, mode: CreditMode): boolea
 interface SnippetSpec {
   line: number;
   bodyLine: number;
+  /** Context stops here, so a match near the end shows no listing lines. */
+  lastLine: number;
   contextWindow: number;
 }
 
@@ -501,11 +517,11 @@ interface Snippet {
 // crediting pass already read and verified — one read per episode per
 // query, and a snippet always shows the revision that was credited.
 // Rendering runs after rank and feeds no scoring input. Lines are clamped
-// to the body, each capped at a codepoint boundary, the whole snippet
+// to the turn's own text, each capped at a codepoint boundary, the whole snippet
 // capped at MAX_SNIPPET_BYTES.
 function renderSnippet(content: string, spec: SnippetSpec): Snippet {
   const first = Math.max(spec.bodyLine, spec.line - spec.contextWindow);
-  const last = spec.line + spec.contextWindow;
+  const last = Math.min(spec.lastLine, spec.line + spec.contextWindow);
   let text = "";
   let start = 0;
   let end = 0;
