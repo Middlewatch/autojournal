@@ -4,7 +4,7 @@ Versions are the npm package (`autojournal`). `adapter_version` is recorded in e
 frontmatter but is deliberately excluded from the payload digest, so upgrading never
 re-identifies or re-publishes existing episodes.
 
-## 2.2.0 — unreleased
+## 2.2.0 — 2026-11-08
 
 Recall precision, from an audit of the 874 `memory_search` calls in this estate's
 session logs (2026-07-29 to 2026-11-08) and 60 of them graded by hand. No change to
@@ -25,6 +25,8 @@ can be results, so cursors minted by an earlier build are refused.
 a result that carries a reference number, about 100 hex characters per result that
 `memory_get(reference, lines)` never needed. The identity remains in the tool
 result's details, and is still printed when no reference was issued.
+- The development dependency tracks Pi 1.5.0. The peer range is unchanged (`*`), so
+installed copies are unaffected.
 
 ## 2.1.1 — 2026-10-13
 
