@@ -29,7 +29,7 @@
     "scripts/check-package.mjs"
   ],
   "bin": {
-    "autojournal": "./bin/autojournal"
+    "autojournal": "bin/autojournal"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

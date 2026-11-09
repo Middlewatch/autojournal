@@ -4,6 +4,14 @@ Versions are the npm package (`autojournal`). `adapter_version` is recorded in e
 frontmatter but is deliberately excluded from the payload digest, so upgrading never
 re-identifies or re-publishes existing episodes.
 
+## 2.2.1 — unreleased
+
+### Changed
+
+- `package.json` names the bin as `bin/autojournal` rather than `./bin/autojournal`,
+the form npm already rewrote it to at publish. The published manifest is unchanged;
+`npm publish` no longer warns that it corrected the entry.
+
 ## 2.2.0 — 2026-11-08
 
 Recall precision, from an audit of the 874 `memory_search` calls in this estate's
